@@ -147,10 +147,10 @@ See [SECURITY_DESIGN.md](docs/SECURITY_DESIGN.md) for the full 9-layer security 
 ### Summary
 
 ```
-Layer 1: TLS Transport (QUIC/TCP mTLS)         — certificate chain validation
-Layer 2: Identity Extraction                     — SPIFFE ID from TLS peer cert
-Layer 3: Identity Confirmation (TstartlsSpiffe)  — declared vs TLS cert match
-Layer 4: Session Key (TLS-derived)               — export_keying_material (RFC 5705)
+Layer 1: TLS Transport (QUIC/TCP mTLS)            — certificate chain validation
+Layer 2: Identity Extraction                      — SPIFFE ID from TLS peer cert
+Layer 3: Identity Confirmation (TstartlsSpiffe)   — declared vs TLS cert match
+Layer 4: Session Key (TLS-derived)                — export_keying_material (RFC 5705)
 Layer 5: Filesystem Isolation (Tattach)           — per-SPIFFE-ID root directory
 Layer 6: Operation Permissions                    — static policy + dynamic cap tokens
 Layer 7: Capability Tokens (JWT, HMAC-SHA256)     — non-transferable, time-limited
@@ -260,6 +260,7 @@ ninep/
     SPIRE_SETUP.md                      SPIRE environment setup
     SECURITY_DESIGN.md                  9-layer security architecture
     THREAD_MODEL.md                     Thread model analysis (exporter/importer)
+    TROUBLESHOOTING.md                  Common issues and solutions (FUSE, AppArmor)
 
   crates/
     p9n-proto/                         Protocol library (transport-agnostic)
@@ -346,6 +347,7 @@ ninep/
 - [9P2000.N Protocol Specification](https://github.com/9p2000n/9P2000.N/tree/main/spec/9P2000.N-protocol.md)
 - [9P2000.N Wire Format](https://github.com/9p2000n/9P2000.N/tree/main/spec/9P2000.N-protocol-format.md)
 - [Reference Implementations](https://github.com/9p2000n/9P2000.N/tree/main/ref/) (C, Go, Rust — codec only)
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — Common operational issues (AppArmor, stale FUSE mounts)
 - [SPIRE Environment Setup](docs/SPIRE_SETUP.md) — SPIRE deployment for test and production environments
 - [rcgen Usage for SPIFFE SVIDs](docs/RCGEN_USAGE.md) — Generating test certificates with rcgen
 
