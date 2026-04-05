@@ -48,6 +48,8 @@ pub fn client_endpoint(auth: &SpiffeAuth) -> Result<quinn::Endpoint, TransportEr
         tc.max_concurrent_bidi_streams(256u32.into());
         tc.max_concurrent_uni_streams(16u32.into());
         tc.datagram_receive_buffer_size(Some(65536));
+        // Send PING frames every 10s to prevent idle timeout (default 30s).
+        tc.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
         tc
     }));
 

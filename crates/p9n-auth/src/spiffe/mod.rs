@@ -8,6 +8,7 @@ pub mod jwt_svid;
 pub mod workload_api;
 pub mod cert_resolver;
 pub mod chain_verifier;
+pub mod server_verifier;
 
 #[cfg(feature = "workload-api")]
 pub mod grpc;

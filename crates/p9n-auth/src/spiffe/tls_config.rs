@@ -48,6 +48,10 @@ pub fn server_config(
 }
 
 /// Build a rustls ClientConfig with SPIFFE X.509-SVID.
+///
+/// Uses a custom `SpiffeServerVerifier` that validates the server certificate's
+/// SPIFFE ID (URI SAN) against the trust bundle, instead of the default WebPKI
+/// hostname verification which would require a DNS SAN.
 pub fn client_config(
     identity: &SpiffeIdentity,
     trust_store: &TrustBundleStore,
@@ -59,10 +63,17 @@ pub fn client_config(
         .collect::<Vec<_>>();
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.private_key.clone()));
 
-    let root_store = build_root_store(trust_store);
+    let crypto_provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+
+    let verifier = super::server_verifier::SpiffeServerVerifier::new(
+        trust_store, crypto_provider,
+    );
 
     let mut config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
         .with_client_auth_cert(certs, key)
         .map_err(|e| AuthError::Tls(format!("client config: {e}")))?;
 
