@@ -11,13 +11,18 @@ use p9n_auth::spiffe::tls_config;
 use p9n_transport::quic::config;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
+use tokio_util::sync::CancellationToken;
 
 pub struct Exporter {
     endpoint: quinn::Endpoint,
     ctx: Arc<SharedCtx>,
     tcp_listener: Option<tokio::net::TcpListener>,
     tcp_acceptor: Option<TlsAcceptor>,
+    shutdown_token: CancellationToken,
 }
 
 impl Exporter {
@@ -66,6 +71,7 @@ impl Exporter {
             ctx,
             tcp_listener: None,
             tcp_acceptor: None,
+            shutdown_token: CancellationToken::new(),
         })
     }
 
@@ -96,14 +102,11 @@ impl Exporter {
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let ctx_gc = self.ctx.clone();
-        let gc_interval = self.ctx.config.session_gc_interval;
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(gc_interval).await;
-                ctx_gc.session_store.gc();
-            }
-        });
+        self.spawn_gc_task();
+
+        let mut handlers = JoinSet::new();
+        let mut sigterm = signal(SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
 
         loop {
             tokio::select! {
@@ -111,7 +114,7 @@ impl Exporter {
                     match incoming {
                         Some(incoming) => {
                             let ctx = self.ctx.clone();
-                            tokio::spawn(async move {
+                            handlers.spawn(async move {
                                 match incoming.await {
                                     Ok(conn) => {
                                         let remote = conn.remote_address();
@@ -132,7 +135,7 @@ impl Exporter {
                     match result {
                         Ok((tls_stream, remote)) => {
                             let ctx = self.ctx.clone();
-                            tokio::spawn(async move {
+                            handlers.spawn(async move {
                                 tracing::info!("accepted TCP+TLS connection from {remote}");
                                 let mut handler = TcpConnectionHandler::new(tls_stream, ctx);
                                 if let Err(e) = handler.run().await {
@@ -146,13 +149,61 @@ impl Exporter {
                     }
                 }
                 _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("shutdown signal received");
-                    self.endpoint.close(quinn::VarInt::from_u32(0), b"shutdown");
+                    tracing::info!("received SIGINT, shutting down...");
+                    break;
+                }
+                _ = sigterm.recv() => {
+                    tracing::info!("received SIGTERM, shutting down...");
                     break;
                 }
             }
         }
+
+        self.shutdown(handlers).await;
         Ok(())
+    }
+
+    /// Ordered shutdown: stop new connections → drain active handlers → stop GC → idle.
+    async fn shutdown(&self, mut handlers: JoinSet<()>) {
+        // Step 1: Stop accepting new connections.
+        self.endpoint.close(quinn::VarInt::from_u32(0), b"shutdown");
+
+        // Step 2: Wait for active connection handlers to finish cleanup.
+        // endpoint.close() triggers CONNECTION_CLOSE on all QUIC connections,
+        // causing each handler's select! to exit and call cleanup().
+        let active = handlers.len();
+        if active > 0 {
+            tracing::info!("waiting for {active} connection(s) to drain...");
+            let drain = async { while handlers.join_next().await.is_some() {} };
+            if tokio::time::timeout(Duration::from_secs(10), drain).await.is_err() {
+                tracing::warn!("drain timed out after 10s, aborting remaining handlers");
+                handlers.abort_all();
+            }
+        }
+
+        // Step 3: Stop the GC background task.
+        self.shutdown_token.cancel();
+
+        // Step 4: Wait for QUIC endpoint to become idle (ensures
+        // CONNECTION_CLOSE frames are acknowledged by peers).
+        self.endpoint.wait_idle().await;
+
+        tracing::info!("clean shutdown complete");
+    }
+
+    /// Spawn a background task that periodically garbage-collects expired sessions.
+    fn spawn_gc_task(&self) {
+        let token = self.shutdown_token.clone();
+        let ctx = self.ctx.clone();
+        let interval = self.ctx.config.session_gc_interval;
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(interval) => ctx.session_store.gc(),
+                    _ = token.cancelled() => break,
+                }
+            }
+        });
     }
 }
 

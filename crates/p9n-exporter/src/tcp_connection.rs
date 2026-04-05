@@ -74,13 +74,14 @@ impl TcpConnectionHandler {
                     match result {
                         Ok(request) => {
                             let tag = request.tag;
+                            let msg_type = request.msg_type;
                             let result = handlers::dispatch(
                                 &self.session, &self.ctx, &self.watch_tx, &self.push_tx, request,
                             ).await;
                             let response = match result {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    tracing::debug!("tcp handler error: {e}");
+                                    tracing::debug!("{} tag={tag}: {e}", msg_type.name());
                                     Fcall {
                                         size: 0,
                                         msg_type: MsgType::Rlerror,

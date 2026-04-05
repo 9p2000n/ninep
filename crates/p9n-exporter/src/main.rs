@@ -46,34 +46,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    init();
     let args = Args::parse();
 
-    #[cfg(feature = "workload-api")]
-    let auth = if let Some(ref socket) = args.spiffe_agent_socket {
-        p9n_auth::SpiffeAuth::from_workload_api(socket).await
-            .map_err(|e| format!("workload API: {e}"))?
-    } else {
-        p9n_auth::SpiffeAuth::from_pem_files(&args.cert, &args.key, &args.ca)
-            .map_err(|e| format!("auth: {e}"))?
-    };
-    #[cfg(not(feature = "workload-api"))]
-    let auth = p9n_auth::SpiffeAuth::from_pem_files(&args.cert, &args.key, &args.ca)
-        .map_err(|e| format!("auth: {e}"))?;
+    let auth = load_auth(&args).await?;
+    load_jwt_keys(&auth, &args.jwt_keys)?;
 
-    // Load JWT JWK Sets for remote trust domains
-    for entry in &args.jwt_keys {
-        let (domain, path) = entry.split_once('=')
-            .ok_or_else(|| format!("invalid --jwt-keys format: {entry} (expected domain=path)"))?;
-        let json = std::fs::read(path)
-            .map_err(|e| format!("read JWK file {path}: {e}"))?;
-        let jwk_set = p9n_auth::spiffe::jwt_svid::JwkSet::from_json(&json)
-            .map_err(|e| format!("parse JWK file {path}: {e}"))?;
-        auth.trust_store.set_jwt_keys(domain, jwk_set);
-        tracing::info!("loaded JWT JWK Set for domain: {domain}");
-    }
-
-    // Clone identity/trust_store before auth is consumed by Exporter::new()
     let identity = auth.identity.clone();
     let trust_store = auth.trust_store.clone();
 
@@ -89,4 +67,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     exporter.run().await
+}
+
+// ── Initialization ──
+
+fn init() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls CryptoProvider");
+    tracing_subscriber::fmt::init();
+}
+
+// ── Authentication ──
+
+async fn load_auth(
+    args: &Args,
+) -> Result<p9n_auth::SpiffeAuth, Box<dyn std::error::Error>> {
+    #[cfg(feature = "workload-api")]
+    if let Some(ref socket) = args.spiffe_agent_socket {
+        return Ok(p9n_auth::SpiffeAuth::from_workload_api(socket).await
+            .map_err(|e| format!("workload API: {e}"))?);
+    }
+    Ok(p9n_auth::SpiffeAuth::from_pem_files(&args.cert, &args.key, &args.ca)
+        .map_err(|e| format!("auth: {e}"))?)
+}
+
+// ── JWT trust bundles ──
+
+fn load_jwt_keys(
+    auth: &p9n_auth::SpiffeAuth,
+    entries: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in entries {
+        let (domain, path) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("invalid --jwt-keys format: {entry} (expected domain=path)"))?;
+        let json = std::fs::read(path)
+            .map_err(|e| format!("read JWK file {path}: {e}"))?;
+        let jwk_set = p9n_auth::spiffe::jwt_svid::JwkSet::from_json(&json)
+            .map_err(|e| format!("parse JWK file {path}: {e}"))?;
+        auth.trust_store.set_jwt_keys(domain, jwk_set);
+        tracing::info!("loaded JWT JWK Set for domain: {domain}");
+    }
+    Ok(())
 }

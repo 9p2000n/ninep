@@ -143,6 +143,7 @@ async fn handle_stream(
     // Register in-flight (allows Tflush to cancel this request)
     let cancel = session.register_inflight(tag);
 
+    let msg_type = request.msg_type;
     let result = tokio::select! {
         r = handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, request) => r,
         _ = cancel.cancelled() => {
@@ -156,7 +157,7 @@ async fn handle_stream(
     let response = match result {
         Ok(r) => r,
         Err(e) => {
-            tracing::debug!("handler error: {e}");
+            tracing::debug!("{} tag={tag}: {e}", msg_type.name());
             Fcall {
                 size: 0,
                 msg_type: MsgType::Rlerror,
@@ -183,11 +184,12 @@ async fn handle_datagram(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let request = framing::decode(&data)?;
     let tag = request.tag;
+    let msg_type = request.msg_type;
     let result = handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, request).await;
     let response = match result {
         Ok(r) => r,
         Err(e) => {
-            tracing::debug!("handler error: {e}");
+            tracing::debug!("{} tag={tag}: {e}", msg_type.name());
             Fcall {
                 size: 0,
                 msg_type: MsgType::Rlerror,
