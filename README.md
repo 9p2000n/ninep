@@ -29,10 +29,10 @@ Both authenticate via SPIFFE X.509-SVIDs (mTLS) and authorize operations through
 | Crate | Purpose |
 |-------|---------|
 | **p9n-proto** | Wire types (9P2000.N), marshal/unmarshal codec, capability negotiation, message classification |
-| **p9n-auth** | SPIFFE X.509-SVID & JWT-SVID, trust bundles, TLS config, cert hot-reload, Workload API (optional) |
-| **p9n-transport** | QUIC + TCP+TLS dual transport, datagram/stream routing, 0-RTT support |
-| **p9n-exporter** | File exporter: message handlers, local filesystem backend, inotify watch, access control |
-| **p9n-importer** | File importer: async FUSE filesystem (fuse3), concurrent RPC, lease-based cache coherence |
+| **p9n-auth** | SPIFFE X.509-SVID & JWT-SVID, trust bundles, TLS config, cert hot-reload, chain verification, Workload API (optional) |
+| **p9n-transport** | QUIC + TCP+TLS dual transport, datagram/stream routing, QUIC framing |
+| **p9n-exporter** | File exporter: message handlers, local filesystem backend, inotify watch, access control, lease management |
+| **p9n-importer** | File importer: async FUSE filesystem (fuse3), concurrent RPC, lease-based cache coherence, auto-reconnect |
 
 
 ## Building
@@ -83,14 +83,16 @@ p9n-exporter \
   --ca    /etc/spiffe/bundle.pem
 ```
 
-Optional: add TCP+TLS listener as an alternative to QUIC:
+Optional flags:
 
 ```bash
 p9n-exporter \
   --listen [::]:5640 \
-  --tcp-listen [::]:5641 \
+  --tcp-listen [::]:5641 \        # add TCP+TLS listener
   --export /srv/shared \
-  --cert ... --key ... --ca ...
+  --cert ... --key ... --ca ... \
+  --jwt-keys partner.com=/etc/spiffe/partner-jwks.json \  # cross-domain JWT trust
+  --enable-rate-limit             # enable per-fid token bucket rate limiting
 ```
 
 With SPIFFE Workload API (requires `--features workload-api` at build time):
@@ -119,6 +121,10 @@ p9n-importer \
   --cert ... --key ... --ca ...
 ```
 
+Optional flags: `--hostname` (TLS SNI, default `localhost`), `--uname` (attach username), `--aname` (remote path).
+
+Non-root users can mount via `fusermount3` (fuse3's `unprivileged` feature).
+
 ## Transport
 
 ### Dual Protocol Support
@@ -129,7 +135,7 @@ p9n-importer \
 | Multiplexing | Per-stream (256 concurrent) | Serial with tag-based demux |
 | Metadata routing | QUIC datagrams (lowest latency) | Same stream as data |
 | Server push | Unidirectional streams | Tag=0xFFFF on same stream |
-| 0-RTT resumption | Supported | N/A |
+| 0-RTT resumption | Deliberately disabled ([rationale](docs/ARCH_DESIGN_DECISION.md#3-transport-why-quic-over-tcp)) | N/A |
 | Linux `mount -t 9p` | Not compatible | Compatible (with TLS) |
 
 ### QUIC Message Routing
@@ -139,6 +145,10 @@ p9n-importer \
 | **Datagrams** | Tversion, Tcaps, Tsession, Thealth, Twatch, ... | Small control-plane; lowest latency, tag-based response matching |
 | **Bidirectional streams** | Twalk, Tread, Twrite, Tgetattr, Treaddir, ... | Data operations; ordered, flow-controlled |
 | **Unidirectional streams** | Rnotify, Rleasebreak, Rstreamdata | Server push (tag=0xFFFF) |
+
+### 0-RTT
+
+QUIC 0-RTT is deliberately disabled for reconnection despite the TLS infrastructure being fully configured (`enable_early_data = true`, `max_early_data_size = 0xFFFF_FFFF`). The reason: 9P negotiation messages (Tversion, Tcaps, Tsession) are classified as Metadata and routed via QUIC datagrams. During 0-RTT the TLS handshake is not yet confirmed, so datagrams may be silently dropped if the server rejects the early data — triggering a 30-second response timeout. The full 1-RTT handshake adds < 1 ms on loopback and guarantees reliable datagram delivery. See [ARCH_DESIGN_DECISION.md](docs/ARCH_DESIGN_DECISION.md) for the full design rationale.
 
 ## Security
 
@@ -211,14 +221,17 @@ The exporter integrates Linux inotify via the `notify` crate with DashMap-based 
 - **Watch dispatch**: `DashMap` per-shard read locks — OS watcher thread never blocks handlers
 - **Tag routing**: `DashMap<u16, oneshot::Sender>` for concurrent datagram response matching
 - **Cache coherence**: Lease-based attribute caching — TTL-free while lease held, instant invalidation via Rleasebreak push
+- **Directory cache**: LRU-cached readdir results for repeated directory listings
 - **Streaming I/O**: Tstreamopen/Tstreamdata/Tstreamclose with tracked file offsets and fsync-on-close
 - **Rate limiting**: Optional per-fid token bucket (IOPS + BPS), async backpressure, configurable via `--enable-rate-limit`
+- **Auto-reconnect**: Transparent QUIC/TCP reconnection with session resumption via `RpcClient`
 
 ## Testing
 
 ```
-Proto unit tests:            codec round-trips, tag allocator/guard RAII,
-                             buf zero-copy, message classification, capset
+Proto unit tests:            codec round-trips (all message types), tag allocator/
+                             guard RAII, buf zero-copy, message classification,
+                             capset bitmask operations, wire helpers
 
 Auth unit tests:             JWT cap token sign/verify/reject, JWK parsing,
                              trust bundle store, SPIFFE ID extraction, X.509
@@ -232,17 +245,22 @@ Transport unit tests:        framing encode/decode round-trip (5 message types),
                              too-small reject), router datagram/stream/push
 
 Exporter integration:        version negotiation, walk/getattr, read/write,
-                             mkdir/readdir, unlink/rename, remove, symlink/readlink,
-                             statfs, concurrent reads, caps, compound, BLAKE3 hash,
-                             session (zero key/duplicate), lease lifecycle, stale fid,
-                             consistency, server stats, locking, streaming write/read,
-                             rate limiting (token bucket throttle)
+                             mkdir/readdir, unlink/rename, walk nonexistent,
+                             symlink/readlink, remove, statfs, concurrent reads,
+                             caps negotiation, compound walk+getattr, BLAKE3 hash,
+                             session (zero key/duplicate rejected), lease lifecycle,
+                             stale fid rejected, consistency, server stats, locking,
+                             streaming write/read, rate limiting (token bucket throttle)
 
-Importer unit tests:         InodeMap (root, get_or_insert, remove, monotonic, 7),
-                             FidPool (monotonic, reserved skip, concurrent, 4),
-                             AttrCache (TTL, leased, LRU eviction, invalidate, 6),
-                             LeaseMap (grant/release/break, refcount, 6),
-                             RpcError (errno, display, 3)
+Importer unit tests:         InodeMap (root, get_or_insert, existing qid, different
+                             qids, remove, remove nonexistent, monotonic),
+                             FidPool (monotonic, reserved skip, starts_at_one,
+                             concurrent),
+                             AttrCache (put/get, nonexistent, TTL expiry, leased
+                             ignores TTL, invalidate, LRU eviction,
+                             LeaseMap (grant/has, release_by_fh, break, release
+                             after break, multiple per inode, break unknown),
+                             RpcError (errno, transport errno, display)
 ```
 
 Tests use `rcgen` for self-signed SPIFFE certificates and `tempfile` for isolated export directories. Integration tests run the full QUIC loopback stack — no FUSE or system mounts required.
@@ -251,26 +269,28 @@ Tests use `rcgen` for self-signed SPIFFE certificates and `tempfile` for isolate
 
 ```
 ninep/
-  Cargo.toml                          Workspace root
-  README.md                           This file
+  Cargo.toml                         Workspace root
+  README.md                          This file
   docs/
-    ARCH_DESIGN.md                      Architectural design
-    ARCH_DESIGN_DECISION.md             Architectural decisions with rationale
-    RCGEN_USAGE.md                      rcgen usage for SPIFFE SVIDs
-    SPIRE_SETUP.md                      SPIRE environment setup
-    SECURITY_DESIGN.md                  9-layer security architecture
-    THREAD_MODEL.md                     Thread model analysis (exporter/importer)
-    TROUBLESHOOTING.md                  Common issues and solutions (FUSE, AppArmor)
+    ARCH_DESIGN.md                       Architectural design
+    ARCH_DESIGN_DECISION.md              Architectural decisions with rationale
+    RCGEN_USAGE.md                       rcgen usage for SPIFFE SVIDs
+    SECURITY_DESIGN.md                   9-layer security architecture
+    SPIRE_SETUP.md                       SPIRE environment setup
+    THREAD_MODEL.md                      Thread model analysis (exporter/importer)
+    TROUBLESHOOTING.md                   Common issues and solutions (FUSE, AppArmor)
 
   crates/
     p9n-proto/                         Protocol library (transport-agnostic)
-      src/types.rs                       MsgType enum (102 type slots)
+      src/types.rs                       MsgType enum (102 type slots), protocol constants
       src/fcall.rs                       Msg enum (all message payloads)
       src/codec.rs                       marshal/unmarshal
       src/classify.rs                    Message → Metadata/Data/Push routing
       src/caps.rs                        CapSet with u64 bitmask fast path
       src/tag.rs                         Lock-free tag allocator with RAII guard
       src/buf.rs                         Zero-copy wire buffer
+      src/wire.rs                        Wire encoding helpers
+      src/error.rs                       Protocol-level error types
       tests/codec_test.rs                round-trip tests
 
     p9n-auth/                          SPIFFE authentication
@@ -278,25 +298,29 @@ ninep/
       src/spiffe/jwt_svid.rs             JWT-SVID + HMAC cap token sign/verify
       src/spiffe/tls_config.rs           Static + dynamic rustls configs
       src/spiffe/cert_resolver.rs        ResolvesServerCert for SVID hot-reload
+      src/spiffe/chain_verifier.rs       X.509 certificate chain verification
+      src/spiffe/server_verifier.rs      Server certificate verification
+      src/spiffe/verifier.rs             Common verification utilities
       src/spiffe/workload_api.rs         SvidSource: static / file-watch / workload-api
       src/spiffe/trust_bundle.rs         CA chain store per trust domain
       src/spiffe/grpc/                   [workload-api feature] gRPC over Unix socket
         frame.rs                           gRPC length-prefixed frame codec
         proto.rs                           Hand-written protobuf (X509SVIDRequest/Response)
         client.rs                          h2 client for FetchX509SVID streaming RPC
-      tests/auth_test.rs                 JWT/JWK/trust/chain tests (+12 grpc tests)
+      tests/auth_test.rs                 JWT/JWK/trust/chain tests
 
     p9n-transport/                     Dual transport layer
       src/framing.rs                     Generic AsyncRead/AsyncWrite framing
       src/quic/config.rs                 Quinn endpoint builder (SPIFFE mTLS)
       src/quic/connection.rs             QuicTransport with tag-based datagram routing
       src/quic/datagram.rs               Datagram send with retry
+      src/quic/framing.rs                QUIC-specific framing
       src/quic/streams.rs                Bidirectional stream RPC
       src/quic/router.rs                 Datagram vs stream message routing
-      src/quic/zero_rtt.rs               0-RTT session detection
+      src/quic/zero_rtt.rs               0-RTT session detection (deliberately unused)
       src/tcp/config.rs                  tokio-rustls server/client setup
       src/tcp/connection.rs              TcpTransport
-      tests/transport_test.rs            11 framing + router unit tests
+      tests/transport_test.rs            framing + router unit tests
 
     p9n-exporter/                      File exporter (server)
       src/exporter.rs                    Dual-protocol accept loop (QUIC + TCP)
@@ -306,22 +330,30 @@ ninep/
       src/shared.rs                      SharedCtx (server-wide state)
       src/session.rs                     Per-connection state (interior mutability)
       src/session_store.rs               Per-SPIFFE-ID partitioned session store
+      src/fid_table.rs                   Fid → file state mapping (DashMap)
       src/access.rs                      3-level policy + uid/gid mapping
       src/watch_manager.rs               DashMap-based inotify event dispatch
+      src/lease_manager.rs               Server-side lease tracking and break
+      src/push.rs                        Server push channel (Rnotify, Rleasebreak)
+      src/backend/local.rs               Local filesystem backend
       src/util.rs                        Shared join_err/map_io_error/spiffe extraction
-      src/handlers/                      handler modules (including rate limiter)
+      src/handlers/                      handler modules
       tests/integration_test.rs          full-stack integration tests
 
     p9n-importer/                      File importer (client)
       src/importer.rs                    RpcHandle enum (QUIC/TCP), connect + negotiate
+      src/rpc_client.rs                  Reconnecting RPC client wrapper
       src/quic_rpc.rs                    QUIC RPC with concurrent tag dispatch
       src/tcp_rpc.rs                     TCP RPC with serial tag dispatch
+      src/shutdown.rs                    Graceful shutdown coordination
+      src/error.rs                       RPC error types with errno mapping
+      src/push_receiver.rs               Server push handler (Rnotify/Rleasebreak → cache)
       src/fuse/filesystem.rs             fuse3 async Filesystem trait
       src/fuse/inode_map.rs              Bidirectional ino ↔ (fid, qid)
       src/fuse/fid_pool.rs               FidGuard RAII (auto-clunk on error)
       src/fuse/attr_cache.rs             LRU attribute cache with TTL + lease-aware lookup
+      src/fuse/dir_cache.rs              LRU directory entry cache
       src/fuse/lease_map.rs              Bidirectional lease tracking (fh↔lease_id↔ino)
-      src/push_receiver.rs               Server push handler (Rnotify/Rleasebreak → cache)
       tests/importer_test.rs             unit tests (InodeMap, FidPool, AttrCache, LeaseMap, RpcError)
 ```
 
@@ -329,10 +361,11 @@ ninep/
 
 | Role | Crate | Why |
 |------|-------|-----|
-| QUIC | `quinn` 0.11 | RFC 9000, datagram + 0-RTT support |
+| QUIC | `quinn` 0.11 | RFC 9000, datagram support |
 | TCP TLS | `tokio-rustls` 0.26 | TLS 1.3 over TCP, alternative to QUIC |
 | TLS | `rustls` 0.23 | Pure-Rust TLS, dynamic cert resolver |
-| FUSE | `fuse3` 0.8 | Native async userspace filesystem |
+| WebPKI | `webpki` 0.103 | X.509 certificate chain validation |
+| FUSE | `fuse3` 0.8 | Native async userspace filesystem (tokio-runtime, unprivileged) |
 | JWT | `jsonwebtoken` 9 | Capability token sign/verify (HS256/RS256/ES256) |
 | X.509 | `x509-parser` 0.16 | SPIFFE ID extraction from SAN |
 | inotify | `notify` 8 | Cross-platform file watching |
@@ -340,6 +373,9 @@ ninep/
 | Async | `tokio` 1 | Runtime for QUIC, TCP, and background tasks |
 | Concurrency | `dashmap` 6 | Lock-free fid/inode/watch/session tables |
 | Caching | `lru` 0.12 | Attribute and directory entry caches |
+| Atomic swap | `arc-swap` 1 | Lock-free RPC handle hot-swap on reconnect |
+| POSIX | `nix` 0.29 | File I/O syscalls (fs, user, dir) |
+| Cancellation | `tokio-util` 0.7 | CancellationToken for Tflush |
 | HTTP/2 | `h2` 0.4 | gRPC Workload API client (optional, `workload-api` feature) |
 
 ## Related

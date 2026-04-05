@@ -36,7 +36,7 @@ This document captures the key architectural decisions made during the design an
 **Advantages gained**:
 - **Datagram/stream split**: Metadata messages go via QUIC datagrams (no HOL blocking, lowest latency), data messages go via independent streams (flow-controlled, ordered per-stream)
 - **Built-in TLS 1.3**: No separate `Tstartls` handshake needed; SPIFFE mTLS happens in the QUIC handshake itself
-- **0-RTT resumption**: QUIC session tickets + 9P Tsession enable reconnection without full re-negotiation
+- **0-RTT resumption**: Deliberately disabled. The TLS infrastructure is fully configured (rustls `enable_early_data = true`, `max_early_data_size = 0xFFFF_FFFF`), but 9P negotiation messages (Tversion, Tcaps, Tsession) are classified as Metadata and routed via QUIC datagrams. During 0-RTT the TLS handshake is not yet confirmed, so datagrams may be silently dropped if the server rejects the early data — triggering a 30-second response timeout on the client. The full 1-RTT handshake adds < 1 ms on loopback and guarantees reliable datagram delivery. See Decision §4 (Message Routing) for the datagram classification design that creates this constraint
 - **Connection migration**: Client IP can change without dropping the 9P session
 - **Multiplexing**: Thousands of concurrent streams without userspace multiplexing
 
@@ -59,6 +59,8 @@ This document captures the key architectural decisions made during the design an
 **Datagram fallback**: If a metadata message exceeds `max_datagram_size()` (typically ~1200 bytes), it automatically falls back to a short-lived bidirectional stream. This happens transparently in the transport layer.
 
 **Alternative considered**: All messages on streams (simpler). Rejected because metadata operations (Thealth, Tcaps) would suffer head-of-line blocking behind a large Tread on the same stream.
+
+**Implication for 0-RTT**: This datagram routing of metadata messages is the reason QUIC 0-RTT is deliberately disabled for reconnection. During 0-RTT the TLS handshake is not yet confirmed, and datagrams sent in that window may be silently dropped if the server rejects the early data. Since Tversion/Tcaps/Tsession are the first messages sent on reconnect, their loss would cause a 30-second tag-response timeout. The 1-RTT handshake adds < 1 ms on loopback and avoids this failure mode entirely. See `importer.rs:reconnect_quic()` for the implementation.
 
 ---
 
