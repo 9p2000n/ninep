@@ -58,3 +58,12 @@ pub async fn write_message<W: AsyncWriteExt + Unpin>(
     send.write_all(&data).await.map_err(|e| TransportError::Io(e))?;
     Ok(())
 }
+
+/// Write pre-encoded wire bytes directly (zero-copy fast path for Rread).
+pub async fn write_raw<W: AsyncWriteExt + Unpin>(
+    send: &mut W,
+    data: &[u8],
+) -> Result<(), TransportError> {
+    send.write_all(data).await.map_err(|e| TransportError::Io(e))?;
+    Ok(())
+}

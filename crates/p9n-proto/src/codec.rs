@@ -736,10 +736,10 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
             Msg::Read { fid: buf.get_u32()?, offset: buf.get_u64()?, count: buf.get_u32()? }
         }
         MsgType::Rread => {
-            Msg::Rread { data: buf.get_data()? }
+            Msg::Rread { data: buf.get_data_drain()? }
         }
         MsgType::Twrite => {
-            Msg::Write { fid: buf.get_u32()?, offset: buf.get_u64()?, data: buf.get_data()? }
+            Msg::Write { fid: buf.get_u32()?, offset: buf.get_u64()?, data: buf.get_data_drain()? }
         }
         MsgType::Rwrite => {
             Msg::Rwrite { count: buf.get_u32()? }
@@ -856,7 +856,7 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
             Msg::Readdir { fid: buf.get_u32()?, offset: buf.get_u64()?, count: buf.get_u32()? }
         }
         MsgType::Rreaddir => {
-            Msg::Rreaddir { data: buf.get_data()? }
+            Msg::Rreaddir { data: buf.get_data_drain()? }
         }
         MsgType::Tfsync => {
             Msg::Fsync { fid: buf.get_u32()? }
@@ -1262,7 +1262,7 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
             Msg::Rstreamopen { stream_id: buf.get_u32()? }
         }
         MsgType::Tstreamdata | MsgType::Rstreamdata => {
-            Msg::Streamdata { stream_id: buf.get_u32()?, seq: buf.get_u32()?, data: buf.get_data()? }
+            Msg::Streamdata { stream_id: buf.get_u32()?, seq: buf.get_u32()?, data: buf.get_data_drain()? }
         }
         MsgType::Tstreamclose => {
             Msg::Streamclose { stream_id: buf.get_u32()? }

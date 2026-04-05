@@ -144,6 +144,29 @@ impl Buf {
         Ok(d)
     }
 
+    /// Zero-copy variant of `get_data` for the last field in a message.
+    ///
+    /// When the data blob extends to the end of the buffer, this drains the
+    /// remaining bytes out of the internal Vec instead of copying them.  This
+    /// is safe to call only when no more fields follow in the message — the
+    /// Buf is left empty afterwards.
+    pub fn get_data_drain(&mut self) -> Result<Vec<u8>> {
+        let n = self.get_u32()? as usize;
+        self.check(n)?;
+        if self.pos + n == self.data.len() {
+            // Data extends to end of buffer — drain instead of copy.
+            let d = self.data.split_off(self.pos);
+            self.data.truncate(self.pos); // keep header portion (already consumed)
+            self.pos = self.data.len();
+            Ok(d)
+        } else {
+            // Data is not at the end — fall back to copy.
+            let d = self.data[self.pos..self.pos + n].to_vec();
+            self.pos += n;
+            Ok(d)
+        }
+    }
+
     pub fn get_fixed(&mut self, n: usize) -> Result<Vec<u8>> {
         self.check(n)?;
         let d = self.data[self.pos..self.pos + n].to_vec();

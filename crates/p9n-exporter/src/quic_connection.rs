@@ -1,4 +1,4 @@
-use crate::handlers;
+use crate::handlers::{self, io::ReadResult};
 use crate::lease_manager;
 use crate::push::{self, PushSender, QuicPushSender};
 use crate::session::Session;
@@ -144,6 +144,71 @@ async fn handle_stream(
     let cancel = session.register_inflight(tag);
 
     let msg_type = request.msg_type;
+
+    // ── Fast path for Tread: bypass marshal, write pre-encoded wire bytes ──
+    //
+    // This avoids the put_data(extend_from_slice) copy in the normal
+    // marshal path.  Permission checks, fid validation, and rate limiting
+    // are inlined here to match the dispatch() path.
+    if msg_type == MsgType::Tread {
+        // Pre-checks (same as dispatch)
+        let pre = (|| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            let sid = session.spiffe_id.as_deref();
+            let fid = match &request.msg {
+                Msg::Read { fid, .. } => *fid,
+                _ => return Err("expected Read".into()),
+            };
+            if !session.fids.contains(fid) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound, format!("stale fid {fid}"),
+                ).into());
+            }
+            handlers::check_perm(&session, &ctx.access, sid, Some(fid), crate::access::PERM_READ)?;
+            Ok(())
+        })();
+
+        if let Err(e) = pre {
+            session.deregister_inflight(tag);
+            tracing::debug!("{} tag={tag}: {e}", msg_type.name());
+            let err_fc = Fcall {
+                size: 0, msg_type: MsgType::Rlerror, tag,
+                msg: Msg::Lerror { ecode: map_io_error(&*e) },
+            };
+            framing::write_message(&mut send, &err_fc).await?;
+            send.finish()?;
+            return Ok(());
+        }
+
+        // Rate limiting (async)
+        handlers::do_rate_limit(&session, &ctx, &request).await;
+
+        let result = tokio::select! {
+            r = handlers::io::handle_read(&session, &ctx.backend, request) => r,
+            _ = cancel.cancelled() => {
+                tracing::debug!("request tag={tag} cancelled by Tflush");
+                Err("flushed".into())
+            }
+        };
+        session.deregister_inflight(tag);
+
+        match result {
+            Ok(ReadResult::Raw(wire)) => {
+                framing::write_raw(&mut send, &wire).await?;
+            }
+            Err(e) => {
+                tracing::debug!("{} tag={tag}: {e}", msg_type.name());
+                let err_fc = Fcall {
+                    size: 0, msg_type: MsgType::Rlerror, tag,
+                    msg: Msg::Lerror { ecode: map_io_error(&*e) },
+                };
+                framing::write_message(&mut send, &err_fc).await?;
+            }
+        }
+        send.finish()?;
+        return Ok(());
+    }
+
+    // ── Normal path for all other message types ──
     let result = tokio::select! {
         r = handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, request) => r,
         _ = cancel.cancelled() => {

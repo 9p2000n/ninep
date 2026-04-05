@@ -20,3 +20,11 @@ pub async fn write_message(
 ) -> Result<(), TransportError> {
     crate::framing::write_message(send, fc).await
 }
+
+/// Write pre-encoded wire bytes directly (zero-copy fast path).
+pub async fn write_raw(
+    send: &mut quinn::SendStream,
+    data: &[u8],
+) -> Result<(), TransportError> {
+    crate::framing::write_raw(send, data).await
+}

@@ -79,7 +79,71 @@ pub async fn handle_lopen(session: &Session, _backend: &LocalBackend, fc: Fcall)
 }
 
 /// Handle Tread: read bytes from an open file.
-pub async fn handle_read(session: &Session, _backend: &LocalBackend, fc: Fcall) -> HandlerResult {
+///
+/// Returns pre-encoded wire bytes via `ReadResult::Raw` to avoid copying the
+/// file data through the marshal layer (`put_data` / `extend_from_slice`).
+/// The 9P header and data-length prefix are written directly into the same
+/// buffer that receives the file data — one allocation, one read, zero
+/// intermediate copies.
+pub async fn handle_read(session: &Session, _backend: &LocalBackend, fc: Fcall) -> Result<ReadResult, Box<dyn std::error::Error + Send + Sync>> {
+    let Msg::Read { fid, offset, count } = fc.msg else {
+        return Err("expected Read message".into());
+    };
+    let tag = fc.tag;
+
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let raw_fd = fid_state
+        .open_fd
+        .as_ref()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
+        .as_raw_fd();
+    drop(fid_state);
+
+    let wire = tokio::task::spawn_blocking(move || {
+        // Wire layout: size[4] + type[1] + tag[2] + count[4] + data[n]
+        //              ^^^^^^^^ header (7 bytes) ^^^^^^^^ ^^^^ data prefix
+        const HDR: usize = 7 + 4; // 9P header + data length prefix
+
+        let mut buf = vec![0u8; HDR + count as usize];
+
+        // Read file data directly into the data region (offset HDR)
+        let mut file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
+        file.seek(std::io::SeekFrom::Start(offset))?;
+        let n = file.read(&mut buf[HDR..])?;
+        std::mem::forget(file);
+
+        // Truncate to actual size
+        buf.truncate(HDR + n);
+        let total = buf.len() as u32;
+
+        // Back-fill the 9P header in-place
+        buf[0..4].copy_from_slice(&total.to_le_bytes());       // size[4]
+        buf[4] = MsgType::Rread as u8;                         // type[1]
+        buf[5..7].copy_from_slice(&tag.to_le_bytes());         // tag[2]
+        buf[7..11].copy_from_slice(&(n as u32).to_le_bytes()); // data count[4]
+
+        Ok::<_, std::io::Error>(buf)
+    })
+    .await
+    .map_err(join_err)??;
+
+    Ok(ReadResult::Raw(wire))
+}
+
+/// Result of handle_read — pre-encoded wire bytes for the zero-copy fast path.
+pub enum ReadResult {
+    /// Pre-encoded wire bytes ready to send directly on the QUIC stream.
+    Raw(Vec<u8>),
+}
+
+/// Fallback read handler returning a regular Fcall.
+///
+/// Used by the TCP transport and Tcompound dispatch where we cannot bypass the
+/// marshal layer.  This still goes through the standard encode path.
+pub async fn handle_read_fcall(session: &Session, _backend: &LocalBackend, fc: Fcall) -> HandlerResult {
     let Msg::Read { fid, offset, count } = fc.msg else {
         return Err("expected Read message".into());
     };

@@ -50,7 +50,7 @@ pub mod xattrwalk;
 pub type HandlerResult = Result<Fcall, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Check permission: first static policy, then active capability tokens.
-fn check_perm(
+pub fn check_perm(
     session: &Session,
     ac: &crate::access::AccessControl,
     sid: Option<&str>,
@@ -114,6 +114,13 @@ async fn check_rate_limit(session: &Session, ctx: &Arc<SharedCtx>, fid: Option<u
             limiter.acquire(1, bytes).await;
         }
     }
+}
+
+/// Apply rate limiting for a request (public helper for the Tread fast path).
+pub async fn do_rate_limit(session: &Session, ctx: &Arc<SharedCtx>, fc: &Fcall) {
+    let fid = fid_from_msg(fc);
+    let bytes = io_bytes(fc);
+    check_rate_limit(session, ctx, fid, bytes).await;
 }
 
 /// Extract the I/O byte count from a read/write message for rate limiting.
@@ -207,7 +214,7 @@ pub async fn dispatch(
         MsgType::Tread => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
             check_rate_limit(session, ctx, msg_fid, io_bytes(&fc)).await;
-            io::handle_read(session, &ctx.backend, fc).await
+            io::handle_read_fcall(session, &ctx.backend, fc).await
         }
         MsgType::Tgetlock => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
