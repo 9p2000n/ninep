@@ -41,13 +41,17 @@ pub fn spawn_push_handler(
                 }
                 Msg::Leasebreak {
                     lease_id,
-                    new_type: _,
+                    new_type,
                 } => {
-                    // Server broke the lease — invalidate the cached attrs for that inode.
+                    // Server broke (or downgraded) the lease — invalidate cached
+                    // attrs for that inode.  We always invalidate regardless of
+                    // new_type: a full revocation (new_type=0) means the data may
+                    // have changed; a downgrade (new_type>0) means the exclusivity
+                    // guarantee is lost, so the cache must be re-validated.
                     if let Some(ino) = leases.break_lease(lease_id) {
                         attrs.invalidate(ino);
                         tracing::info!(
-                            "lease break: lease_id={lease_id} ino={ino} — cache invalidated"
+                            "lease break: lease_id={lease_id} ino={ino} new_type={new_type} — cache invalidated"
                         );
                     } else {
                         tracing::debug!(

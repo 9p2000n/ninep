@@ -3,12 +3,13 @@
 use crate::access::AccessControl;
 use crate::backend::local::LocalBackend;
 use crate::handlers::HandlerResult;
+use crate::lease_manager::LeaseManager;
 use crate::session::Session;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use crate::util::join_err;
 
-pub async fn handle(session: &Session, backend: &LocalBackend, ac: &AccessControl, fc: Fcall) -> HandlerResult {
+pub async fn handle(session: &Session, backend: &LocalBackend, ac: &AccessControl, lease_mgr: &LeaseManager, fc: Fcall) -> HandlerResult {
     let Msg::Mknod { dfid, name, mode, major, minor, gid: _ } = fc.msg else {
         return Err("expected Mknod message".into());
     };
@@ -17,7 +18,11 @@ pub async fn handle(session: &Session, backend: &LocalBackend, ac: &AccessContro
     let fid_state = session.fids.get(dfid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
     let dir_path = fid_state.path.clone();
+    let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
+
+    // Break leases on the parent directory (its contents are changing).
+    lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
     let node_path = dir_path.join(&name);
     let resolved = backend.resolve(&node_path)?;

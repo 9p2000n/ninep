@@ -1,6 +1,7 @@
 use crate::access::AccessControl;
 use crate::backend::local::LocalBackend;
 use crate::handlers::HandlerResult;
+use crate::lease_manager::LeaseManager;
 use crate::session::Session;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
@@ -110,6 +111,7 @@ pub async fn handle_mkdir(
     session: &Session,
     backend: &LocalBackend,
     ac: &AccessControl,
+    lease_mgr: &LeaseManager,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Mkdir {
@@ -128,7 +130,11 @@ pub async fn handle_mkdir(
         .get(dfid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
     let dir_path = fid_state.path.join(&name);
+    let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
+
+    // Break leases on the parent directory (its contents are changing).
+    lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
     let resolved = backend.resolve(&dir_path)?;
     let spiffe_id = session.spiffe_id.clone();

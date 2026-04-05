@@ -2,6 +2,7 @@ use crate::access::AccessControl;
 use crate::backend::local::LocalBackend;
 use crate::fid_table::FidState;
 use crate::handlers::HandlerResult;
+use crate::lease_manager::LeaseManager;
 use crate::session::Session;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
@@ -13,6 +14,7 @@ pub async fn handle_lcreate(
     session: &Session,
     backend: &LocalBackend,
     ac: &AccessControl,
+    lease_mgr: &LeaseManager,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Lcreate {
@@ -32,7 +34,11 @@ pub async fn handle_lcreate(
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
     let dir_path = fid_state.path.clone();
+    let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
+
+    // Break leases on the parent directory (its contents are changing).
+    lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
     let file_path = dir_path.join(&name);
     let resolved = backend.resolve(&file_path)?;
@@ -101,6 +107,7 @@ pub async fn handle_symlink(
     session: &Session,
     backend: &LocalBackend,
     ac: &AccessControl,
+    lease_mgr: &LeaseManager,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Symlink {
@@ -119,7 +126,11 @@ pub async fn handle_symlink(
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
     let link_path = fid_state.path.join(&name);
+    let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
+
+    // Break leases on the parent directory (its contents are changing).
+    lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
     let resolved = backend.resolve(&link_path)?;
     let spiffe_id = session.spiffe_id.clone();
@@ -146,6 +157,7 @@ pub async fn handle_symlink(
 pub async fn handle_link(
     session: &Session,
     backend: &LocalBackend,
+    lease_mgr: &LeaseManager,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Link { dfid, fid, name } = fc.msg else {
@@ -158,7 +170,11 @@ pub async fn handle_link(
         .get(dfid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown dfid"))?;
     let link_path = dfid_state.path.join(&name);
+    let dir_qid_path = dfid_state.qid.path;
     drop(dfid_state);
+
+    // Break leases on the parent directory (its contents are changing).
+    lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
     let fid_state = session
         .fids

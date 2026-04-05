@@ -1,7 +1,7 @@
 //! Handle Tlease / Tleaserenew / Tleaseack with state tracking.
 
 use crate::handlers::{HandlerResult, PushTx};
-use crate::lease_manager::LeaseManager;
+use crate::lease_manager::{GrantResult, LeaseManager};
 use crate::session::Session;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
@@ -10,7 +10,13 @@ use std::time::{Duration, Instant};
 
 static NEXT_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 
-pub fn handle(session: &Session, lease_mgr: &LeaseManager, push_tx: &PushTx, fc: Fcall) -> HandlerResult {
+pub fn handle(
+    session: &Session,
+    lease_mgr: &LeaseManager,
+    push_tx: &PushTx,
+    max_lease_duration: u32,
+    fc: Fcall,
+) -> HandlerResult {
     let tag = fc.tag;
     match fc.msg_type {
         MsgType::Tlease => {
@@ -24,8 +30,19 @@ pub fn handle(session: &Session, lease_mgr: &LeaseManager, push_tx: &PushTx, fc:
                 fid_state.qid.path
             };
 
+            // Check for conflicts with existing leases from other connections.
+            match lease_mgr.try_grant(qid_path, lease_type, session.conn_id) {
+                GrantResult::Granted => {}
+                GrantResult::Conflict => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "lease conflict",
+                    ).into());
+                }
+            }
+
             let lease_id = NEXT_LEASE_ID.fetch_add(1, Ordering::Relaxed);
-            let effective_duration = duration.min(300); // cap at 5 minutes
+            let effective_duration = duration.min(max_lease_duration);
             let expiry = Instant::now() + Duration::from_secs(effective_duration as u64);
 
             // Store lease in session (per-connection state)
@@ -53,7 +70,7 @@ pub fn handle(session: &Session, lease_mgr: &LeaseManager, push_tx: &PushTx, fc:
             };
 
             // Validate lease exists and update expiry
-            let effective_duration = duration.min(300);
+            let effective_duration = duration.min(max_lease_duration);
             match session.active_leases.get_mut(&lease_id) {
                 Some(mut entry) => {
                     entry.2 = Instant::now() + Duration::from_secs(effective_duration as u64);

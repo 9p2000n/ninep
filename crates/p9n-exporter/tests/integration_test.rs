@@ -181,6 +181,84 @@ async fn setup(
     (conn, certs)
 }
 
+/// Start an exporter where all connections share a single `SharedCtx`
+/// (and therefore a single `LeaseManager`).  This is needed for
+/// cross-connection lease conflict tests.
+async fn start_exporter_shared(
+    export_path: &str,
+    config: p9n_exporter::config::ExporterConfig,
+) -> (
+    std::net::SocketAddr,
+    Vec<rustls::pki_types::CertificateDer<'static>>,
+) {
+    let (certs, key) = generate_test_certs();
+    let certs_clone = certs.clone();
+
+    let server_tls = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .unwrap();
+
+    let quic_server = quinn::ServerConfig::with_crypto(Arc::new(
+        quinn::crypto::rustls::QuicServerConfig::try_from(server_tls).unwrap(),
+    ));
+
+    let endpoint = quinn::Endpoint::server(quic_server, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = endpoint.local_addr().unwrap();
+
+    let export = export_path.to_string();
+
+    // Create SharedCtx ONCE — all connections share the same LeaseManager.
+    let ctx = Arc::new(p9n_exporter::shared::SharedCtx {
+        backend: p9n_exporter::backend::local::LocalBackend::new(export.clone()).unwrap(),
+        access: p9n_exporter::access::AccessControl::new(export.into()),
+        session_store: p9n_exporter::session_store::SessionStore::new(
+            std::time::Duration::from_secs(60),
+        ),
+        watch_mgr: p9n_exporter::watch_manager::WatchManager::new().unwrap(),
+        lease_mgr: p9n_exporter::lease_manager::LeaseManager::new(),
+        trust_store: p9n_auth::spiffe::trust_bundle::TrustBundleStore::new(),
+        server_spiffe_id: "spiffe://test.local/exporter".into(),
+        server_trust_domain: "test.local".into(),
+        cap_signing_key: [0x42; 32],
+        config,
+    });
+
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let ctx = ctx.clone();
+            tokio::spawn(async move {
+                let conn = match incoming.await {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let mut handler =
+                    p9n_exporter::quic_connection::QuicConnectionHandler::new(conn, ctx);
+                let _ = handler.run().await;
+            });
+        }
+    });
+
+    (addr, certs_clone)
+}
+
+/// Set up a second connection to the same exporter (version + attach).
+async fn setup_conn(
+    addr: std::net::SocketAddr,
+    certs: &[rustls::pki_types::CertificateDer<'static>],
+) -> quinn::Connection {
+    let conn = connect(addr, certs).await;
+    let r = rpc(&conn, MsgType::Tversion, 0, Msg::Version {
+        msize: 65536, version: VERSION_9P2000_N.into(),
+    }).await.unwrap();
+    assert!(matches!(r.msg, Msg::Version { .. }));
+    let r = rpc(&conn, MsgType::Tattach, 1, Msg::Attach {
+        fid: 0, afid: NO_FID, uname: "test".into(), aname: "".into(),
+    }).await.unwrap();
+    assert!(matches!(r.msg, Msg::Rattach { .. }));
+    conn
+}
+
 // ═══════════════════ Tests ═══════════════════
 
 #[tokio::test]
@@ -909,4 +987,194 @@ fn extract_names(data: &[u8]) -> Vec<String> {
         pos += nl;
     }
     names
+}
+
+// ═══════════════════ Copy Range Tests ═══════════════════
+
+#[tokio::test]
+async fn test_copyrange_basic() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_data = b"abcdefghij1234567890";
+    std::fs::write(dir.path().join("src.txt"), src_data).unwrap();
+    std::fs::write(dir.path().join("dst.txt"), "").unwrap();
+    let (conn, _) = setup(dir.path().to_str().unwrap()).await;
+
+    // Walk + open src
+    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
+        fid: 0, newfid: 1, wnames: vec!["src.txt".into()],
+    }).await.unwrap();
+    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: L_O_RDONLY }).await.unwrap();
+
+    // Walk + open dst
+    rpc(&conn, MsgType::Twalk, 4, Msg::Walk {
+        fid: 0, newfid: 2, wnames: vec!["dst.txt".into()],
+    }).await.unwrap();
+    rpc(&conn, MsgType::Tlopen, 5, Msg::Lopen { fid: 2, flags: L_O_WRONLY }).await.unwrap();
+
+    // Copy range (flags=0 → copy_file_range)
+    let r = rpc(&conn, MsgType::Tcopyrange, 6, Msg::Copyrange {
+        src_fid: 1, src_off: 0, dst_fid: 2, dst_off: 0,
+        count: src_data.len() as u64, flags: 0,
+    }).await.unwrap();
+
+    match r.msg {
+        Msg::Rcopyrange { count } => assert_eq!(count, src_data.len() as u64),
+        _ => panic!("expected Rcopyrange"),
+    }
+
+    rpc(&conn, MsgType::Tclunk, 7, Msg::Clunk { fid: 1 }).await.unwrap();
+    rpc(&conn, MsgType::Tclunk, 8, Msg::Clunk { fid: 2 }).await.unwrap();
+
+    // Verify on disk
+    let dst_content = std::fs::read(dir.path().join("dst.txt")).unwrap();
+    assert_eq!(dst_content, src_data);
+}
+
+#[tokio::test]
+async fn test_copyrange_partial_offset() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("src.txt"), "0123456789").unwrap();
+    std::fs::write(dir.path().join("dst.txt"), "aaaaaaaaaa").unwrap();
+    let (conn, _) = setup(dir.path().to_str().unwrap()).await;
+
+    // Walk + open both
+    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
+        fid: 0, newfid: 1, wnames: vec!["src.txt".into()],
+    }).await.unwrap();
+    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: L_O_RDONLY }).await.unwrap();
+    rpc(&conn, MsgType::Twalk, 4, Msg::Walk {
+        fid: 0, newfid: 2, wnames: vec!["dst.txt".into()],
+    }).await.unwrap();
+    rpc(&conn, MsgType::Tlopen, 5, Msg::Lopen { fid: 2, flags: L_O_RDWR }).await.unwrap();
+
+    // Copy 5 bytes from offset 3 in src to offset 2 in dst
+    let r = rpc(&conn, MsgType::Tcopyrange, 6, Msg::Copyrange {
+        src_fid: 1, src_off: 3, dst_fid: 2, dst_off: 2,
+        count: 5, flags: 0,
+    }).await.unwrap();
+
+    match r.msg {
+        Msg::Rcopyrange { count } => assert_eq!(count, 5),
+        _ => panic!("expected Rcopyrange"),
+    }
+
+    rpc(&conn, MsgType::Tclunk, 7, Msg::Clunk { fid: 1 }).await.unwrap();
+    rpc(&conn, MsgType::Tclunk, 8, Msg::Clunk { fid: 2 }).await.unwrap();
+
+    // dst should be: "aa34567aaa"
+    let dst = std::fs::read(dir.path().join("dst.txt")).unwrap();
+    assert_eq!(&dst, b"aa34567aaa");
+}
+
+// ═══════════════════ Write Lease Tests ═══════════════════
+
+#[tokio::test]
+async fn test_read_lease_coexist() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "data").unwrap();
+    let (addr, certs) =
+        start_exporter_shared(dir.path().to_str().unwrap(), Default::default()).await;
+    let conn1 = setup_conn(addr, &certs).await;
+    let conn2 = setup_conn(addr, &certs).await;
+
+    // conn1: walk + get READ lease
+    rpc(&conn1, MsgType::Twalk, 2, Msg::Walk {
+        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
+    }).await.unwrap();
+    let r1 = rpc(&conn1, MsgType::Tlease, 3, Msg::Lease {
+        fid: 1, lease_type: 1, duration: 60,
+    }).await.unwrap();
+    assert!(matches!(r1.msg, Msg::Rlease { lease_type: 1, .. }));
+
+    // conn2: walk + get READ lease — should coexist
+    rpc(&conn2, MsgType::Twalk, 2, Msg::Walk {
+        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
+    }).await.unwrap();
+    let r2 = rpc(&conn2, MsgType::Tlease, 3, Msg::Lease {
+        fid: 1, lease_type: 1, duration: 60,
+    }).await.unwrap();
+    assert!(matches!(r2.msg, Msg::Rlease { lease_type: 1, .. }));
+}
+
+#[tokio::test]
+async fn test_write_lease_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "data").unwrap();
+    let (addr, certs) =
+        start_exporter_shared(dir.path().to_str().unwrap(), Default::default()).await;
+    let conn1 = setup_conn(addr, &certs).await;
+    let conn2 = setup_conn(addr, &certs).await;
+
+    // conn1: walk + get WRITE lease
+    rpc(&conn1, MsgType::Twalk, 2, Msg::Walk {
+        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
+    }).await.unwrap();
+    let r1 = rpc(&conn1, MsgType::Tlease, 3, Msg::Lease {
+        fid: 1, lease_type: 2, duration: 60,
+    }).await.unwrap();
+    assert!(matches!(r1.msg, Msg::Rlease { lease_type: 2, .. }));
+
+    // conn2: walk + request WRITE lease — should be rejected (EAGAIN)
+    rpc(&conn2, MsgType::Twalk, 2, Msg::Walk {
+        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
+    }).await.unwrap();
+    let r2 = rpc(&conn2, MsgType::Tlease, 3, Msg::Lease {
+        fid: 1, lease_type: 2, duration: 60,
+    }).await;
+    assert!(r2.is_err(), "WRITE vs WRITE from different connections should conflict");
+}
+
+#[tokio::test]
+async fn test_write_lease_breaks_read() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "data").unwrap();
+    let (addr, certs) =
+        start_exporter_shared(dir.path().to_str().unwrap(), Default::default()).await;
+    let conn1 = setup_conn(addr, &certs).await;
+    let conn2 = setup_conn(addr, &certs).await;
+
+    // conn1: walk + get READ lease
+    rpc(&conn1, MsgType::Twalk, 2, Msg::Walk {
+        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
+    }).await.unwrap();
+    let r1 = rpc(&conn1, MsgType::Tlease, 3, Msg::Lease {
+        fid: 1, lease_type: 1, duration: 60,
+    }).await.unwrap();
+    assert!(matches!(r1.msg, Msg::Rlease { lease_type: 1, .. }));
+
+    // conn2: walk + request WRITE lease — should succeed (breaks conn1's READ)
+    rpc(&conn2, MsgType::Twalk, 2, Msg::Walk {
+        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
+    }).await.unwrap();
+    let r2 = rpc(&conn2, MsgType::Tlease, 3, Msg::Lease {
+        fid: 1, lease_type: 2, duration: 60,
+    }).await.unwrap();
+    assert!(matches!(r2.msg, Msg::Rlease { lease_type: 2, .. }));
+}
+
+#[tokio::test]
+async fn test_read_vs_write_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "data").unwrap();
+    let (addr, certs) =
+        start_exporter_shared(dir.path().to_str().unwrap(), Default::default()).await;
+    let conn1 = setup_conn(addr, &certs).await;
+    let conn2 = setup_conn(addr, &certs).await;
+
+    // conn1: walk + get WRITE lease
+    rpc(&conn1, MsgType::Twalk, 2, Msg::Walk {
+        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
+    }).await.unwrap();
+    rpc(&conn1, MsgType::Tlease, 3, Msg::Lease {
+        fid: 1, lease_type: 2, duration: 60,
+    }).await.unwrap();
+
+    // conn2: walk + request READ lease — should be rejected (EAGAIN)
+    rpc(&conn2, MsgType::Twalk, 2, Msg::Walk {
+        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
+    }).await.unwrap();
+    let r2 = rpc(&conn2, MsgType::Tlease, 3, Msg::Lease {
+        fid: 1, lease_type: 1, duration: 60,
+    }).await;
+    assert!(r2.is_err(), "READ vs other's WRITE should conflict");
 }

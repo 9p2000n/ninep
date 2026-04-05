@@ -232,24 +232,24 @@ pub async fn dispatch(
         // ── Create ──
         MsgType::Tlcreate => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_CREATE)?;
-            create::handle_lcreate(session, &ctx.backend, &ctx.access, fc).await
+            create::handle_lcreate(session, &ctx.backend, &ctx.access, &ctx.lease_mgr, fc).await
         }
         MsgType::Tsymlink => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_CREATE)?;
-            create::handle_symlink(session, &ctx.backend, &ctx.access, fc).await
+            create::handle_symlink(session, &ctx.backend, &ctx.access, &ctx.lease_mgr, fc).await
         }
         MsgType::Tlink => {
             // link doesn't create a new inode, no ownership needed
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_CREATE)?;
-            create::handle_link(session, &ctx.backend, fc).await
+            create::handle_link(session, &ctx.backend, &ctx.lease_mgr, fc).await
         }
         MsgType::Tmkdir => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_CREATE)?;
-            dir::handle_mkdir(session, &ctx.backend, &ctx.access, fc).await
+            dir::handle_mkdir(session, &ctx.backend, &ctx.access, &ctx.lease_mgr, fc).await
         }
         MsgType::Tmknod => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_CREATE)?;
-            mknod::handle(session, &ctx.backend, &ctx.access, fc).await
+            mknod::handle(session, &ctx.backend, &ctx.access, &ctx.lease_mgr, fc).await
         }
 
         // ── Remove ──
@@ -284,7 +284,7 @@ pub async fn dispatch(
 
         // ── Extensions ──
         MsgType::Tlease | MsgType::Tleaserenew | MsgType::Tleaseack => {
-            lease::handle(session, &ctx.lease_mgr, push_tx, fc)
+            lease::handle(session, &ctx.lease_mgr, push_tx, ctx.config.max_lease_duration, fc)
         }
         MsgType::Tcompound => compound::handle(session, ctx, watch_tx, push_tx, fc).await,
         MsgType::Tcopyrange => {

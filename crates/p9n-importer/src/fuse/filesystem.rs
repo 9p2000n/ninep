@@ -432,10 +432,17 @@ impl Filesystem for P9Filesystem {
 
         let open_fid = guard.consume();
 
-        // Try to acquire a read lease for cache coherence.
-        // Best-effort: if the server doesn't support leases, we fall back to TTL.
+        // Try to acquire a lease for cache coherence.  Write opens get an
+        // exclusive WRITE lease; read-only opens get a shared READ lease.
+        // Best-effort: if the server rejects (conflict or unsupported), we
+        // fall back to TTL-based caching.
+        let lease_type = if flags & (libc::O_WRONLY | libc::O_RDWR) as u32 != 0 {
+            LEASE_WRITE
+        } else {
+            LEASE_READ
+        };
         if let Ok(resp) = self.rpc.call(MsgType::Tlease, Msg::Lease {
-            fid: open_fid, lease_type: LEASE_READ, duration: 60,
+            fid: open_fid, lease_type, duration: 60,
         }).await {
             if let Msg::Rlease { lease_id, .. } = resp.msg {
                 self.leases.grant(open_fid, lease_id, inode);

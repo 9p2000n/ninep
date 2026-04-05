@@ -20,7 +20,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 dashmap = { workspace = true }
-nix = { version = "0.29", features = ["fs", "user", "dir"] }
+nix = { version = "0.29", features = ["fs", "user", "dir", "zerocopy"] }
 quinn = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = "0.26"
