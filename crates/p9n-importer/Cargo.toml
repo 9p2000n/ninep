@@ -1,0 +1,29 @@
+[package]
+name = "p9n-importer"
+description = "9P2000.N file importer (FUSE client) with QUIC and TCP+TLS transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+workload-api = ["p9n-auth/workload-api"]
+
+[dependencies]
+p9n-proto = { path = "../p9n-proto" }
+p9n-transport = { path = "../p9n-transport" }
+p9n-auth = { path = "../p9n-auth" }
+fuse3 = { version = "0.8", features = ["tokio-runtime", "unprivileged"] }
+tokio = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+dashmap = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = "0.26"
+lru = "0.12"
+libc = "0.2"
+futures-util = "0.3"

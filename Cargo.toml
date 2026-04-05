@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/p9n-proto",
+    "crates/p9n-auth",
+    "crates/p9n-transport",
+    "crates/p9n-exporter",
+    "crates/p9n-importer",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+bytes = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+dashmap = "6"
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-pemfile = "2"
+quinn = "0.11"
+h2 = "0.4"
+http = "1"

@@ -1,0 +1,18 @@
+[package]
+name = "p9n-transport"
+description = "9P2000.N QUIC transport with datagram/stream routing or TCP+TLS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+p9n-proto = { path = "../p9n-proto" }
+p9n-auth = { path = "../p9n-auth" }
+quinn = { workspace = true }
+tokio-rustls = "0.26"
+rustls = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }

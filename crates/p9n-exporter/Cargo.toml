@@ -1,0 +1,35 @@
+[package]
+name = "p9n-exporter"
+description = "9P2000.N file exporter (server) with local filesystem backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+workload-api = ["p9n-auth/workload-api"]
+
+[dependencies]
+p9n-proto = { path = "../p9n-proto" }
+p9n-transport = { path = "../p9n-transport" }
+p9n-auth = { path = "../p9n-auth" }
+tokio = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+dashmap = { workspace = true }
+nix = { version = "0.29", features = ["fs", "user", "dir"] }
+quinn = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = "0.26"
+x509-parser = "0.16"
+notify = "8"
+tokio-util = "0.7"
+libc = "0.2"
+blake3 = "1"
+
+[dev-dependencies]
+rcgen = "0.13"
+tempfile = "3"
