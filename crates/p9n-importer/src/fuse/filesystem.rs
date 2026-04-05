@@ -10,7 +10,9 @@ use crate::fuse::attr_cache::AttrCache;
 use crate::fuse::fid_pool::{FidGuard, FidPool};
 use crate::fuse::inode_map::InodeMap;
 use crate::fuse::lease_map::LeaseMap;
-use crate::importer::{Importer, RpcHandle};
+use crate::importer::Importer;
+use crate::rpc_client::RpcClient;
+use crate::shutdown::ShutdownHandle;
 use p9n_proto::fcall::Msg;
 use p9n_proto::types::*;
 use p9n_proto::wire::{SetAttr, Stat};
@@ -22,7 +24,7 @@ use std::time::Duration;
 const TTL: Duration = Duration::from_secs(1);
 
 pub struct P9Filesystem {
-    rpc: Arc<RpcHandle>,
+    rpc: Arc<RpcClient>,
     inodes: Arc<InodeMap>,
     fids: FidPool,
     attrs: Arc<AttrCache>,
@@ -32,7 +34,11 @@ pub struct P9Filesystem {
 }
 
 impl P9Filesystem {
-    pub fn new(importer: Importer) -> Self {
+    /// Create the FUSE filesystem and a `ShutdownHandle` for graceful cleanup.
+    ///
+    /// The `ShutdownHandle` captures `Arc` clones of shared state so that
+    /// `main()` can drive ordered shutdown after fuse3 consumes `Self`.
+    pub fn new(rpc: Arc<RpcClient>, importer: Importer) -> (Self, ShutdownHandle) {
         let inodes = Arc::new(InodeMap::new());
         inodes.set_root(importer.root_fid, importer.root_qid.clone());
         let attrs = Arc::new(AttrCache::new(4096, Duration::from_secs(1)));
@@ -45,14 +51,22 @@ impl P9Filesystem {
             leases.clone(),
         );
 
-        Self {
-            rpc: importer.rpc,
+        let shutdown = ShutdownHandle::new(
+            rpc.clone(),
+            leases.clone(),
+            inodes.clone(),
+        );
+
+        let fs = Self {
+            rpc,
             inodes,
             fids: FidPool::new(),
             attrs,
             leases,
             _push_handle: push_handle,
-        }
+        };
+
+        (fs, shutdown)
     }
 }
 
@@ -61,6 +75,16 @@ fn rpc_err(e: RpcError) -> Errno {
     match e.errno() {
         Some(ecode) => Errno::from(ecode),
         None => Errno::from(libc::EIO),
+    }
+}
+
+/// Clunk a replaced fid in the background to prevent server-side fid leaks.
+fn clunk_old_fid(rpc: &Arc<RpcClient>, old_fid: Option<u32>) {
+    if let Some(fid) = old_fid {
+        let rpc = rpc.clone();
+        tokio::spawn(async move {
+            let _ = rpc.call(MsgType::Tclunk, Msg::Clunk { fid }).await;
+        });
     }
 }
 
@@ -92,7 +116,7 @@ fn stat_to_attr(ino: u64, stat: &Stat) -> FileAttr {
 
 /// Walk from a parent fid to create a new fid, returning the walked QIDs.
 async fn walk_to(
-    rpc: &RpcHandle,
+    rpc: &RpcClient,
     parent_fid: u32,
     new_fid: u32,
     wnames: Vec<String>,
@@ -111,7 +135,7 @@ async fn walk_to(
 }
 
 /// Getattr on a fid, returning the Stat.
-async fn getattr(rpc: &RpcHandle, fid: u32) -> Result<Stat, RpcError> {
+async fn getattr(rpc: &RpcClient, fid: u32) -> Result<Stat, RpcError> {
     let resp = rpc
         .call(MsgType::Tgetattr, Msg::Getattr {
             fid,
@@ -157,9 +181,10 @@ impl Filesystem for P9Filesystem {
         let stat = getattr(&self.rpc, guard.fid()).await.map_err(rpc_err)?;
         let walk_qid = qids[0].clone();
         let fid = guard.consume();
-        let ino = self.inodes.get_or_insert(fid, &walk_qid);
-        let attr = stat_to_attr(ino, &stat);
-        self.attrs.put(ino, stat);
+        let result = self.inodes.get_or_insert(fid, &walk_qid);
+        clunk_old_fid(&self.rpc, result.old_fid);
+        let attr = stat_to_attr(result.ino, &stat);
+        self.attrs.put(result.ino, stat);
         Ok(ReplyEntry { ttl: TTL, attr, generation: 0 })
     }
 
@@ -511,13 +536,14 @@ impl Filesystem for P9Filesystem {
         };
 
         let open_fid = guard.consume();
-        let ino = self.inodes.get_or_insert(open_fid, &qid);
+        let result = self.inodes.get_or_insert(open_fid, &qid);
+        clunk_old_fid(&self.rpc, result.old_fid);
 
         // Fetch attrs for the new file
         // Note: the fid is now open, so we can getattr on it
         let stat = getattr(&self.rpc, open_fid).await.map_err(rpc_err)?;
-        let attr = stat_to_attr(ino, &stat);
-        self.attrs.put(ino, stat);
+        let attr = stat_to_attr(result.ino, &stat);
+        self.attrs.put(result.ino, stat);
 
         Ok(ReplyCreated {
             ttl: TTL,
@@ -526,6 +552,16 @@ impl Filesystem for P9Filesystem {
             fh: open_fid as u64,
             flags: 0,
         })
+    }
+
+    async fn opendir(&self, _req: Request, inode: Inode, _flags: u32) -> FuseResult<ReplyOpen> {
+        // Stateless: we open the directory fresh in readdir/readdirplus.
+        let _fid = self.inodes.get_fid(inode).ok_or(Errno::from(libc::ENOENT))?;
+        Ok(ReplyOpen { fh: 0, flags: 0 })
+    }
+
+    async fn releasedir(&self, _req: Request, _inode: Inode, _fh: u64, _flags: u32) -> FuseResult<()> {
+        Ok(())
     }
 
     async fn readdir<'a>(
@@ -561,6 +597,83 @@ impl Filesystem for P9Filesystem {
                     parse_readdir_entries(&data, offset).into_iter().map(Ok).collect();
                 Ok(ReplyDirectory {
                     entries: futures_util::stream::iter(entries),
+                })
+            }
+            _ => Err(Errno::from(libc::EIO)),
+        }
+    }
+
+    async fn readdirplus<'a>(
+        &'a self, _req: Request, parent: Inode, _fh: u64, offset: u64, _lock_owner: u64,
+    ) -> FuseResult<ReplyDirectoryPlus<Self::DirEntryPlusStream<'a>>> {
+        let fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
+        let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
+
+        walk_to(&self.rpc, fid, guard.fid(), vec![]).await.map_err(rpc_err)?;
+        self.rpc
+            .call(MsgType::Tlopen, Msg::Lopen {
+                fid: guard.fid(),
+                flags: L_O_RDONLY,
+            })
+            .await
+            .map_err(rpc_err)?;
+
+        let resp = self.rpc
+            .call(MsgType::Treaddir, Msg::Readdir {
+                fid: guard.fid(),
+                offset,
+                count: 65536,
+            })
+            .await
+            .map_err(rpc_err)?;
+
+        let dir_fid = guard.fid();
+        let _ = self.rpc.call(MsgType::Tclunk, Msg::Clunk { fid: dir_fid }).await;
+        let _ = guard.consume();
+
+        match resp.msg {
+            Msg::Rreaddir { data } => {
+                let raw_entries = parse_readdir_entries(&data, offset as i64);
+                let mut plus_entries: Vec<FuseResult<DirectoryEntryPlus>> = Vec::with_capacity(raw_entries.len());
+
+                for entry in raw_entries {
+                    // Walk parent→child and getattr to get full attributes
+                    let child_guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
+                    let name_str = entry.name.to_string_lossy().to_string();
+                    let attr_result = async {
+                        let qids = walk_to(&self.rpc, fid, child_guard.fid(), vec![name_str])
+                            .await.map_err(rpc_err)?;
+                        if qids.is_empty() {
+                            return Err(Errno::from(libc::ENOENT));
+                        }
+                        let stat = getattr(&self.rpc, child_guard.fid()).await.map_err(rpc_err)?;
+                        let walk_qid = qids[0].clone();
+                        let child_fid = child_guard.consume();
+                        let result = self.inodes.get_or_insert(child_fid, &walk_qid);
+                        clunk_old_fid(&self.rpc, result.old_fid);
+                        let attr = stat_to_attr(result.ino, &stat);
+                        self.attrs.put(result.ino, stat);
+                        Ok((result.ino, attr))
+                    }.await;
+
+                    if let Ok((ino, attr)) = attr_result {
+                        plus_entries.push(Ok(DirectoryEntryPlus {
+                            inode: ino,
+                            generation: 0,
+                            kind: entry.kind,
+                            name: entry.name,
+                            offset: entry.offset,
+                            attr,
+                            entry_ttl: TTL,
+                            attr_ttl: TTL,
+                        }));
+                    }
+                    // Skip entries we can't stat — the kernel will do a
+                    // separate lookup if it needs them.
+                }
+
+                Ok(ReplyDirectoryPlus {
+                    entries: futures_util::stream::iter(plus_entries),
                 })
             }
             _ => Err(Errno::from(libc::EIO)),

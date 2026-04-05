@@ -21,6 +21,12 @@ impl RpcError {
             _ => None,
         }
     }
+
+    /// True for transport-level failures (connection lost, timeout).
+    /// These are candidates for reconnect + retry.
+    pub fn is_transport(&self) -> bool {
+        matches!(self, Self::Transport(_))
+    }
 }
 
 impl fmt::Display for RpcError {

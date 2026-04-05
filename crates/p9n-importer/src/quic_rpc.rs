@@ -167,6 +167,20 @@ impl QuicRpcClient {
         Ok(())
     }
 
+    /// Check whether the QUIC connection is still alive (synchronous, no I/O).
+    pub fn is_alive(&self) -> bool {
+        self.conn.close_reason().is_none()
+    }
+
+    /// Gracefully close the QUIC connection.
+    ///
+    /// Sends a CONNECTION_CLOSE frame. Background reader tasks (datagram reader,
+    /// uni-stream acceptor) will exit on the next iteration when they observe
+    /// the connection error.
+    pub fn close(&self) {
+        self.conn.close(quinn::VarInt::from_u32(0), b"bye");
+    }
+
     /// Get the underlying QUIC connection (for direct operations).
     pub fn connection(&self) -> &quinn::Connection {
         &self.conn

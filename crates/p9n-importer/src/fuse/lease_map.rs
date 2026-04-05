@@ -64,6 +64,20 @@ impl LeaseMap {
             .unwrap_or(false)
     }
 
+    /// Remove and return all active leases. Used during graceful shutdown
+    /// to send Tleaseack for every outstanding lease.
+    pub fn drain_all(&self) -> Vec<(u32, u64)> {
+        let entries: Vec<(u32, u64)> = self
+            .fh_to_lease
+            .iter()
+            .map(|r| (*r.key(), *r.value()))
+            .collect();
+        self.fh_to_lease.clear();
+        self.lease_to_ino.clear();
+        self.ino_lease_count.clear();
+        entries
+    }
+
     fn decrement_ino(&self, ino: u64) {
         if let Some(mut entry) = self.ino_lease_count.get_mut(&ino) {
             *entry = entry.saturating_sub(1);

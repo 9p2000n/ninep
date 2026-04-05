@@ -21,6 +21,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 dashmap = { workspace = true }
+arc-swap = "1"
 quinn = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = "0.26"

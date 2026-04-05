@@ -4,5 +4,7 @@ pub mod error;
 pub mod importer;
 pub mod quic_rpc;
 pub mod tcp_rpc;
+pub mod rpc_client;
 pub mod push_receiver;
+pub mod shutdown;
 pub mod fuse;

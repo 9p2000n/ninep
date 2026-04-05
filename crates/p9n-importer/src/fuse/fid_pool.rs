@@ -1,6 +1,6 @@
 //! Client-side fid allocator with RAII guard for automatic clunk on error.
 
-use crate::importer::RpcHandle;
+use crate::rpc_client::RpcClient;
 use p9n_proto::fcall::Msg;
 use p9n_proto::types::MsgType;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -44,12 +44,12 @@ impl FidPool {
 /// ```
 pub struct FidGuard {
     fid: u32,
-    rpc: Arc<RpcHandle>,
+    rpc: Arc<RpcClient>,
     consumed: bool,
 }
 
 impl FidGuard {
-    pub fn new(fid: u32, rpc: Arc<RpcHandle>) -> Self {
+    pub fn new(fid: u32, rpc: Arc<RpcClient>) -> Self {
         Self {
             fid,
             rpc,

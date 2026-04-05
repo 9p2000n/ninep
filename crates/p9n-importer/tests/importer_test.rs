@@ -39,20 +39,22 @@ mod inode_map_tests {
     fn test_get_or_insert_new() {
         let map = InodeMap::new();
         let qid = make_qid(QT_FILE, 200);
-        let ino = map.get_or_insert(5, &qid);
-        assert!(ino >= 2); // 1 reserved for root
-        assert_eq!(map.get_fid(ino), Some(5));
-        assert_eq!(map.get_ino_by_qid_path(200), Some(ino));
+        let r = map.get_or_insert(5, &qid);
+        assert!(r.ino >= 2); // 1 reserved for root
+        assert!(r.old_fid.is_none());
+        assert_eq!(map.get_fid(r.ino), Some(5));
+        assert_eq!(map.get_ino_by_qid_path(200), Some(r.ino));
     }
 
     #[test]
     fn test_get_or_insert_existing_qid() {
         let map = InodeMap::new();
         let qid = make_qid(QT_FILE, 300);
-        let ino1 = map.get_or_insert(10, &qid);
-        let ino2 = map.get_or_insert(20, &qid); // same qid.path, different fid
-        assert_eq!(ino1, ino2); // same inode
-        assert_eq!(map.get_fid(ino1), Some(20)); // fid updated
+        let r1 = map.get_or_insert(10, &qid);
+        let r2 = map.get_or_insert(20, &qid); // same qid.path, different fid
+        assert_eq!(r1.ino, r2.ino); // same inode
+        assert_eq!(r2.old_fid, Some(10)); // old fid returned for clunk
+        assert_eq!(map.get_fid(r1.ino), Some(20)); // fid updated
     }
 
     #[test]
@@ -60,19 +62,19 @@ mod inode_map_tests {
         let map = InodeMap::new();
         let q1 = make_qid(QT_FILE, 400);
         let q2 = make_qid(QT_FILE, 401);
-        let ino1 = map.get_or_insert(1, &q1);
-        let ino2 = map.get_or_insert(2, &q2);
-        assert_ne!(ino1, ino2);
+        let r1 = map.get_or_insert(1, &q1);
+        let r2 = map.get_or_insert(2, &q2);
+        assert_ne!(r1.ino, r2.ino);
     }
 
     #[test]
     fn test_remove_cleans_both_directions() {
         let map = InodeMap::new();
         let qid = make_qid(QT_FILE, 500);
-        let ino = map.get_or_insert(7, &qid);
+        let r = map.get_or_insert(7, &qid);
 
-        map.remove(ino);
-        assert!(map.get_fid(ino).is_none());
+        map.remove(r.ino);
+        assert!(map.get_fid(r.ino).is_none());
         assert!(map.get_ino_by_qid_path(500).is_none());
     }
 
@@ -85,13 +87,13 @@ mod inode_map_tests {
     #[test]
     fn test_monotonic_allocation() {
         let map = InodeMap::new();
-        let mut inodes = Vec::new();
+        let mut inos = Vec::new();
         for i in 0..10u64 {
             let qid = make_qid(QT_FILE, 1000 + i);
-            inodes.push(map.get_or_insert(i as u32, &qid));
+            inos.push(map.get_or_insert(i as u32, &qid).ino);
         }
         // All unique
-        let mut sorted = inodes.clone();
+        let mut sorted = inos.clone();
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), 10);

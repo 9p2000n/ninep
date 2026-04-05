@@ -26,6 +26,22 @@ impl RpcHandle {
             Self::Tcp(rpc) => rpc.call(msg_type, msg).await,
         }
     }
+
+    /// Check whether the underlying connection is still alive.
+    pub fn is_alive(&self) -> bool {
+        match self {
+            Self::Quic(rpc) => rpc.is_alive(),
+            Self::Tcp(rpc) => rpc.is_alive(),
+        }
+    }
+
+    /// Gracefully close the transport connection.
+    pub async fn close(&self) {
+        match self {
+            Self::Quic(rpc) => rpc.close(),
+            Self::Tcp(rpc) => rpc.close().await,
+        }
+    }
 }
 
 pub struct Importer {
@@ -36,6 +52,9 @@ pub struct Importer {
     pub root_fid: u32,
     /// Session key for reconnection (derived from TLS keying material).
     pub session_key: Option<[u8; 16]>,
+    /// Sender half of the push channel. Retained so it can be cloned into
+    /// new connections on reconnect.
+    pub push_tx: mpsc::Sender<p9n_proto::fcall::Fcall>,
     pub push_rx: mpsc::Receiver<p9n_proto::fcall::Fcall>,
     /// QUIC endpoint, retained so session tickets survive across reconnections
     /// (required for 0-RTT).
@@ -67,13 +86,13 @@ impl Importer {
     /// Creates a new QUIC endpoint. The endpoint is stored in the returned
     /// `Importer` so that session tickets persist — pass it to
     /// [`reconnect()`] to benefit from 0-RTT on subsequent connections.
-    pub async fn connect(
+    pub async fn connect_quic(
         addr: &str,
         hostname: &str,
         auth: p9n_auth::SpiffeAuth,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let endpoint = p9n_transport::quic::config::client_endpoint(&auth)?;
-        Self::connect_with_endpoint(&endpoint, addr, hostname).await
+        Self::connect_quic_with_endpoint(&endpoint, addr, hostname).await
     }
 
     /// Connect over QUIC using an existing endpoint.
@@ -81,7 +100,7 @@ impl Importer {
     /// Reusing the endpoint across reconnections enables 0-RTT: the rustls
     /// session store inside the endpoint caches session tickets from previous
     /// connections, allowing quinn to skip the TLS handshake round-trip.
-    pub async fn connect_with_endpoint(
+    pub async fn connect_quic_with_endpoint(
         endpoint: &quinn::Endpoint,
         addr: &str,
         hostname: &str,
@@ -97,7 +116,7 @@ impl Importer {
         }
 
         let (push_tx, push_rx) = mpsc::channel(64);
-        let rpc = Arc::new(QuicRpcClient::new(conn.clone(), push_tx));
+        let rpc = Arc::new(QuicRpcClient::new(conn.clone(), push_tx.clone()));
 
         let opts = ConnectOpts {
             addr: addr.to_string(),
@@ -130,6 +149,7 @@ impl Importer {
             root_qid,
             root_fid,
             session_key,
+            push_tx,
             push_rx,
             endpoint: Some(endpoint.clone()),
         })
@@ -162,7 +182,7 @@ impl Importer {
         };
 
         let (push_tx, push_rx) = mpsc::channel(64);
-        let rpc = Arc::new(TcpRpcClient::new(stream, push_tx));
+        let rpc = Arc::new(TcpRpcClient::new(stream, push_tx.clone()));
 
         let opts = ConnectOpts {
             addr: addr.to_string(),
@@ -190,10 +210,108 @@ impl Importer {
             root_qid,
             root_fid,
             session_key,
+            push_tx,
             push_rx,
             endpoint: None,
         })
     }
+}
+
+// ── Reconnect helpers ──
+
+/// Reconnect result: new RPC handle + updated session key.
+pub struct ReconnectResult {
+    pub rpc: Arc<RpcHandle>,
+    pub session_key: Option<[u8; 16]>,
+}
+
+/// Re-establish a QUIC connection using an existing endpoint (enables 0-RTT).
+///
+/// Performs the full handshake: version → caps → attach → session.
+/// The `push_tx` is cloned into the new `QuicRpcClient` so that push messages
+/// continue to flow into the same channel used before the disconnect.
+pub async fn reconnect_quic(
+    endpoint: &quinn::Endpoint,
+    addr: &str,
+    hostname: &str,
+    push_tx: mpsc::Sender<Fcall>,
+) -> Result<ReconnectResult, Box<dyn std::error::Error + Send + Sync>> {
+    let server_addr: std::net::SocketAddr = addr.parse()?;
+    // Use full 1-RTT handshake for reconnect (skip 0-RTT). During 0-RTT the
+    // TLS handshake is not yet confirmed, so datagrams sent in that window may
+    // be silently dropped if the server rejects the early data. The 9P
+    // negotiation messages (Tversion, Tcaps, …) are classified as Metadata and
+    // routed via datagrams, which makes them vulnerable to this loss. Waiting
+    // for the full handshake costs < 1 ms on loopback and avoids a 30-second
+    // timeout on the first reconnect attempt.
+    let conn = endpoint.connect(server_addr, hostname)?.await?;
+    tracing::info!("reconnected to {addr}");
+
+    let rpc = Arc::new(QuicRpcClient::new(conn.clone(), push_tx));
+
+    let opts = ConnectOpts {
+        addr: addr.to_string(),
+        hostname: hostname.to_string(),
+        ..Default::default()
+    };
+
+    negotiate_version(&*rpc, &opts).await?;
+    negotiate_caps(&*rpc).await?;
+    do_attach(&*rpc, 0, &opts).await?;
+
+    let session_key = {
+        let key = derive_session_key(&conn)?;
+        establish_session(&*rpc, key).await?
+    };
+
+    Ok(ReconnectResult {
+        rpc: Arc::new(RpcHandle::Quic(rpc)),
+        session_key,
+    })
+}
+
+/// Re-establish a TCP+TLS connection.
+///
+/// Same handshake as `reconnect_quic` but over a new TCP+TLS stream.
+pub async fn reconnect_tcp(
+    addr: &str,
+    hostname: &str,
+    identity: &p9n_auth::spiffe::SpiffeIdentity,
+    trust_store: &p9n_auth::spiffe::trust_bundle::TrustBundleStore,
+    push_tx: mpsc::Sender<Fcall>,
+) -> Result<ReconnectResult, Box<dyn std::error::Error + Send + Sync>> {
+    let tls_config = p9n_auth::spiffe::tls_config::client_config(identity, trust_store)?;
+    let server_addr: std::net::SocketAddr = addr.parse()?;
+    let stream = p9n_transport::tcp::config::client_connect(server_addr, hostname, tls_config).await?;
+    tracing::info!("TCP+TLS reconnected to {addr}");
+
+    let session_key_bytes = {
+        let (_, tls_conn) = stream.get_ref();
+        let mut key = [0u8; 16];
+        tls_conn
+            .export_keying_material(&mut key, b"9P2000.N session", None)
+            .map_err(|_| "TLS export_keying_material failed")?;
+        key
+    };
+
+    let rpc = Arc::new(TcpRpcClient::new(stream, push_tx));
+
+    let opts = ConnectOpts {
+        addr: addr.to_string(),
+        hostname: hostname.to_string(),
+        ..Default::default()
+    };
+
+    negotiate_version(&*rpc, &opts).await?;
+    negotiate_caps(&*rpc).await?;
+    do_attach(&*rpc, 0, &opts).await?;
+
+    let session_key = establish_session(&*rpc, session_key_bytes).await?;
+
+    Ok(ReconnectResult {
+        rpc: Arc::new(RpcHandle::Tcp(rpc)),
+        session_key,
+    })
 }
 
 // ── Shared handshake helpers ──

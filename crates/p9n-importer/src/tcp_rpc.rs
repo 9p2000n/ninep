@@ -59,6 +59,24 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
         }
     }
 
+    /// Check whether the TCP connection is likely alive.
+    ///
+    /// Uses `try_lock` on the writer mutex as a heuristic — if the lock is
+    /// available, the connection has not been shut down by us. The actual peer
+    /// state is only observable on the next send/recv.
+    pub fn is_alive(&self) -> bool {
+        self.writer.try_lock().is_ok()
+    }
+
+    /// Gracefully close the TCP connection by shutting down the write half.
+    ///
+    /// The background reader task will exit when it detects the connection is closed.
+    pub async fn close(&self) {
+        use tokio::io::AsyncWriteExt;
+        let mut writer = self.writer.lock().await;
+        let _ = writer.shutdown().await;
+    }
+
     /// Send a request and wait for the matching response.
     ///
     /// Tag is automatically allocated and freed (via RAII guard) even on error.
