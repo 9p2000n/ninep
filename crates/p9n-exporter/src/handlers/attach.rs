@@ -1,11 +1,11 @@
-use crate::access::AccessControl;
 use crate::backend::Backend;
-use crate::backend::local::LocalBackend;
 use crate::fid_table::FidState;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
+use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
+use std::sync::Arc;
 
 /// Handle Tattach: attach to the filesystem with identity-based root isolation.
 ///
@@ -13,10 +13,9 @@ use p9n_proto::types::MsgType;
 /// - If an explicit policy maps the ID to a subdirectory, use that
 /// - If domain-level isolation is enabled, derive from SPIFFE workload path
 /// - Otherwise, use the shared export root
-pub fn handle(
-    session: &Session,
-    backend: &LocalBackend,
-    ac: &AccessControl,
+pub fn handle<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Attach {
@@ -30,14 +29,14 @@ pub fn handle(
     };
 
     // Resolve the root directory based on SPIFFE identity
-    let user_root = ac.resolve_root(session.spiffe_id.as_deref());
+    let user_root = ctx.access.resolve_root(session.spiffe_id.as_deref());
 
     // If aname is non-empty, use it as a sub-path within the user's root
     let attach_root = if aname.is_empty() {
         user_root.clone()
     } else {
         let sub = user_root.join(&aname);
-        // Verify the sub-path doesn't escape the user's root
+        // Verify the sub-path doesn't escape the user's root via backend resolve
         let canonical = sub.canonicalize().unwrap_or(sub.clone());
         if !canonical.starts_with(&user_root) {
             return Err(std::io::Error::new(
@@ -50,7 +49,7 @@ pub fn handle(
     };
 
     // Ensure the root directory exists and get its Qid.
-    let (qid, _is_dir) = backend.attach(&attach_root)?;
+    let (qid, _is_dir) = ctx.backend.attach(&attach_root)?;
 
     session.fids.insert(
         fid,

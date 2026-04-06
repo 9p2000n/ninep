@@ -3,6 +3,7 @@
 //! Each SubOp is decoded as a standalone Fcall, dispatched through the normal
 //! handler pipeline, and the result is re-encoded as a SubOp in the response.
 
+use crate::backend::Backend;
 use crate::handlers::{HandlerResult, PushTx};
 use crate::session::Session;
 use crate::shared::SharedCtx;
@@ -22,9 +23,9 @@ use tokio::sync::mpsc;
 ///
 /// If any sub-op fails, we stop and return the results collected so far
 /// (partial success is valid per the 9P2000.N spec).
-pub async fn handle(
-    session: &Session,
-    ctx: &Arc<SharedCtx>,
+pub async fn handle<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     watch_tx: &mpsc::Sender<WatchEvent>,
     push_tx: &PushTx,
     fc: Fcall,

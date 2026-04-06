@@ -1,14 +1,19 @@
 //! Handle Trename (legacy rename, maps to rename syscall).
 
-use crate::backend::local::LocalBackend;
+use crate::backend::Backend;
 use crate::handlers::HandlerResult;
-use crate::lease_manager::LeaseManager;
 use crate::session::Session;
+use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
+use std::sync::Arc;
 use crate::util::join_err;
 
-pub async fn handle(session: &Session, backend: &LocalBackend, lease_mgr: &LeaseManager, fc: Fcall) -> HandlerResult {
+pub async fn handle<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: Fcall,
+) -> HandlerResult {
     let Msg::Rename { fid, dfid, name } = fc.msg else {
         return Err("expected Rename message".into());
     };
@@ -27,15 +32,16 @@ pub async fn handle(session: &Session, backend: &LocalBackend, lease_mgr: &Lease
     drop(dfid_state);
 
     // Break leases on the renamed file and the target directory.
-    lease_mgr.break_for_write(fid_qid_path, session.conn_id);
-    lease_mgr.break_for_write(dfid_qid_path, session.conn_id);
+    ctx.lease_mgr.break_for_write(fid_qid_path, session.conn_id);
+    ctx.lease_mgr.break_for_write(dfid_qid_path, session.conn_id);
 
     let new_path = new_dir.join(&name);
-    let resolved_old = backend.resolve(&old_path)?;
-    let resolved_new = backend.resolve(&new_path)?;
+    let resolved_old = ctx.backend.resolve(&old_path)?;
+    let resolved_new = ctx.backend.resolve(&new_path)?;
 
+    let ctx = ctx.clone();
     tokio::task::spawn_blocking(move || {
-        std::fs::rename(&resolved_old, &resolved_new)
+        ctx.backend.rename(&resolved_old, &resolved_new)
     }).await.map_err(join_err)??;
 
     Ok(Fcall { size: 0, msg_type: MsgType::Rrename, tag, msg: Msg::Empty })

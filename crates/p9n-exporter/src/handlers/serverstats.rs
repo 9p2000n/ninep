@@ -2,13 +2,14 @@
 
 use crate::handlers::HandlerResult;
 use crate::session::Session;
+use crate::backend::Backend;
 use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use p9n_proto::wire::ServerStat;
 use std::sync::Arc;
 
-pub fn handle(session: &Session, _ctx: &Arc<SharedCtx>, fc: Fcall) -> HandlerResult {
+pub fn handle<B: Backend>(session: &Session<B::Handle>, _ctx: &Arc<SharedCtx<B>>, fc: Fcall) -> HandlerResult {
     let Msg::ServerstatsReq { mask: _ } = fc.msg else {
         return Err("expected ServerstatsReq".into());
     };

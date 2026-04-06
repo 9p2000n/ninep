@@ -1,5 +1,6 @@
 //! SPIFFE security handlers: Tfetchbundle, Tspiffeverify, TstartlsSpiffe.
 
+use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
@@ -11,9 +12,9 @@ use p9n_proto::types::*;
 use std::sync::Arc;
 
 /// Handle Tfetchbundle: return trust bundle for a trust domain.
-pub fn handle_fetchbundle(
-    _session: &Session,
-    ctx: &Arc<SharedCtx>,
+pub fn handle_fetchbundle<B: Backend>(
+    _session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Fetchbundle {
@@ -75,9 +76,9 @@ pub fn handle_fetchbundle(
 }
 
 /// Handle Tspiffeverify: verify a peer's SVID.
-pub fn handle_spiffeverify(
-    _session: &Session,
-    ctx: &Arc<SharedCtx>,
+pub fn handle_spiffeverify<B: Backend>(
+    _session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Spiffeverify {
@@ -266,9 +267,9 @@ pub fn handle_spiffeverify(
 ///
 /// In QUIC mode, mTLS is already complete. This message confirms the declared
 /// SPIFFE ID matches the TLS certificate and establishes mutual identity awareness.
-pub fn handle_startls_spiffe(
-    session: &Session,
-    ctx: &Arc<SharedCtx>,
+pub fn handle_startls_spiffe<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::StartlsSpiffe {

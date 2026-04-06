@@ -9,7 +9,7 @@ use p9n_proto::types::MsgType;
 ///
 /// If the request is still running, its CancellationToken is triggered.
 /// The handler should check the token and abort early.
-pub fn handle(session: &Session, fc: Fcall) -> HandlerResult {
+pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) -> HandlerResult {
     let Msg::Flush { oldtag } = fc.msg else {
         return Err("expected Flush message".into());
     };

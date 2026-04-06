@@ -5,7 +5,7 @@ use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::*;
 
 /// Handle Tcaps: intersect client capabilities with server capabilities.
-pub fn handle_caps(session: &Session, fc: Fcall) -> HandlerResult {
+pub fn handle_caps<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) -> HandlerResult {
     let Msg::Caps { caps: client_caps } = fc.msg else {
         return Err("expected Caps message".into());
     };
@@ -49,7 +49,7 @@ pub fn handle_caps(session: &Session, fc: Fcall) -> HandlerResult {
 }
 
 /// Handle Tauthneg: select authentication mechanism.
-pub fn handle_authneg(_session: &Session, fc: Fcall) -> HandlerResult {
+pub fn handle_authneg<H: Send + Sync + 'static>(_session: &Session<H>, fc: Fcall) -> HandlerResult {
     let Msg::Authneg { mechs } = fc.msg else {
         return Err("expected Authneg message".into());
     };

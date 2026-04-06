@@ -1,16 +1,16 @@
-use crate::backend::local::LocalBackend;
+use crate::backend::Backend;
 use crate::handlers::HandlerResult;
-use crate::lease_manager::LeaseManager;
 use crate::session::Session;
+use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
+use std::sync::Arc;
 use crate::util::join_err;
 
 /// Handle Tunlinkat: remove a file or directory.
-pub async fn handle_unlinkat(
-    session: &Session,
-    backend: &LocalBackend,
-    lease_mgr: &LeaseManager,
+pub async fn handle_unlinkat<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Unlinkat {
@@ -32,17 +32,15 @@ pub async fn handle_unlinkat(
     drop(fid_state);
 
     // Break leases on the parent directory (its listing is changing).
-    lease_mgr.break_for_write(dir_qid_path, session.conn_id);
+    ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
-    let resolved = backend.resolve(&target)?;
+    let resolved = ctx.backend.resolve(&target)?;
+    // AT_REMOVEDIR = 0x200
+    let is_dir = flags & 0x200 != 0;
 
+    let ctx = ctx.clone();
     tokio::task::spawn_blocking(move || {
-        // AT_REMOVEDIR = 0x200
-        if flags & 0x200 != 0 {
-            std::fs::remove_dir(&resolved)
-        } else {
-            std::fs::remove_file(&resolved)
-        }
+        ctx.backend.unlink(&resolved, is_dir)
     })
     .await
     .map_err(join_err)??;
@@ -58,10 +56,9 @@ pub async fn handle_unlinkat(
 /// Handle Tremove: remove the file/dir referenced by fid, then clunk the fid.
 ///
 /// Maps to the same logic as Tunlinkat but operates on the fid's own path.
-pub async fn handle_remove(
-    session: &Session,
-    backend: &LocalBackend,
-    lease_mgr: &LeaseManager,
+pub async fn handle_remove<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Remove { fid } = fc.msg else {
@@ -79,16 +76,13 @@ pub async fn handle_remove(
     drop(fid_state);
 
     // Break leases on the file being removed.
-    lease_mgr.break_for_write(qid_path, session.conn_id);
+    ctx.lease_mgr.break_for_write(qid_path, session.conn_id);
 
-    let resolved = backend.resolve(&path)?;
+    let resolved = ctx.backend.resolve(&path)?;
 
+    let ctx = ctx.clone();
     tokio::task::spawn_blocking(move || {
-        if is_dir {
-            std::fs::remove_dir(&resolved)
-        } else {
-            std::fs::remove_file(&resolved)
-        }
+        ctx.backend.unlink(&resolved, is_dir)
     })
     .await
     .map_err(join_err)??;
@@ -105,10 +99,9 @@ pub async fn handle_remove(
 }
 
 /// Handle Trenameat: rename a file or directory.
-pub async fn handle_renameat(
-    session: &Session,
-    backend: &LocalBackend,
-    lease_mgr: &LeaseManager,
+pub async fn handle_renameat<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Renameat {
@@ -139,16 +132,17 @@ pub async fn handle_renameat(
     drop(new_dir);
 
     // Break leases on both source and destination parent directories.
-    lease_mgr.break_for_write(old_dir_qid, session.conn_id);
+    ctx.lease_mgr.break_for_write(old_dir_qid, session.conn_id);
     if new_dir_qid != old_dir_qid {
-        lease_mgr.break_for_write(new_dir_qid, session.conn_id);
+        ctx.lease_mgr.break_for_write(new_dir_qid, session.conn_id);
     }
 
-    let resolved_old = backend.resolve(&old_path)?;
-    let resolved_new = backend.resolve(&new_path)?;
+    let resolved_old = ctx.backend.resolve(&old_path)?;
+    let resolved_new = ctx.backend.resolve(&new_path)?;
 
+    let ctx = ctx.clone();
     tokio::task::spawn_blocking(move || {
-        std::fs::rename(&resolved_old, &resolved_new)
+        ctx.backend.rename(&resolved_old, &resolved_new)
     })
     .await
     .map_err(join_err)??;

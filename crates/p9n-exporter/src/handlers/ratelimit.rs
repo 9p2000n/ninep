@@ -3,6 +3,7 @@
 //! When `config.enable_rate_limit` is true, creates a token-bucket rate limiter
 //! for the specified fid. When disabled, acknowledges the request without enforcement.
 
+use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::{RateLimiter, Session};
 use crate::shared::SharedCtx;
@@ -10,7 +11,7 @@ use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
 
-pub fn handle(session: &Session, ctx: &Arc<SharedCtx>, fc: Fcall) -> HandlerResult {
+pub fn handle<B: Backend>(session: &Session<B::Handle>, ctx: &Arc<SharedCtx<B>>, fc: Fcall) -> HandlerResult {
     let Msg::Ratelimit { fid, iops, bps } = fc.msg else {
         return Err("expected Ratelimit".into());
     };

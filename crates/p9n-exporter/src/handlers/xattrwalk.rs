@@ -3,19 +3,25 @@
 //! Base xattrs are accessed via fid-based walk/create + read/write,
 //! unlike 9P2000.N's direct Txattrget/Txattrset messages.
 
+use crate::backend::Backend;
 use crate::fid_table::FidState;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
+use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use p9n_proto::wire::Qid;
-use std::ffi::CString;
 use std::path::PathBuf;
+use std::sync::Arc;
 use crate::util::join_err;
 
 /// Handle Txattrwalk: create a fid representing an xattr value.
 /// If name is empty, returns the total size of all xattr names (for listxattr).
-pub async fn handle_xattrwalk(session: &Session, fc: Fcall) -> HandlerResult {
+pub async fn handle_xattrwalk<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: Fcall,
+) -> HandlerResult {
     let Msg::Xattrwalk { fid, newfid, name } = fc.msg else {
         return Err("expected Xattrwalk".into());
     };
@@ -27,13 +33,14 @@ pub async fn handle_xattrwalk(session: &Session, fc: Fcall) -> HandlerResult {
     drop(fid_state);
 
     let xattr_name = name.clone();
+    let ctx = ctx.clone();
     let xattr_size = tokio::task::spawn_blocking(move || {
         if xattr_name.is_empty() {
             // List mode: return total size of xattr names
-            xattr_list_size(&path)
+            ctx.backend.xattr_list_size(&path)
         } else {
             // Get mode: return size of specific xattr
-            xattr_get_size(&path, &xattr_name)
+            ctx.backend.xattr_size(&path, &xattr_name)
         }
     }).await.map_err(join_err)??;
 
@@ -52,7 +59,10 @@ pub async fn handle_xattrwalk(session: &Session, fc: Fcall) -> HandlerResult {
 }
 
 /// Handle Txattrcreate: prepare a fid for writing an xattr value.
-pub async fn handle_xattrcreate(session: &Session, fc: Fcall) -> HandlerResult {
+pub async fn handle_xattrcreate<H: Send + Sync + 'static>(
+    session: &Session<H>,
+    fc: Fcall,
+) -> HandlerResult {
     let Msg::Xattrcreate { fid, name, attr_size: _, flags: _ } = fc.msg else {
         return Err("expected Xattrcreate".into());
     };
@@ -70,24 +80,4 @@ pub async fn handle_xattrcreate(session: &Session, fc: Fcall) -> HandlerResult {
         size: 0, msg_type: MsgType::Rxattrcreate, tag,
         msg: Msg::Empty,
     })
-}
-
-fn xattr_get_size(path: &PathBuf, name: &str) -> std::io::Result<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let c_path = CString::new(path.as_os_str().as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    let c_name = CString::new(name)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    let size = unsafe { libc::getxattr(c_path.as_ptr(), c_name.as_ptr(), std::ptr::null_mut(), 0) };
-    if size < 0 { return Err(std::io::Error::last_os_error()); }
-    Ok(size as u64)
-}
-
-fn xattr_list_size(path: &PathBuf) -> std::io::Result<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let c_path = CString::new(path.as_os_str().as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    let size = unsafe { libc::listxattr(c_path.as_ptr(), std::ptr::null_mut(), 0) };
-    if size < 0 { return Err(std::io::Error::last_os_error()); }
-    Ok(size as u64)
 }

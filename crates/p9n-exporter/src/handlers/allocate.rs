@@ -1,13 +1,18 @@
-use crate::backend::local::LocalBackend;
+use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
+use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
-use std::os::unix::io::AsRawFd;
+use std::sync::Arc;
 use crate::util::join_err;
 
 /// Handle Tallocate: preallocate file space via fallocate.
-pub async fn handle(session: &Session, _backend: &LocalBackend, fc: Fcall) -> HandlerResult {
+pub async fn handle<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: Fcall,
+) -> HandlerResult {
     let Msg::Allocate {
         fid,
         mode,
@@ -23,17 +28,16 @@ pub async fn handle(session: &Session, _backend: &LocalBackend, fc: Fcall) -> Ha
         .fids
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
-    let raw_fd = fid_state
+    let handle = fid_state
         .handle
         .as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
-        .as_raw_fd();
+        .clone();
     drop(fid_state);
 
+    let ctx = ctx.clone();
     tokio::task::spawn_blocking(move || {
-        let flags = nix::fcntl::FallocateFlags::from_bits_truncate(mode as i32);
-        nix::fcntl::fallocate(raw_fd, flags, offset as i64, length as i64)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        ctx.backend.allocate(&handle, mode, offset, length)
     })
     .await
     .map_err(join_err)??;

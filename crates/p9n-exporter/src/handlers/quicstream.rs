@@ -5,7 +5,7 @@ use crate::session::Session;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 
-pub fn handle(_session: &Session, fc: Fcall) -> HandlerResult {
+pub fn handle<H: Send + Sync + 'static>(_session: &Session<H>, fc: Fcall) -> HandlerResult {
     let Msg::Quicstream { stream_type, stream_id } = fc.msg else {
         return Err("expected Quicstream".into());
     };

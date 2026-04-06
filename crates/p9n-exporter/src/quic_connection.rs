@@ -183,7 +183,7 @@ async fn handle_stream(
         handlers::do_rate_limit(&session, &ctx, &request).await;
 
         let result = tokio::select! {
-            r = handlers::io::handle_read(&session, &ctx.backend, request) => r,
+            r = handlers::io::handle_read(&session, &ctx, request) => r,
             _ = cancel.cancelled() => {
                 tracing::debug!("request tag={tag} cancelled by Tflush");
                 Err("flushed".into())

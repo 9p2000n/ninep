@@ -10,7 +10,7 @@ use p9n_proto::types::*;
 /// - Non-zero key matching stored session → resume
 /// - Non-zero key, no match → new session with client-provided key
 /// - All-zero key → error (client should provide a key derived from TLS)
-pub fn handle(session: &Session, session_store: &SessionStore, fc: Fcall) -> HandlerResult {
+pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, session_store: &SessionStore, fc: Fcall) -> HandlerResult {
     let Msg::Session { key, flags } = fc.msg else {
         return Err("expected Session message".into());
     };

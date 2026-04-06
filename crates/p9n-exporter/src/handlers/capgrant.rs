@@ -3,6 +3,7 @@
 //! Tcapgrant: server signs a JWT capability token scoped to a fid.
 //! Tcapuse: client presents the token to activate permissions on a fid.
 
+use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::{CapToken, Session};
 use crate::shared::SharedCtx;
@@ -14,9 +15,9 @@ use std::sync::Arc;
 const MAX_CAP_TTL: u64 = 86400; // 24 hours maximum token lifetime
 
 /// Handle Tcapgrant: sign a capability token for a client.
-pub fn handle_capgrant(
-    session: &Session,
-    ctx: &Arc<SharedCtx>,
+pub fn handle_capgrant<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Capgrant {
@@ -81,9 +82,9 @@ pub fn handle_capgrant(
 }
 
 /// Handle Tcapuse: verify and activate a capability token on a fid.
-pub fn handle_capuse(
-    session: &Session,
-    ctx: &Arc<SharedCtx>,
+pub fn handle_capuse<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Capuse { fid, token } = fc.msg else {

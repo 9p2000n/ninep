@@ -1,4 +1,5 @@
 use crate::access;
+use crate::backend::Backend;
 use crate::session::Session;
 use crate::shared::SharedCtx;
 use crate::watch_manager::WatchEvent;
@@ -50,8 +51,8 @@ pub mod xattrwalk;
 pub type HandlerResult = Result<Fcall, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Check permission: first static policy, then active capability tokens.
-pub fn check_perm(
-    session: &Session,
+pub fn check_perm<H: Send + Sync + 'static>(
+    session: &Session<H>,
     ac: &crate::access::AccessControl,
     sid: Option<&str>,
     fid: Option<u32>,
@@ -105,7 +106,12 @@ fn fid_from_msg(fc: &Fcall) -> Option<u32> {
 
 /// Apply per-fid rate limiting if enabled and a limiter is registered.
 /// `bytes` is the estimated I/O size (Tread count, Twrite data.len, 0 for metadata ops).
-async fn check_rate_limit(session: &Session, ctx: &Arc<SharedCtx>, fid: Option<u32>, bytes: u64) {
+async fn check_rate_limit<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fid: Option<u32>,
+    bytes: u64,
+) {
     if !ctx.config.enable_rate_limit {
         return;
     }
@@ -117,10 +123,14 @@ async fn check_rate_limit(session: &Session, ctx: &Arc<SharedCtx>, fid: Option<u
 }
 
 /// Apply rate limiting for a request (public helper for the Tread fast path).
-pub async fn do_rate_limit(session: &Session, ctx: &Arc<SharedCtx>, fc: &Fcall) {
+pub async fn do_rate_limit<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: &Fcall,
+) {
     let fid = fid_from_msg(fc);
     let bytes = io_bytes(fc);
-    check_rate_limit(session, ctx, fid, bytes).await;
+    check_rate_limit::<B>(session, ctx, fid, bytes).await;
 }
 
 /// Extract the I/O byte count from a read/write message for rate limiting.
@@ -134,9 +144,9 @@ fn io_bytes(fc: &Fcall) -> u64 {
     }
 }
 
-pub async fn dispatch(
-    session: &Session,
-    ctx: &Arc<SharedCtx>,
+pub async fn dispatch<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     watch_tx: &mpsc::Sender<WatchEvent>,
     push_tx: &PushTx,
     fc: Fcall,
@@ -170,7 +180,7 @@ pub async fn dispatch(
         MsgType::Tcaps => negotiate::handle_caps(session, fc),
         MsgType::Tauthneg => negotiate::handle_authneg(session, fc),
         MsgType::Tauth => auth::handle(session, fc),
-        MsgType::Tattach => attach::handle(session, &ctx.backend, &ctx.access, fc),
+        MsgType::Tattach => attach::handle(session, ctx, fc),
         MsgType::Tsession => session::handle(session, &ctx.session_store, fc),
         MsgType::Tflush => flush::handle(session, fc),
         MsgType::Tclunk => clunk::handle(session, fc),
@@ -188,105 +198,105 @@ pub async fn dispatch(
         // ── Read ──
         MsgType::Twalk => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            walk::handle(session, &ctx.backend, &ctx.access, fc).await
+            walk::handle(session, ctx, fc).await
         }
         MsgType::Tgetattr => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            stat::handle_getattr(session, &ctx.backend, fc).await
+            stat::handle_getattr(session, ctx, fc).await
         }
         MsgType::Tstatfs => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            stat::handle_statfs(session, &ctx.backend, fc).await
+            stat::handle_statfs(session, ctx, fc).await
         }
         MsgType::Treaddir => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            check_rate_limit(session, ctx, msg_fid, io_bytes(&fc)).await;
-            dir::handle_readdir(session, &ctx.backend, fc).await
+            check_rate_limit::<B>(session, ctx, msg_fid, io_bytes(&fc)).await;
+            dir::handle_readdir(session, ctx, fc).await
         }
         MsgType::Treadlink => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            io::handle_readlink(session, &ctx.backend, fc).await
+            io::handle_readlink(session, ctx, fc).await
         }
         MsgType::Tlopen => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            io::handle_lopen(session, &ctx.backend, fc).await
+            io::handle_lopen(session, ctx, fc).await
         }
         MsgType::Tread => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            check_rate_limit(session, ctx, msg_fid, io_bytes(&fc)).await;
-            io::handle_read_fcall(session, &ctx.backend, fc).await
+            check_rate_limit::<B>(session, ctx, msg_fid, io_bytes(&fc)).await;
+            io::handle_read_fcall(session, ctx, fc).await
         }
         MsgType::Tgetlock => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            lock::handle_getlock(session, fc).await
+            lock::handle_getlock(session, ctx, fc).await
         }
 
         // ── Write ──
         MsgType::Twrite => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_WRITE)?;
-            check_rate_limit(session, ctx, msg_fid, io_bytes(&fc)).await;
-            io::handle_write(session, &ctx.backend, &ctx.lease_mgr, fc).await
+            check_rate_limit::<B>(session, ctx, msg_fid, io_bytes(&fc)).await;
+            io::handle_write(session, ctx, fc).await
         }
         MsgType::Tfsync => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_WRITE)?;
-            io::handle_fsync(session, fc).await
+            io::handle_fsync(session, ctx, fc).await
         }
         MsgType::Tlock => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_WRITE)?;
-            lock::handle_lock(session, fc).await
+            lock::handle_lock(session, ctx, fc).await
         }
 
         // ── Create ──
         MsgType::Tlcreate => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_CREATE)?;
-            create::handle_lcreate(session, &ctx.backend, &ctx.access, &ctx.lease_mgr, fc).await
+            create::handle_lcreate(session, ctx, fc).await
         }
         MsgType::Tsymlink => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_CREATE)?;
-            create::handle_symlink(session, &ctx.backend, &ctx.access, &ctx.lease_mgr, fc).await
+            create::handle_symlink(session, ctx, fc).await
         }
         MsgType::Tlink => {
             // link doesn't create a new inode, no ownership needed
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_CREATE)?;
-            create::handle_link(session, &ctx.backend, &ctx.lease_mgr, fc).await
+            create::handle_link(session, ctx, fc).await
         }
         MsgType::Tmkdir => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_CREATE)?;
-            dir::handle_mkdir(session, &ctx.backend, &ctx.access, &ctx.lease_mgr, fc).await
+            dir::handle_mkdir(session, ctx, fc).await
         }
         MsgType::Tmknod => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_CREATE)?;
-            mknod::handle(session, &ctx.backend, &ctx.access, &ctx.lease_mgr, fc).await
+            mknod::handle(session, ctx, fc).await
         }
 
         // ── Remove ──
         MsgType::Tunlinkat => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_REMOVE)?;
-            remove::handle_unlinkat(session, &ctx.backend, &ctx.lease_mgr, fc).await
+            remove::handle_unlinkat(session, ctx, fc).await
         }
         MsgType::Tremove => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_REMOVE)?;
-            remove::handle_remove(session, &ctx.backend, &ctx.lease_mgr, fc).await
+            remove::handle_remove(session, ctx, fc).await
         }
         MsgType::Trenameat => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_REMOVE | access::PERM_CREATE)?;
-            remove::handle_renameat(session, &ctx.backend, &ctx.lease_mgr, fc).await
+            remove::handle_renameat(session, ctx, fc).await
         }
         MsgType::Trename => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_REMOVE | access::PERM_CREATE)?;
-            rename::handle(session, &ctx.backend, &ctx.lease_mgr, fc).await
+            rename::handle(session, ctx, fc).await
         }
 
         // ── Setattr ──
         MsgType::Tsetattr => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_SETATTR)?;
-            stat::handle_setattr(session, &ctx.access, &ctx.lease_mgr, fc).await
+            stat::handle_setattr(session, ctx, fc).await
         }
 
         // ── Watch ──
         MsgType::Twatch | MsgType::Tunwatch => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            watch::handle(session, &ctx.backend, &ctx.watch_mgr, watch_tx, fc)
+            watch::handle(session, ctx, watch_tx, fc)
         }
 
         // ── Extensions ──
@@ -296,16 +306,16 @@ pub async fn dispatch(
         MsgType::Tcompound => compound::handle(session, ctx, watch_tx, push_tx, fc).await,
         MsgType::Tcopyrange => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ | access::PERM_WRITE)?;
-            copy_range::handle(session, &ctx.backend, fc).await
+            copy_range::handle(session, ctx, fc).await
         }
         MsgType::Tallocate => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_WRITE)?;
-            allocate::handle(session, &ctx.backend, fc).await
+            allocate::handle(session, ctx, fc).await
         }
         MsgType::Txattrget | MsgType::Txattrset | MsgType::Txattrlist => {
-            xattr::handle(session, &ctx.backend, fc).await
+            xattr::handle(session, ctx, fc).await
         }
-        MsgType::Txattrwalk => xattrwalk::handle_xattrwalk(session, fc).await,
+        MsgType::Txattrwalk => xattrwalk::handle_xattrwalk(session, ctx, fc).await,
         MsgType::Txattrcreate => xattrwalk::handle_xattrcreate(session, fc).await,
 
         // ── Compression negotiation ──
@@ -317,22 +327,22 @@ pub async fn dispatch(
         // ── Content hashing ──
         MsgType::Thash => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            hash::handle(session, fc).await
+            hash::handle(session, ctx, fc).await
         }
 
         // ── ACL ──
         MsgType::Tgetacl => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ)?;
-            acl::handle(session, fc).await
+            acl::handle(session, ctx, fc).await
         }
         MsgType::Tsetacl => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_ADMIN)?;
-            acl::handle(session, fc).await
+            acl::handle(session, ctx, fc).await
         }
 
         // ── Stream I/O ──
         MsgType::Tstreamopen | MsgType::Tstreamdata | MsgType::Tstreamclose => {
-            stream_io::handle(session, fc).await
+            stream_io::handle(session, ctx, fc).await
         }
 
         // ── Observability ──

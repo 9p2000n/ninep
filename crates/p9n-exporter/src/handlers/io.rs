@@ -1,16 +1,18 @@
-use crate::backend::local::LocalBackend;
+use crate::backend::Backend;
 use crate::handlers::HandlerResult;
-use crate::lease_manager::LeaseManager;
 use crate::session::Session;
+use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
-use std::io::{Read, Seek, Write};
-use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use crate::util::join_err;
 
 /// Handle Tlopen: open a file associated with a fid.
-pub async fn handle_lopen(session: &Session, _backend: &LocalBackend, fc: Fcall) -> HandlerResult {
+pub async fn handle_lopen<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: Fcall,
+) -> HandlerResult {
     let Msg::Lopen { fid, flags } = fc.msg else {
         return Err("expected Lopen message".into());
     };
@@ -22,51 +24,20 @@ pub async fn handle_lopen(session: &Session, _backend: &LocalBackend, fc: Fcall)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
     let path = fid_state.path.clone();
     let is_dir = fid_state.is_dir;
-    let qid = fid_state.qid.clone();
     drop(fid_state);
 
     let msize = session.get_msize();
 
-    let owned_fd = tokio::task::spawn_blocking(move || -> std::io::Result<OwnedFd> {
-        if is_dir {
-            let fd = nix::fcntl::open(
-                path.as_os_str(),
-                nix::fcntl::OFlag::O_RDONLY | nix::fcntl::OFlag::O_DIRECTORY,
-                nix::sys::stat::Mode::empty(),
-            )
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-        } else {
-            let mut oflags = nix::fcntl::OFlag::empty();
-            let access = flags & 0x03;
-            match access {
-                0 => oflags |= nix::fcntl::OFlag::O_RDONLY,
-                1 => oflags |= nix::fcntl::OFlag::O_WRONLY,
-                2 => oflags |= nix::fcntl::OFlag::O_RDWR,
-                _ => oflags |= nix::fcntl::OFlag::O_RDONLY,
-            }
-            if flags & 0o1000 != 0 {
-                oflags |= nix::fcntl::OFlag::O_TRUNC;
-            }
-            if flags & 0o2000 != 0 {
-                oflags |= nix::fcntl::OFlag::O_APPEND;
-            }
-
-            let fd = nix::fcntl::open(
-                path.as_os_str(),
-                oflags,
-                nix::sys::stat::Mode::empty(),
-            )
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-        }
+    let ctx = ctx.clone();
+    let (owned_handle, qid) = tokio::task::spawn_blocking(move || {
+        ctx.backend.open(&path, flags, is_dir)
     })
     .await
     .map_err(join_err)??;
 
-    // Update fid with the opened fd
+    // Update fid with the opened handle
     if let Some(mut fid_state) = session.fids.get_mut(fid) {
-        fid_state.handle = Some(Arc::new(owned_fd));
+        fid_state.handle = Some(Arc::new(owned_handle));
     }
 
     let iounit = msize - 24;
@@ -84,9 +55,13 @@ pub async fn handle_lopen(session: &Session, _backend: &LocalBackend, fc: Fcall)
 /// Returns pre-encoded wire bytes via `ReadResult::Raw` to avoid copying the
 /// file data through the marshal layer (`put_data` / `extend_from_slice`).
 /// The 9P header and data-length prefix are written directly into the same
-/// buffer that receives the file data — one allocation, one read, zero
+/// buffer that receives the file data -- one allocation, one read, zero
 /// intermediate copies.
-pub async fn handle_read(session: &Session, _backend: &LocalBackend, fc: Fcall) -> Result<ReadResult, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn handle_read<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: Fcall,
+) -> Result<ReadResult, Box<dyn std::error::Error + Send + Sync>> {
     let Msg::Read { fid, offset, count } = fc.msg else {
         return Err("expected Read message".into());
     };
@@ -96,13 +71,14 @@ pub async fn handle_read(session: &Session, _backend: &LocalBackend, fc: Fcall) 
         .fids
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
-    let raw_fd = fid_state
+    let handle = fid_state
         .handle
         .as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
-        .as_raw_fd();
+        .clone();
     drop(fid_state);
 
+    let ctx = ctx.clone();
     let wire = tokio::task::spawn_blocking(move || {
         // Wire layout: size[4] + type[1] + tag[2] + count[4] + data[n]
         //              ^^^^^^^^ header (7 bytes) ^^^^^^^^ ^^^^ data prefix
@@ -111,10 +87,7 @@ pub async fn handle_read(session: &Session, _backend: &LocalBackend, fc: Fcall) 
         let mut buf = vec![0u8; HDR + count as usize];
 
         // Read file data directly into the data region (offset HDR)
-        let mut file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
-        file.seek(std::io::SeekFrom::Start(offset))?;
-        let n = file.read(&mut buf[HDR..])?;
-        std::mem::forget(file);
+        let n = ctx.backend.read_into(&handle, offset, &mut buf[HDR..])?;
 
         // Truncate to actual size
         buf.truncate(HDR + n);
@@ -134,7 +107,7 @@ pub async fn handle_read(session: &Session, _backend: &LocalBackend, fc: Fcall) 
     Ok(ReadResult::Raw(wire))
 }
 
-/// Result of handle_read — pre-encoded wire bytes for the zero-copy fast path.
+/// Result of handle_read -- pre-encoded wire bytes for the zero-copy fast path.
 pub enum ReadResult {
     /// Pre-encoded wire bytes ready to send directly on the QUIC stream.
     Raw(Vec<u8>),
@@ -144,7 +117,11 @@ pub enum ReadResult {
 ///
 /// Used by the TCP transport and Tcompound dispatch where we cannot bypass the
 /// marshal layer.  This still goes through the standard encode path.
-pub async fn handle_read_fcall(session: &Session, _backend: &LocalBackend, fc: Fcall) -> HandlerResult {
+pub async fn handle_read_fcall<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: Fcall,
+) -> HandlerResult {
     let Msg::Read { fid, offset, count } = fc.msg else {
         return Err("expected Read message".into());
     };
@@ -154,21 +131,16 @@ pub async fn handle_read_fcall(session: &Session, _backend: &LocalBackend, fc: F
         .fids
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
-    let raw_fd = fid_state
+    let handle = fid_state
         .handle
         .as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
-        .as_raw_fd();
+        .clone();
     drop(fid_state);
 
+    let ctx = ctx.clone();
     let data = tokio::task::spawn_blocking(move || {
-        let mut file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
-        file.seek(std::io::SeekFrom::Start(offset))?;
-        let mut buf = vec![0u8; count as usize];
-        let n = file.read(&mut buf)?;
-        buf.truncate(n);
-        std::mem::forget(file);
-        Ok::<_, std::io::Error>(buf)
+        ctx.backend.read(&handle, offset, count)
     })
     .await
     .map_err(join_err)??;
@@ -182,7 +154,11 @@ pub async fn handle_read_fcall(session: &Session, _backend: &LocalBackend, fc: F
 }
 
 /// Handle Twrite: write bytes to an open file.
-pub async fn handle_write(session: &Session, _backend: &LocalBackend, lease_mgr: &LeaseManager, fc: Fcall) -> HandlerResult {
+pub async fn handle_write<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: Fcall,
+) -> HandlerResult {
     let Msg::Write { fid, offset, data } = fc.msg else {
         return Err("expected Write message".into());
     };
@@ -192,23 +168,20 @@ pub async fn handle_write(session: &Session, _backend: &LocalBackend, lease_mgr:
         .fids
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
-    let raw_fd = fid_state
+    let handle = fid_state
         .handle
         .as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
-        .as_raw_fd();
+        .clone();
     let qid_path = fid_state.qid.path;
     drop(fid_state);
 
     // Break read leases held by other connections on this file.
-    lease_mgr.break_for_write(qid_path, session.conn_id);
+    ctx.lease_mgr.break_for_write(qid_path, session.conn_id);
 
+    let ctx = ctx.clone();
     let n = tokio::task::spawn_blocking(move || {
-        let mut file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
-        file.seek(std::io::SeekFrom::Start(offset))?;
-        let n = file.write(&data)?;
-        std::mem::forget(file);
-        Ok::<_, std::io::Error>(n)
+        ctx.backend.write(&handle, offset, &data)
     })
     .await
     .map_err(join_err)??;
@@ -222,9 +195,9 @@ pub async fn handle_write(session: &Session, _backend: &LocalBackend, lease_mgr:
 }
 
 /// Handle Treadlink: read a symbolic link target.
-pub async fn handle_readlink(
-    session: &Session,
-    _backend: &LocalBackend,
+pub async fn handle_readlink<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Readlink { fid } = fc.msg else {
@@ -239,9 +212,9 @@ pub async fn handle_readlink(
     let path = fid_state.path.clone();
     drop(fid_state);
 
+    let ctx = ctx.clone();
     let target_str = tokio::task::spawn_blocking(move || {
-        let target = std::fs::read_link(&path)?;
-        Ok::<_, std::io::Error>(target.to_string_lossy().to_string())
+        ctx.backend.readlink(&path)
     })
     .await
     .map_err(join_err)??;
@@ -257,7 +230,11 @@ pub async fn handle_readlink(
 }
 
 /// Handle Tfsync: flush file data to disk.
-pub async fn handle_fsync(session: &Session, fc: Fcall) -> HandlerResult {
+pub async fn handle_fsync<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: Fcall,
+) -> HandlerResult {
     let Msg::Fsync { fid } = fc.msg else {
         return Err("expected Fsync message".into());
     };
@@ -267,14 +244,13 @@ pub async fn handle_fsync(session: &Session, fc: Fcall) -> HandlerResult {
         .fids
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
-
-    let raw_fd = fid_state.handle.as_ref().map(|fd| fd.as_raw_fd());
+    let handle = fid_state.handle.clone();
     drop(fid_state);
 
-    if let Some(raw_fd) = raw_fd {
+    if let Some(handle) = handle {
+        let ctx = ctx.clone();
         tokio::task::spawn_blocking(move || {
-            nix::unistd::fsync(raw_fd)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            ctx.backend.fsync(&handle)
         })
         .await
         .map_err(join_err)??;

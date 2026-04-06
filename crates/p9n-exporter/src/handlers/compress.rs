@@ -5,7 +5,7 @@ use crate::session::Session;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::*;
 
-pub fn handle(_session: &Session, fc: Fcall) -> HandlerResult {
+pub fn handle<H: Send + Sync + 'static>(_session: &Session<H>, fc: Fcall) -> HandlerResult {
     let Msg::Compress { algo, level: _ } = fc.msg else {
         return Err("expected Compress".into());
     };

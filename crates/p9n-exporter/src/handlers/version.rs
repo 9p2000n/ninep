@@ -6,8 +6,8 @@ use p9n_proto::types::*;
 use tokio::sync::mpsc;
 use crate::watch_manager::WatchEvent;
 
-pub fn handle(
-    session: &Session,
+pub fn handle<H: Send + Sync + 'static>(
+    session: &Session<H>,
     watch_mgr: &WatchManager,
     watch_tx: &mpsc::Sender<WatchEvent>,
     fc: Fcall,

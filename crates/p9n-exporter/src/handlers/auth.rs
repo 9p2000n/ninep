@@ -12,7 +12,7 @@ use p9n_proto::types::MsgType;
 use p9n_proto::wire::Qid;
 use std::path::PathBuf;
 
-pub fn handle(session: &Session, fc: Fcall) -> HandlerResult {
+pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) -> HandlerResult {
     let Msg::Auth { afid, uname, aname } = fc.msg else {
         return Err("expected Auth message".into());
     };

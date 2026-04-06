@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 static NEXT_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 
-pub fn handle(
-    session: &Session,
+pub fn handle<H: Send + Sync + 'static>(
+    session: &Session<H>,
     lease_mgr: &LeaseManager,
     push_tx: &PushTx,
     max_lease_duration: u32,

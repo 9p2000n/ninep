@@ -1,20 +1,25 @@
 //! Handle streaming I/O: Tstreamopen, Tstreamdata, Tstreamclose.
 
+use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::{Session, StreamState};
-use crate::util::{join_err, with_borrowed_file};
+use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
-use std::io::{Read, Seek, Write};
-use std::os::unix::io::AsRawFd;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
+use crate::util::join_err;
 
 static NEXT_STREAM_ID: AtomicU32 = AtomicU32::new(1);
 
 const STREAM_WRITE: u8 = 1;
 
-pub async fn handle(session: &Session, fc: Fcall) -> HandlerResult {
+pub async fn handle<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: Fcall,
+) -> HandlerResult {
     let tag = fc.tag;
     match fc.msg_type {
         MsgType::Tstreamopen => {
@@ -23,14 +28,14 @@ pub async fn handle(session: &Session, fc: Fcall) -> HandlerResult {
             };
             let fid_state = session.fids.get(fid)
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
-            let raw_fd = fid_state.handle.as_ref()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
-                .as_raw_fd();
+            // Verify fid is open (handle exists)
+            let _ = fid_state.handle.as_ref()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?;
             drop(fid_state);
 
             let stream_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
             session.active_streams.insert(stream_id, StreamState {
-                raw_fd,
+                raw_fd: 0, // Not used in generic path; handle is used via fid lookup
                 fid,
                 direction,
                 offset: Mutex::new(offset),
@@ -46,18 +51,24 @@ pub async fn handle(session: &Session, fc: Fcall) -> HandlerResult {
 
             let stream = session.active_streams.get(&stream_id)
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown stream"))?;
-            let raw_fd = stream.raw_fd;
+            let stream_fid = stream.fid;
             let direction = stream.direction;
             let offset = *stream.offset.lock().unwrap();
             drop(stream);
 
+            // Look up the handle from the fid table
+            let fid_state = session.fids.get(stream_fid)
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "stream fid gone"))?;
+            let handle = fid_state.handle.as_ref()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
+                .clone();
+            drop(fid_state);
+
             if direction == STREAM_WRITE {
                 let data_len = data.len();
+                let ctx = ctx.clone();
                 let written = tokio::task::spawn_blocking(move || {
-                    with_borrowed_file(raw_fd, |file| {
-                        file.seek(std::io::SeekFrom::Start(offset))?;
-                        file.write(&data)
-                    })
+                    ctx.backend.write(&handle, offset, &data)
                 })
                 .await
                 .map_err(join_err)??;
@@ -70,15 +81,10 @@ pub async fn handle(session: &Session, fc: Fcall) -> HandlerResult {
                 Ok(Fcall { size: 0, msg_type: MsgType::Rstreamdata, tag, msg: Msg::Streamdata { stream_id, seq, data: Vec::new() } })
             } else {
                 // Read direction: respond with file data.
-                let chunk = (session.get_msize() - 24) as usize;
+                let chunk = (session.get_msize() - 24) as u32;
+                let ctx = ctx.clone();
                 let read_data = tokio::task::spawn_blocking(move || {
-                    with_borrowed_file(raw_fd, |file| {
-                        file.seek(std::io::SeekFrom::Start(offset))?;
-                        let mut buf = vec![0u8; chunk];
-                        let n = file.read(&mut buf)?;
-                        buf.truncate(n);
-                        Ok(buf)
-                    })
+                    ctx.backend.read(&handle, offset, chunk)
                 })
                 .await
                 .map_err(join_err)??;
@@ -100,10 +106,16 @@ pub async fn handle(session: &Session, fc: Fcall) -> HandlerResult {
             if let Some((_, stream)) = session.active_streams.remove(&stream_id) {
                 // Fsync on close for write streams to ensure durability.
                 if stream.direction == STREAM_WRITE {
-                    let raw_fd = stream.raw_fd;
-                    let _ = tokio::task::spawn_blocking(move || {
-                        nix::unistd::fsync(raw_fd)
-                    }).await;
+                    let stream_fid = stream.fid;
+                    if let Some(fid_state) = session.fids.get(stream_fid) {
+                        if let Some(handle) = fid_state.handle.clone() {
+                            drop(fid_state);
+                            let ctx = ctx.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                ctx.backend.fsync(&handle)
+                            }).await;
+                        }
+                    }
                 }
             }
 
