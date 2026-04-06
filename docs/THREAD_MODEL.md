@@ -50,19 +50,20 @@ Multiple streams on the same QUIC connection are **processed in parallel**.
 - `watch_rx.recv()` → push multiplexed on the same TCP stream
 - Writer protected by `Arc<Mutex<WriteHalf>>`
 
-### 1.3 Filesystem I/O — spawn_blocking
+### 1.3 Filesystem I/O — spawn_blocking + Backend trait
 
-All POSIX syscalls (open, read, write, stat, readdir, mkdir, etc.) are offloaded to the **tokio blocking thread pool** (default cap 512 threads) via `tokio::task::spawn_blocking`. The handlers themselves are async, awaiting blocking task completion.
+All filesystem operations are offloaded to the **tokio blocking thread pool** (default cap 512 threads) via `tokio::task::spawn_blocking`. Handlers are async and delegate to `Backend` trait methods inside the blocking closure. The `Backend` trait is generic — `LocalBackend` (the default) calls POSIX syscalls; future backends could call cloud APIs.
 
 Example (`handlers/io.rs`):
 ```rust
+let handle = fid_state.handle.clone().ok_or(...)?; // Arc<H> clone (~1ns atomic)
+let ctx = ctx.clone();                              // Arc<SharedCtx<B>> clone
 let data = tokio::task::spawn_blocking(move || {
-    file.seek(SeekFrom::Start(offset))?;
-    let mut buf = vec![0u8; count as usize];
-    file.read_exact(&mut buf)?;
-    Ok(buf)
+    ctx.backend.read(&handle, offset, count)        // Backend trait dispatch
 }).await??;
 ```
+
+Since `Backend` is generic (not `dyn`), the trait dispatch is monomorphized at compile time — zero runtime overhead compared to direct syscalls.
 
 ### 1.4 Watch Manager — The Critical OS Thread Boundary
 
@@ -86,7 +87,7 @@ Key design decisions:
 
 | Data Structure | Type | Purpose |
 |----------------|------|---------|
-| `Session.fids` | `DashMap<u32, FidState>` | Per-connection FID table, concurrent access from multiple stream tasks |
+| `Session.fids` | `DashMap<u32, FidState<H>>` | Per-connection FID table, handles wrapped in `Arc<H>` for cheap cloning into spawn_blocking |
 | `Session.active_caps` | `DashMap` | Capability tokens |
 | `Session.inflight` | `DashMap<u16, CancellationToken>` | Tflush cancels in-flight requests |
 | `Session.msize` | `AtomicU32` | Message size limit |
@@ -209,7 +210,7 @@ Two background tasks cooperate:
 
 | Boundary | Direction | Sync Mechanism | Blocking? |
 |----------|-----------|----------------|-----------|
-| **Exporter**: tokio worker → blocking pool | Filesystem I/O | `spawn_blocking` | Does not block tokio worker |
+| **Exporter**: tokio worker → blocking pool | Backend I/O (filesystem, etc.) | `spawn_blocking` + `Arc<SharedCtx>` | Does not block tokio worker |
 | **Exporter**: inotify OS thread → tokio task | Watch events | `mpsc::try_send` + DashMap | OS thread never blocks |
 | **Exporter**: tokio task ↔ tokio task | Shared Session | DashMap / Atomic | Lock-free or sharded |
 | **Importer**: FUSE task → RPC → background reader | Request/response | `oneshot` channel | Pure async await |
@@ -222,6 +223,6 @@ Two background tasks cooperate:
 
 1. **Exporter has an OS thread boundary** (notify inotify); importer is **pure tokio, zero OS threads**.
 2. **QUIC multi-stream concurrency vs TCP single-connection serial** — consistent on both sides.
-3. **Exporter's blocking pool is performance-critical** — 512 thread cap, all filesystem syscalls go through it.
-4. **DashMap used throughout** — FID table, Session, inflight, watch registration — all sharded locks.
+3. **Exporter's blocking pool is performance-critical** — 512 thread cap, all Backend I/O goes through it. `Arc<SharedCtx<B>>` and `Arc<H>` are cloned into closures (atomic increment, ~1ns) instead of raw fd integers.
+4. **DashMap used throughout** — FID table, Session, inflight, watch registration — all sharded locks. StreamState caches `Arc<H>` to avoid per-operation fid lookups.
 5. **Importer does no local I/O** — everything is delegated to the exporter, so no `spawn_blocking` needed.

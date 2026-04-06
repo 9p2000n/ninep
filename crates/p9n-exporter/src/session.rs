@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use p9n_proto::caps::CapSet;
 use std::collections::HashSet;
 use std::os::unix::io::OwnedFd;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -97,10 +98,14 @@ impl RateLimiter {
 }
 
 /// State for an active streaming I/O session opened via Tstreamopen.
-pub struct StreamState {
-    /// Raw fd borrowed from the fid's open OwnedFd.
-    pub raw_fd: i32,
-    /// The fid this stream is associated with.
+///
+/// The handle is cloned from the fid's `Arc<H>` at stream-open time, so
+/// subsequent `Tstreamdata` and `Tstreamclose` operations access it directly
+/// without a fid table lookup.
+pub struct StreamState<H: Send + Sync + 'static> {
+    /// Cached handle cloned from the fid's open handle.
+    pub handle: Arc<H>,
+    /// The fid this stream is associated with (for debugging/cleanup).
     pub fid: u32,
     /// Direction: 0 = read, 1 = write.
     pub direction: u8,
@@ -123,7 +128,7 @@ pub struct Session<H: Send + Sync + 'static = OwnedFd> {
     /// Active leases: lease_id → (fid, lease_type, expiry_instant, duration_secs)
     pub active_leases: DashMap<u64, (u32, u8, std::time::Instant, u32)>,
     /// Active streams: stream_id → StreamState. Used by streaming I/O.
-    pub active_streams: DashMap<u32, StreamState>,
+    pub active_streams: DashMap<u32, StreamState<H>>,
     /// Per-fid rate limiters. Only populated when rate limiting is enabled.
     pub rate_limits: DashMap<u32, RateLimiter>,
     /// In-flight requests: tag → CancellationToken. Used by Tflush.

@@ -28,14 +28,14 @@ pub async fn handle<B: Backend>(
             };
             let fid_state = session.fids.get(fid)
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
-            // Verify fid is open (handle exists)
-            let _ = fid_state.handle.as_ref()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?;
+            let handle = fid_state.handle.as_ref()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
+                .clone();
             drop(fid_state);
 
             let stream_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
             session.active_streams.insert(stream_id, StreamState {
-                raw_fd: 0, // Not used in generic path; handle is used via fid lookup
+                handle,
                 fid,
                 direction,
                 offset: Mutex::new(offset),
@@ -51,18 +51,10 @@ pub async fn handle<B: Backend>(
 
             let stream = session.active_streams.get(&stream_id)
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown stream"))?;
-            let stream_fid = stream.fid;
+            let handle = stream.handle.clone();
             let direction = stream.direction;
             let offset = *stream.offset.lock().unwrap();
             drop(stream);
-
-            // Look up the handle from the fid table
-            let fid_state = session.fids.get(stream_fid)
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "stream fid gone"))?;
-            let handle = fid_state.handle.as_ref()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
-                .clone();
-            drop(fid_state);
 
             if direction == STREAM_WRITE {
                 let data_len = data.len();
@@ -106,16 +98,11 @@ pub async fn handle<B: Backend>(
             if let Some((_, stream)) = session.active_streams.remove(&stream_id) {
                 // Fsync on close for write streams to ensure durability.
                 if stream.direction == STREAM_WRITE {
-                    let stream_fid = stream.fid;
-                    if let Some(fid_state) = session.fids.get(stream_fid) {
-                        if let Some(handle) = fid_state.handle.clone() {
-                            drop(fid_state);
-                            let ctx = ctx.clone();
-                            let _ = tokio::task::spawn_blocking(move || {
-                                ctx.backend.fsync(&handle)
-                            }).await;
-                        }
-                    }
+                    let handle = stream.handle;
+                    let ctx = ctx.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        ctx.backend.fsync(&handle)
+                    }).await;
                 }
             }
 

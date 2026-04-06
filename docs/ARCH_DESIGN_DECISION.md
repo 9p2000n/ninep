@@ -423,28 +423,28 @@ release() → LeaseMap.release_by_fh(fh) → Tleaseack (if not already broken) �
 
 ## 23. Streaming I/O: Per-Stream State in Session
 
-**Decision**: `Tstreamopen` creates a `StreamState` entry in `Session.active_streams`, tracking the underlying fid's raw fd, direction, and current offset.
+**Decision**: `Tstreamopen` creates a `StreamState<H>` entry in `Session.active_streams`, caching the handle (`Arc<H>`) cloned from the fid at open time.
 
 **Problem**: The original streaming handler was a stub that echoed acknowledgments without actually performing I/O. Real streaming requires:
-1. Mapping `stream_id` → `(fd, direction, offset)` across multiple `Tstreamdata` messages
-2. File I/O on the blocking thread pool (same as regular read/write)
+1. Mapping `stream_id` → `(handle, direction, offset)` across multiple `Tstreamdata` messages
+2. File I/O via the Backend trait on the blocking thread pool
 3. Automatic fsync on close for write streams
 
 **Design**:
 ```rust
-pub struct StreamState {
-    pub raw_fd: i32,           // borrowed from fid's OwnedFd
-    pub fid: u32,
+pub struct StreamState<H: Send + Sync + 'static> {
+    pub handle: Arc<H>,        // cloned from fid's handle at stream open
+    pub fid: u32,              // for debugging/cleanup
     pub direction: u8,         // 0=read, 1=write
     pub offset: Mutex<u64>,    // advanced on each Tstreamdata
 }
 ```
 
-Stored in `Session.active_streams: DashMap<u32, StreamState>`. Stream IDs are allocated from a global `AtomicU32`.
+Stored in `Session.active_streams: DashMap<u32, StreamState<H>>`. Stream IDs are allocated from a global `AtomicU32`. The handle is cached at open time so that `Tstreamdata` operations access it directly without a fid table lookup — this avoids a DashMap access on every streaming I/O call.
 
-**Write path**: `Tstreamdata` → `spawn_blocking(seek + write)` → advance offset → empty data ack.
-**Read path**: `Tstreamdata` → `spawn_blocking(seek + read)` → advance offset → data in response.
-**Close**: `Tstreamclose` → remove state; write streams trigger `fsync` for durability.
+**Write path**: `Tstreamdata` → `spawn_blocking(backend.write(&handle, ...))` → advance offset → empty data ack.
+**Read path**: `Tstreamdata` → `spawn_blocking(backend.read(&handle, ...))` → advance offset → data in response.
+**Close**: `Tstreamclose` → remove state; write streams trigger `backend.fsync(&handle)` for durability.
 
 **Cleanup**: `Session::reset()` clears `active_streams` alongside fids/watches/leases.
 
