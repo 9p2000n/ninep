@@ -1,6 +1,7 @@
 //! Handle Tmknod: create device nodes, FIFOs, sockets.
 
 use crate::access::AccessControl;
+use crate::backend::Backend;
 use crate::backend::local::LocalBackend;
 use crate::handlers::HandlerResult;
 use crate::lease_manager::LeaseManager;
@@ -45,7 +46,10 @@ pub async fn handle(session: &Session, backend: &LocalBackend, ac: &AccessContro
         Ok::<_, std::io::Error>((LocalBackend::make_qid(&meta), resolved))
     }).await.map_err(join_err)??;
 
-    ac.apply_ownership(spiffe_id.as_deref(), &resolved_path)?;
+    let (uid, gid) = ac.ownership_for(spiffe_id.as_deref());
+    if uid != 0 || gid != 0 {
+        backend.chown(&resolved_path, uid, gid)?;
+    }
 
     Ok(Fcall { size: 0, msg_type: MsgType::Rmknod, tag, msg: Msg::Rmknod { qid } })
 }

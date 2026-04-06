@@ -125,11 +125,15 @@ impl AccessControl {
         &self.default
     }
 
-    /// Resolve the filesystem root for a given SPIFFE ID.
+    /// Resolve the filesystem root path for a given SPIFFE ID.
     ///
     /// If the policy has an explicit root, use it.
-    /// If the policy comes from a domain match, derive the root from the SPIFFE workload path.
+    /// If the policy comes from a domain match, derive from the SPIFFE workload path.
     /// Otherwise, use the export root.
+    ///
+    /// Note: this only computes the path — it does **not** create the directory.
+    /// The caller (attach handler) is responsible for calling `backend.attach()`
+    /// which ensures the directory exists.
     pub fn resolve_root(&self, spiffe_id: Option<&str>) -> PathBuf {
         let policy = self.resolve(spiffe_id);
 
@@ -143,10 +147,7 @@ impl AccessControl {
                 if self.by_domain.contains_key(domain) {
                     // "spiffe://example.com/app/worker" → "app/worker"
                     if let Some(workload_path) = extract_workload_path(id) {
-                        let user_root = self.export_root.join(workload_path);
-                        // Create the directory if it doesn't exist
-                        let _ = std::fs::create_dir_all(&user_root);
-                        return user_root;
+                        return self.export_root.join(workload_path);
                     }
                 }
             }
@@ -189,31 +190,13 @@ impl AccessControl {
         self.check(spiffe_id, PERM_ADMIN)
     }
 
-    /// Apply ownership mapping: chown a newly created file to the policy's uid/gid.
+    /// Return the (uid, gid) ownership mapping for a SPIFFE identity.
     ///
-    /// Called after lcreate, mkdir, symlink, mknod. If the policy specifies
-    /// uid=0 and gid=0, this is a no-op (file keeps the server process owner).
-    pub fn apply_ownership(
-        &self,
-        spiffe_id: Option<&str>,
-        path: &std::path::Path,
-    ) -> Result<(), std::io::Error> {
+    /// Called after lcreate, mkdir, symlink, mknod. The caller should pass
+    /// these values to `backend.chown()` if either is non-zero.
+    pub fn ownership_for(&self, spiffe_id: Option<&str>) -> (u32, u32) {
         let policy = self.resolve(spiffe_id);
-        if policy.uid == 0 && policy.gid == 0 {
-            return Ok(()); // no mapping configured
-        }
-        let uid = if policy.uid != 0 {
-            Some(nix::unistd::Uid::from_raw(policy.uid))
-        } else {
-            None
-        };
-        let gid = if policy.gid != 0 {
-            Some(nix::unistd::Gid::from_raw(policy.gid))
-        } else {
-            None
-        };
-        nix::unistd::chown(path, uid, gid)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        (policy.uid, policy.gid)
     }
 }
 

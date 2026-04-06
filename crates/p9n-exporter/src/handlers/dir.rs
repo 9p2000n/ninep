@@ -1,4 +1,5 @@
 use crate::access::AccessControl;
+use crate::backend::Backend;
 use crate::backend::local::LocalBackend;
 use crate::handlers::HandlerResult;
 use crate::lease_manager::LeaseManager;
@@ -149,7 +150,10 @@ pub async fn handle_mkdir(
     .await
     .map_err(join_err)??;
 
-    ac.apply_ownership(spiffe_id.as_deref(), &resolved_path)?;
+    let (uid, gid) = ac.ownership_for(spiffe_id.as_deref());
+    if uid != 0 || gid != 0 {
+        backend.chown(&resolved_path, uid, gid)?;
+    }
 
     Ok(Fcall {
         size: 0,

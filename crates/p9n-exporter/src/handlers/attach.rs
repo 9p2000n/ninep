@@ -1,4 +1,5 @@
 use crate::access::AccessControl;
+use crate::backend::Backend;
 use crate::backend::local::LocalBackend;
 use crate::fid_table::FidState;
 use crate::handlers::HandlerResult;
@@ -14,7 +15,7 @@ use p9n_proto::types::MsgType;
 /// - Otherwise, use the shared export root
 pub fn handle(
     session: &Session,
-    _backend: &LocalBackend,
+    backend: &LocalBackend,
     ac: &AccessControl,
     fc: Fcall,
 ) -> HandlerResult {
@@ -48,13 +49,8 @@ pub fn handle(
         canonical
     };
 
-    // Ensure the root directory exists
-    if !attach_root.is_dir() {
-        std::fs::create_dir_all(&attach_root)?;
-    }
-
-    let meta = std::fs::metadata(&attach_root)?;
-    let qid = LocalBackend::make_qid(&meta);
+    // Ensure the root directory exists and get its Qid.
+    let (qid, _is_dir) = backend.attach(&attach_root)?;
 
     session.fids.insert(
         fid,
