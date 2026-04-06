@@ -1,3 +1,4 @@
+use crate::backend::Backend;
 use crate::handlers::{self, io::ReadResult};
 use crate::lease_manager;
 use crate::push::{self, PushSender, QuicPushSender};
@@ -11,10 +12,10 @@ use crate::util::map_io_error;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-pub struct QuicConnectionHandler {
+pub struct QuicConnectionHandler<B: Backend> {
     conn: quinn::Connection,
-    ctx: Arc<SharedCtx>,
-    session: Arc<Session>,
+    ctx: Arc<SharedCtx<B>>,
+    session: Arc<Session<B::Handle>>,
     watch_rx: mpsc::Receiver<WatchEvent>,
     watch_tx: mpsc::Sender<WatchEvent>,
     push_rx: mpsc::Receiver<Fcall>,
@@ -22,8 +23,8 @@ pub struct QuicConnectionHandler {
     pusher: QuicPushSender,
 }
 
-impl QuicConnectionHandler {
-    pub fn new(conn: quinn::Connection, ctx: Arc<SharedCtx>) -> Self {
+impl<B: Backend> QuicConnectionHandler<B> {
+    pub fn new(conn: quinn::Connection, ctx: Arc<SharedCtx<B>>) -> Self {
         let (watch_tx, watch_rx) = mpsc::channel(256);
         let (push_tx, push_rx) = mpsc::channel(64);
         let spiffe_id = extract_spiffe_id_from_conn(&conn);
@@ -129,9 +130,9 @@ impl QuicConnectionHandler {
 }
 
 /// Handle a single bidirectional QUIC stream with in-flight tracking.
-async fn handle_stream(
-    ctx: Arc<SharedCtx>,
-    session: Arc<Session>,
+async fn handle_stream<B: Backend>(
+    ctx: Arc<SharedCtx<B>>,
+    session: Arc<Session<B::Handle>>,
     watch_tx: mpsc::Sender<WatchEvent>,
     push_tx: mpsc::Sender<Fcall>,
     mut send: quinn::SendStream,
@@ -239,9 +240,9 @@ async fn handle_stream(
 }
 
 /// Handle a single datagram message.
-async fn handle_datagram(
-    ctx: Arc<SharedCtx>,
-    session: Arc<Session>,
+async fn handle_datagram<B: Backend>(
+    ctx: Arc<SharedCtx<B>>,
+    session: Arc<Session<B::Handle>>,
     watch_tx: mpsc::Sender<WatchEvent>,
     push_tx: mpsc::Sender<Fcall>,
     conn: quinn::Connection,

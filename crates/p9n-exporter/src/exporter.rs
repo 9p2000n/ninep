@@ -1,4 +1,5 @@
 use crate::access::AccessControl;
+use crate::backend::Backend;
 use crate::backend::local::LocalBackend;
 use crate::lease_manager::LeaseManager;
 use crate::quic_connection::QuicConnectionHandler;
@@ -17,15 +18,17 @@ use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 
-pub struct Exporter {
+/// 9P2000.N file exporter, generic over the filesystem backend.
+pub struct Exporter<B: Backend = LocalBackend> {
     endpoint: quinn::Endpoint,
-    ctx: Arc<SharedCtx>,
+    ctx: Arc<SharedCtx<B>>,
     tcp_listener: Option<tokio::net::TcpListener>,
     tcp_acceptor: Option<TlsAcceptor>,
     shutdown_token: CancellationToken,
 }
 
-impl Exporter {
+impl Exporter<LocalBackend> {
+    /// Create an exporter with the default local filesystem backend.
     pub fn new(
         listen: SocketAddr,
         export: String,
@@ -34,6 +37,7 @@ impl Exporter {
         Self::with_config(listen, export, auth, crate::config::ExporterConfig::default())
     }
 
+    /// Create an exporter with the default local filesystem backend and custom config.
     pub fn with_config(
         listen: SocketAddr,
         export: String,
@@ -43,6 +47,19 @@ impl Exporter {
         let endpoint = config::server_endpoint(listen, &auth)?;
         let backend = LocalBackend::new(export.clone())?;
         let access = AccessControl::new(backend.root().to_path_buf());
+        Self::with_backend(endpoint, backend, access, auth, cfg)
+    }
+}
+
+impl<B: Backend> Exporter<B> {
+    /// Create an exporter with a custom backend.
+    pub fn with_backend(
+        endpoint: quinn::Endpoint,
+        backend: B,
+        access: AccessControl,
+        auth: SpiffeAuth,
+        cfg: crate::config::ExporterConfig,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let session_store = SessionStore::new(cfg.session_ttl);
         let watch_mgr = WatchManager::new()?;
         let lease_mgr = LeaseManager::new();
@@ -65,7 +82,7 @@ impl Exporter {
             config: cfg,
         });
 
-        tracing::info!("9P2000.N exporter listening on {listen}");
+        tracing::info!("9P2000.N exporter listening on {}", endpoint.local_addr()?);
         Ok(Self {
             endpoint,
             ctx,
@@ -169,8 +186,6 @@ impl Exporter {
         self.endpoint.close(quinn::VarInt::from_u32(0), b"shutdown");
 
         // Step 2: Wait for active connection handlers to finish cleanup.
-        // endpoint.close() triggers CONNECTION_CLOSE on all QUIC connections,
-        // causing each handler's select! to exit and call cleanup().
         let active = handlers.len();
         if active > 0 {
             tracing::info!("waiting for {active} connection(s) to drain...");
@@ -184,8 +199,7 @@ impl Exporter {
         // Step 3: Stop the GC background task.
         self.shutdown_token.cancel();
 
-        // Step 4: Wait for QUIC endpoint to become idle (ensures
-        // CONNECTION_CLOSE frames are acknowledged by peers).
+        // Step 4: Wait for QUIC endpoint to become idle.
         self.endpoint.wait_idle().await;
 
         tracing::info!("clean shutdown complete");
@@ -234,8 +248,6 @@ async fn tcp_accept(
 /// Generate a 256-bit HMAC key from system entropy.
 fn generate_hmac_key() -> [u8; 32] {
     let mut key = [0u8; 32];
-    // Use time + stack address as entropy source.
-    // In production, use getrandom or ring::rand.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
@@ -245,7 +257,6 @@ fn generate_hmac_key() -> [u8; 32] {
     key[16..24].copy_from_slice(&addr.to_le_bytes());
     let pid = std::process::id();
     key[24..28].copy_from_slice(&pid.to_le_bytes());
-    // Mix with a simple hash
     for i in 0..32 {
         key[i] = key[i].wrapping_mul(31).wrapping_add(key[(i + 7) % 32]);
     }

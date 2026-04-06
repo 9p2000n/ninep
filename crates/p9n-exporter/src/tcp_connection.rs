@@ -5,6 +5,7 @@
 //! - Push messages (Rnotify, Rleasebreak) sent on the same stream with tag=NO_TAG
 //! - SPIFFE ID extracted from tokio-rustls peer certificates
 
+use crate::backend::Backend;
 use crate::handlers;
 use crate::lease_manager;
 use crate::push::{self, PushSender, TcpPushSender};
@@ -21,11 +22,11 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio_rustls::server::TlsStream;
 
-pub struct TcpConnectionHandler {
+pub struct TcpConnectionHandler<B: Backend> {
     reader: ReadHalf<TlsStream<TcpStream>>,
     writer: Arc<Mutex<WriteHalf<TlsStream<TcpStream>>>>,
-    ctx: Arc<SharedCtx>,
-    session: Arc<Session>,
+    ctx: Arc<SharedCtx<B>>,
+    session: Arc<Session<B::Handle>>,
     watch_rx: mpsc::Receiver<WatchEvent>,
     watch_tx: mpsc::Sender<WatchEvent>,
     push_rx: mpsc::Receiver<Fcall>,
@@ -33,8 +34,8 @@ pub struct TcpConnectionHandler {
     pusher: TcpPushSender<WriteHalf<TlsStream<TcpStream>>>,
 }
 
-impl TcpConnectionHandler {
-    pub fn new(stream: TlsStream<TcpStream>, ctx: Arc<SharedCtx>) -> Self {
+impl<B: Backend> TcpConnectionHandler<B> {
+    pub fn new(stream: TlsStream<TcpStream>, ctx: Arc<SharedCtx<B>>) -> Self {
         let (watch_tx, watch_rx) = mpsc::channel(256);
         let (push_tx, push_rx) = mpsc::channel(64);
 
