@@ -15,7 +15,7 @@ pub async fn handle_lock(session: &Session, fc: Fcall) -> HandlerResult {
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
-    let raw_fd = fid_state.open_fd.as_ref()
+    let raw_fd = fid_state.handle.as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
         .as_raw_fd();
     drop(fid_state);
@@ -61,7 +61,7 @@ pub async fn handle_getlock(session: &Session, fc: Fcall) -> HandlerResult {
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
-    let raw_fd = fid_state.open_fd.as_ref()
+    let raw_fd = fid_state.handle.as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
         .as_raw_fd();
     drop(fid_state);

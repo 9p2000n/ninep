@@ -8,6 +8,7 @@ use crate::session::Session;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::os::unix::io::{FromRawFd, OwnedFd};
+use std::sync::Arc;
 use crate::util::join_err;
 
 /// Handle Tlcreate: create and open a new file.
@@ -93,7 +94,7 @@ pub async fn handle_lcreate(
         FidState {
             path: resolved_path,
             qid: qid.clone(),
-            open_fd: Some(owned_fd),
+            handle: Some(Arc::new(owned_fd)),
             is_dir: false,
         },
     );

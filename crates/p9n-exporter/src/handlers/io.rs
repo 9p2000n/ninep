@@ -6,6 +6,7 @@ use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::io::{Read, Seek, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
+use std::sync::Arc;
 use crate::util::join_err;
 
 /// Handle Tlopen: open a file associated with a fid.
@@ -65,7 +66,7 @@ pub async fn handle_lopen(session: &Session, _backend: &LocalBackend, fc: Fcall)
 
     // Update fid with the opened fd
     if let Some(mut fid_state) = session.fids.get_mut(fid) {
-        fid_state.open_fd = Some(owned_fd);
+        fid_state.handle = Some(Arc::new(owned_fd));
     }
 
     let iounit = msize - 24;
@@ -96,7 +97,7 @@ pub async fn handle_read(session: &Session, _backend: &LocalBackend, fc: Fcall) 
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
     let raw_fd = fid_state
-        .open_fd
+        .handle
         .as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
         .as_raw_fd();
@@ -154,7 +155,7 @@ pub async fn handle_read_fcall(session: &Session, _backend: &LocalBackend, fc: F
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
     let raw_fd = fid_state
-        .open_fd
+        .handle
         .as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
         .as_raw_fd();
@@ -192,7 +193,7 @@ pub async fn handle_write(session: &Session, _backend: &LocalBackend, lease_mgr:
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
     let raw_fd = fid_state
-        .open_fd
+        .handle
         .as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
         .as_raw_fd();
@@ -267,7 +268,7 @@ pub async fn handle_fsync(session: &Session, fc: Fcall) -> HandlerResult {
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
 
-    let raw_fd = fid_state.open_fd.as_ref().map(|fd| fd.as_raw_fd());
+    let raw_fd = fid_state.handle.as_ref().map(|fd| fd.as_raw_fd());
     drop(fid_state);
 
     if let Some(raw_fd) = raw_fd {

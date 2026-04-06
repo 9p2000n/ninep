@@ -104,7 +104,7 @@ pub async fn handle(
             FidState {
                 path: fid_state.path.clone(),
                 qid: fid_state.qid.clone(),
-                open_fd: None,
+                handle: None,
                 is_dir: fid_state.is_dir,
             },
         );
@@ -147,7 +147,7 @@ pub async fn handle(
         FidState {
             path: final_path,
             qid: last_qid,
-            open_fd: None,
+            handle: None,
             is_dir: final_is_dir,
         },
     );

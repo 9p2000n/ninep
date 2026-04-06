@@ -2,6 +2,7 @@ use crate::fid_table::FidTable;
 use dashmap::DashMap;
 use p9n_proto::caps::CapSet;
 use std::collections::HashSet;
+use std::os::unix::io::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -107,14 +108,14 @@ pub struct StreamState {
     pub offset: Mutex<u64>,
 }
 
-pub struct Session {
+pub struct Session<H: Send + Sync + 'static = OwnedFd> {
     pub version: Mutex<Option<String>>,
     pub msize: AtomicU32,
     pub caps: Mutex<CapSet>,
     pub spiffe_id: Option<String>,
     pub session_key: Mutex<Option<[u8; 16]>>,
     pub conn_id: u64,
-    pub fids: FidTable,
+    pub fids: FidTable<H>,
     pub watch_ids: Mutex<HashSet<u32>>,
     authenticated: AtomicBool,
     spiffe_verified: AtomicBool,
@@ -129,7 +130,7 @@ pub struct Session {
     pub inflight: DashMap<u16, CancellationToken>,
 }
 
-impl Session {
+impl<H: Send + Sync + 'static> Session<H> {
     pub fn new(conn_id: u64) -> Self {
         Self {
             version: Mutex::new(None),

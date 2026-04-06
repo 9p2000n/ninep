@@ -33,7 +33,7 @@ pub fn handle(session: &Session, fc: Fcall) -> HandlerResult {
         FidState {
             path: PathBuf::from("/auth"),
             qid: qid.clone(),
-            open_fd: None,
+            handle: None,
             is_dir: false,
         },
     );

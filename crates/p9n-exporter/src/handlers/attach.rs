@@ -57,7 +57,7 @@ pub fn handle(
         FidState {
             path: attach_root.clone(),
             qid: qid.clone(),
-            open_fd: None,
+            handle: None,
             is_dir: true,
         },
     );

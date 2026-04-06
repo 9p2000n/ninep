@@ -41,7 +41,7 @@ pub async fn handle_xattrwalk(session: &Session, fc: Fcall) -> HandlerResult {
     session.fids.insert(newfid, FidState {
         path: PathBuf::from(format!("__xattr__:{}", name)),
         qid: Qid { qtype: 0, version: 0, path: newfid as u64 },
-        open_fd: None,
+        handle: None,
         is_dir: false,
     });
 

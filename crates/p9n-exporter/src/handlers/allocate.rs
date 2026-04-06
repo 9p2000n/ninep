@@ -24,7 +24,7 @@ pub async fn handle(session: &Session, _backend: &LocalBackend, fc: Fcall) -> Ha
         .get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
     let raw_fd = fid_state
-        .open_fd
+        .handle
         .as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
         .as_raw_fd();

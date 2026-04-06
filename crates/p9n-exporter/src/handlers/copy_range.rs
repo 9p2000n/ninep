@@ -32,7 +32,7 @@ pub async fn handle(session: &Session, _backend: &LocalBackend, fc: Fcall) -> Ha
         .get(src_fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown src_fid"))?;
     let src_raw = src_state
-        .open_fd
+        .handle
         .as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "src not open"))?
         .as_raw_fd();
@@ -43,7 +43,7 @@ pub async fn handle(session: &Session, _backend: &LocalBackend, fc: Fcall) -> Ha
         .get(dst_fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown dst_fid"))?;
     let dst_raw = dst_state
-        .open_fd
+        .handle
         .as_ref()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "dst not open"))?
         .as_raw_fd();
