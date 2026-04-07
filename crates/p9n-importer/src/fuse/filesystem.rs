@@ -29,6 +29,8 @@ pub struct P9Filesystem {
     fids: FidPool,
     attrs: Arc<AttrCache>,
     leases: Arc<LeaseMap>,
+    /// Whether the server supports Tcompound (reduces round-trips).
+    use_compound: bool,
     /// Handle for the background push receiver task.
     _push_handle: tokio::task::JoinHandle<()>,
 }
@@ -39,6 +41,11 @@ impl P9Filesystem {
     /// The `ShutdownHandle` captures `Arc` clones of shared state so that
     /// `main()` can drive ordered shutdown after fuse3 consumes `Self`.
     pub fn new(rpc: Arc<RpcClient>, importer: Importer) -> (Self, ShutdownHandle) {
+        let use_compound = importer.caps.has(CAP_COMPOUND);
+        if use_compound {
+            tracing::info!("compound optimization enabled");
+        }
+
         let inodes = Arc::new(InodeMap::new());
         inodes.set_root(importer.root_fid, importer.root_qid.clone());
         let attrs = Arc::new(AttrCache::new(4096, Duration::from_secs(1)));
@@ -63,6 +70,7 @@ impl P9Filesystem {
             fids: FidPool::new(),
             attrs,
             leases,
+            use_compound,
             _push_handle: push_handle,
         };
 
@@ -148,6 +156,71 @@ async fn getattr(rpc: &RpcClient, fid: u32) -> Result<Stat, RpcError> {
     }
 }
 
+/// Combined setattr+getattr in a single Tcompound round-trip.
+async fn compound_setattr_getattr(
+    rpc: &RpcClient,
+    fid: u32,
+    attr: SetAttr,
+) -> Result<Stat, RpcError> {
+    use crate::fuse::compound::{decode_subop, encode_subop, send_compound};
+
+    let set_op = encode_subop(MsgType::Tsetattr, &Msg::Setattr { fid, attr })?;
+    let get_op = encode_subop(MsgType::Tgetattr, &Msg::Getattr {
+        fid,
+        mask: P9_GETATTR_ALL,
+    })?;
+
+    let results = send_compound(rpc, vec![set_op, get_op]).await?;
+
+    // First result: Rsetattr (empty on success, or Rlerror)
+    decode_subop(results.get(0).ok_or(RpcError::from("compound: empty results"))?)?;
+
+    // Second result: Rgetattr
+    let attr_fc = decode_subop(results.get(1).ok_or(RpcError::from("compound: missing getattr result"))?)?;
+    match attr_fc.msg {
+        Msg::Rgetattr { stat, .. } => Ok(stat),
+        _ => Err(RpcError::from("compound: bad getattr response")),
+    }
+}
+
+/// Combined walk+getattr in a single Tcompound round-trip.
+async fn compound_walk_getattr(
+    rpc: &RpcClient,
+    parent_fid: u32,
+    new_fid: u32,
+    wnames: Vec<String>,
+) -> Result<(Vec<p9n_proto::wire::Qid>, Stat), RpcError> {
+    use crate::fuse::compound::{decode_subop, encode_subop, send_compound};
+
+    let walk_op = encode_subop(MsgType::Twalk, &Msg::Walk {
+        fid: parent_fid,
+        newfid: new_fid,
+        wnames,
+    })?;
+    let attr_op = encode_subop(MsgType::Tgetattr, &Msg::Getattr {
+        fid: new_fid,
+        mask: P9_GETATTR_ALL,
+    })?;
+
+    let results = send_compound(rpc, vec![walk_op, attr_op]).await?;
+
+    // First result: Rwalk (or Rlerror which decode_subop converts to Err)
+    let walk_fc = decode_subop(results.get(0).ok_or(RpcError::from("compound: empty results"))?)?;
+    let qids = match walk_fc.msg {
+        Msg::Rwalk { qids } => qids,
+        _ => return Err(RpcError::from("compound: bad walk response")),
+    };
+
+    // Second result: Rgetattr
+    let attr_fc = decode_subop(results.get(1).ok_or(RpcError::from("compound: missing getattr result"))?)?;
+    let stat = match attr_fc.msg {
+        Msg::Rgetattr { stat, .. } => stat,
+        _ => return Err(RpcError::from("compound: bad getattr response")),
+    };
+
+    Ok((qids, stat))
+}
+
 impl Filesystem for P9Filesystem {
     type DirEntryStream<'a> = futures_util::stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntry>>>
     where
@@ -167,18 +240,27 @@ impl Filesystem for P9Filesystem {
 
     async fn lookup(&self, _req: Request, parent: Inode, name: &OsStr) -> FuseResult<ReplyEntry> {
         let name_str = name.to_string_lossy().to_string();
+        tracing::trace!("fuse lookup: parent={parent} name={name_str}");
 
         let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
 
-        let qids = walk_to(&self.rpc, parent_fid, guard.fid(), vec![name_str])
-            .await
-            .map_err(rpc_err)?;
+        let (qids, stat) = if self.use_compound {
+            compound_walk_getattr(&self.rpc, parent_fid, guard.fid(), vec![name_str])
+                .await
+                .map_err(rpc_err)?
+        } else {
+            let qids = walk_to(&self.rpc, parent_fid, guard.fid(), vec![name_str])
+                .await
+                .map_err(rpc_err)?;
+            let stat = getattr(&self.rpc, guard.fid()).await.map_err(rpc_err)?;
+            (qids, stat)
+        };
+
         if qids.is_empty() {
             return Err(Errno::from(libc::ENOENT));
         }
 
-        let stat = getattr(&self.rpc, guard.fid()).await.map_err(rpc_err)?;
         let walk_qid = qids[0].clone();
         let fid = guard.consume();
         let result = self.inodes.get_or_insert(fid, &walk_qid);
@@ -191,14 +273,18 @@ impl Filesystem for P9Filesystem {
     async fn getattr(
         &self, _req: Request, inode: Inode, _fh: Option<u64>, _flags: u32,
     ) -> FuseResult<ReplyAttr> {
+        tracing::trace!("fuse getattr: ino={inode}");
         // If there's an active lease, trust the cache without TTL checks.
         if self.leases.has_lease(inode) {
             if let Some(stat) = self.attrs.get_leased(inode) {
+                tracing::trace!("fuse getattr: ino={inode} — leased cache hit");
                 return Ok(ReplyAttr { ttl: TTL, attr: stat_to_attr(inode, &stat) });
             }
         } else if let Some(stat) = self.attrs.get(inode) {
+            tracing::trace!("fuse getattr: ino={inode} — cache hit");
             return Ok(ReplyAttr { ttl: TTL, attr: stat_to_attr(inode, &stat) });
         }
+        tracing::trace!("fuse getattr: ino={inode} — cache miss, fetching");
 
         let fid = self.inodes.get_fid(inode).ok_or(Errno::from(libc::ENOENT))?;
         let stat = getattr(&self.rpc, fid).await.map_err(rpc_err)?;
@@ -210,6 +296,7 @@ impl Filesystem for P9Filesystem {
         &self, _req: Request, inode: Inode, _fh: Option<u64>,
         set_attr: fuse3::SetAttr,
     ) -> FuseResult<ReplyAttr> {
+        tracing::trace!("fuse setattr: ino={inode}");
         let fid = self.inodes.get_fid(inode).ok_or(Errno::from(libc::ENOENT))?;
 
         let mut valid = 0u32;
@@ -253,19 +340,26 @@ impl Filesystem for P9Filesystem {
         }
 
         attr.valid = valid;
-        self.rpc
-            .call(MsgType::Tsetattr, Msg::Setattr { fid, attr })
-            .await
-            .map_err(rpc_err)?;
 
-        // Invalidate cache and re-fetch
+        // Invalidate cache, then setattr + re-fetch (compound when available)
         self.attrs.invalidate(inode);
-        let stat = getattr(&self.rpc, fid).await.map_err(rpc_err)?;
+        let stat = if self.use_compound {
+            compound_setattr_getattr(&self.rpc, fid, attr)
+                .await
+                .map_err(rpc_err)?
+        } else {
+            self.rpc
+                .call(MsgType::Tsetattr, Msg::Setattr { fid, attr })
+                .await
+                .map_err(rpc_err)?;
+            getattr(&self.rpc, fid).await.map_err(rpc_err)?
+        };
         self.attrs.put(inode, stat.clone());
         Ok(ReplyAttr { ttl: TTL, attr: stat_to_attr(inode, &stat) })
     }
 
     async fn readlink(&self, _req: Request, inode: Inode) -> FuseResult<ReplyData> {
+        tracing::trace!("fuse readlink: ino={inode}");
         let fid = self.inodes.get_fid(inode).ok_or(Errno::from(libc::ENOENT))?;
         let resp = self.rpc
             .call(MsgType::Treadlink, Msg::Readlink { fid })
@@ -282,8 +376,9 @@ impl Filesystem for P9Filesystem {
         &self, req: Request, parent: Inode, name: &OsStr,
         mode: u32, rdev: u32,
     ) -> FuseResult<ReplyEntry> {
-        let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let name_str = name.to_string_lossy().to_string();
+        tracing::trace!("fuse mknod: parent={parent} name={name_str} mode={mode:#o}");
+        let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
 
         let resp = self.rpc
             .call(MsgType::Tmknod, Msg::Mknod {
@@ -310,8 +405,9 @@ impl Filesystem for P9Filesystem {
         &self, req: Request, parent: Inode, name: &OsStr, mode: u32,
         _umask: u32,
     ) -> FuseResult<ReplyEntry> {
-        let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let name_str = name.to_string_lossy().to_string();
+        tracing::trace!("fuse mkdir: parent={parent} name={name_str} mode={mode:#o}");
+        let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
 
         self.rpc
             .call(MsgType::Tmkdir, Msg::Mkdir {
@@ -328,8 +424,9 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn unlink(&self, _req: Request, parent: Inode, name: &OsStr) -> FuseResult<()> {
-        let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let name_str = name.to_string_lossy().to_string();
+        tracing::trace!("fuse unlink: parent={parent} name={name_str}");
+        let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
 
         self.rpc
             .call(MsgType::Tunlinkat, Msg::Unlinkat {
@@ -343,8 +440,9 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn rmdir(&self, _req: Request, parent: Inode, name: &OsStr) -> FuseResult<()> {
-        let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let name_str = name.to_string_lossy().to_string();
+        tracing::trace!("fuse rmdir: parent={parent} name={name_str}");
+        let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
 
         self.rpc
             .call(MsgType::Tunlinkat, Msg::Unlinkat {
@@ -360,6 +458,7 @@ impl Filesystem for P9Filesystem {
     async fn symlink(
         &self, req: Request, parent: Inode, name: &OsStr, link: &OsStr,
     ) -> FuseResult<ReplyEntry> {
+        tracing::trace!("fuse symlink: parent={parent} name={} link={}", name.to_string_lossy(), link.to_string_lossy());
         let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let name_str = name.to_string_lossy().to_string();
         let link_str = link.to_string_lossy().to_string();
@@ -381,6 +480,11 @@ impl Filesystem for P9Filesystem {
         &self, _req: Request, parent: Inode, name: &OsStr,
         new_parent: Inode, new_name: &OsStr,
     ) -> FuseResult<()> {
+        tracing::trace!(
+            "fuse rename: parent={parent} name={} → new_parent={new_parent} new_name={}",
+            name.to_string_lossy(),
+            new_name.to_string_lossy(),
+        );
         let old_dirfid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let new_dirfid = self.inodes.get_fid(new_parent).ok_or(Errno::from(libc::ENOENT))?;
         let old_name_str = name.to_string_lossy().to_string();
@@ -401,6 +505,7 @@ impl Filesystem for P9Filesystem {
     async fn link(
         &self, req: Request, inode: Inode, new_parent: Inode, new_name: &OsStr,
     ) -> FuseResult<ReplyEntry> {
+        tracing::trace!("fuse link: ino={inode} new_parent={new_parent} name={}", new_name.to_string_lossy());
         let fid = self.inodes.get_fid(inode).ok_or(Errno::from(libc::ENOENT))?;
         let dfid = self.inodes.get_fid(new_parent).ok_or(Errno::from(libc::ENOENT))?;
         let name_str = new_name.to_string_lossy().to_string();
@@ -418,6 +523,7 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn open(&self, _req: Request, inode: Inode, flags: u32) -> FuseResult<ReplyOpen> {
+        tracing::trace!("fuse open: ino={inode} flags={flags:#x}");
         let fid = self.inodes.get_fid(inode).ok_or(Errno::from(libc::ENOENT))?;
         let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
 
@@ -449,12 +555,14 @@ impl Filesystem for P9Filesystem {
             }
         }
 
+        tracing::trace!("fuse open: ino={inode} → fh={open_fid}");
         Ok(ReplyOpen { fh: open_fid as u64, flags: 0 })
     }
 
     async fn read(
         &self, _req: Request, _inode: Inode, fh: u64, offset: u64, size: u32,
     ) -> FuseResult<ReplyData> {
+        tracing::trace!("fuse read: fh={fh} offset={offset} size={size}");
         let fid = fh as u32;
         let resp = self.rpc
             .call(MsgType::Tread, Msg::Read {
@@ -475,6 +583,7 @@ impl Filesystem for P9Filesystem {
         &self, _req: Request, _inode: Inode, fh: u64, offset: u64,
         data: &[u8], _write_flags: u32, _flags: u32,
     ) -> FuseResult<ReplyWrite> {
+        tracing::trace!("fuse write: fh={fh} offset={offset} len={}", data.len());
         let fid = fh as u32;
         let resp = self.rpc
             .call(MsgType::Twrite, Msg::Write {
@@ -495,6 +604,7 @@ impl Filesystem for P9Filesystem {
         &self, _req: Request, _inode: Inode, fh: u64, _flags: u32,
         _lock_owner: u64, _flush: bool,
     ) -> FuseResult<()> {
+        tracing::trace!("fuse release: fh={fh}");
         let fid = fh as u32;
         // Release lease if one was held (returns None if already broken by server).
         if let Some(lease_id) = self.leases.release_by_fh(fid) {
@@ -507,6 +617,7 @@ impl Filesystem for P9Filesystem {
     async fn fsync(
         &self, _req: Request, _inode: Inode, fh: u64, _datasync: bool,
     ) -> FuseResult<()> {
+        tracing::trace!("fuse fsync: fh={fh}");
         let fid = fh as u32;
         self.rpc
             .call(MsgType::Tfsync, Msg::Fsync { fid })
@@ -519,6 +630,7 @@ impl Filesystem for P9Filesystem {
         &self, req: Request, parent: Inode, name: &OsStr,
         mode: u32, flags: u32,
     ) -> FuseResult<ReplyCreated> {
+        tracing::trace!("fuse create: parent={parent} name={} mode={mode:#o} flags={flags:#x}", name.to_string_lossy());
         let parent_fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
         let name_str = name.to_string_lossy().to_string();
@@ -574,6 +686,7 @@ impl Filesystem for P9Filesystem {
     async fn readdir<'a>(
         &'a self, _req: Request, parent: Inode, _fh: u64, offset: i64,
     ) -> FuseResult<ReplyDirectory<Self::DirEntryStream<'a>>> {
+        tracing::trace!("fuse readdir: parent={parent} offset={offset}");
         let fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
 
@@ -613,6 +726,7 @@ impl Filesystem for P9Filesystem {
     async fn readdirplus<'a>(
         &'a self, _req: Request, parent: Inode, _fh: u64, offset: u64, _lock_owner: u64,
     ) -> FuseResult<ReplyDirectoryPlus<Self::DirEntryPlusStream<'a>>> {
+        tracing::trace!("fuse readdirplus: parent={parent} offset={offset}");
         let fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
 
@@ -688,6 +802,7 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn statfs(&self, _req: Request, inode: Inode) -> FuseResult<ReplyStatFs> {
+        tracing::trace!("fuse statfs: ino={inode}");
         let fid = self.inodes.get_fid(inode).ok_or(Errno::from(libc::ENOENT))?;
         let resp = self.rpc
             .call(MsgType::Tstatfs, Msg::Statfs { fid })
