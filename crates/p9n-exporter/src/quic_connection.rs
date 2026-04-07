@@ -62,7 +62,7 @@ impl<B: Backend> QuicConnectionHandler<B> {
                             let push_tx = self.push_tx.clone();
                             tokio::spawn(async move {
                                 if let Err(e) = handle_stream(ctx, session, watch_tx, push_tx, send, recv).await {
-                                    tracing::debug!("stream error: {e}");
+                                    tracing::warn!("stream error: {e}");
                                 }
                             });
                         }
@@ -79,7 +79,7 @@ impl<B: Backend> QuicConnectionHandler<B> {
                             let conn = self.conn.clone();
                             tokio::spawn(async move {
                                 if let Err(e) = handle_datagram(ctx, session, watch_tx, push_tx, conn, data).await {
-                                    tracing::debug!("datagram error: {e}");
+                                    tracing::warn!("datagram error: {e}");
                                 }
                             });
                         }
@@ -103,6 +103,12 @@ impl<B: Backend> QuicConnectionHandler<B> {
     }
 
     fn cleanup(&self) {
+        tracing::debug!(
+            "quic connection cleanup: conn_id={} fids={} watches={}",
+            self.session.conn_id,
+            self.session.fids.len(),
+            self.session.watch_id_list().len(),
+        );
         if let Some(key) = self.session.get_session_key() {
             let mut flags = 0u32;
             if !self.session.fids.is_empty() {
@@ -140,11 +146,12 @@ async fn handle_stream<B: Backend>(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let request = framing::read_message(&mut recv).await?;
     let tag = request.tag;
+    let msg_type = request.msg_type;
+
+    tracing::trace!("stream req: tag={tag} type={}", msg_type.name());
 
     // Register in-flight (allows Tflush to cancel this request)
     let cancel = session.register_inflight(tag);
-
-    let msg_type = request.msg_type;
 
     // ── Fast path for Tread: bypass marshal, write pre-encoded wire bytes ──
     //
@@ -193,8 +200,9 @@ async fn handle_stream<B: Backend>(
         session.deregister_inflight(tag);
 
         match result {
-            Ok(ReadResult::Raw(wire)) => {
-                framing::write_raw(&mut send, &wire).await?;
+            Ok(ReadResult::Raw(ref wire)) => {
+                tracing::trace!("stream resp: tag={tag} type=Rread len={}", wire.len());
+                framing::write_raw(&mut send, wire).await?;
             }
             Err(e) => {
                 tracing::debug!("{} tag={tag}: {e}", msg_type.name());
@@ -234,12 +242,16 @@ async fn handle_stream<B: Backend>(
             }
         }
     };
+    tracing::trace!("stream resp: tag={tag} type={}", response.msg_type.name());
     framing::write_message(&mut send, &response).await?;
     send.finish()?;
     Ok(())
 }
 
 /// Handle a single datagram message.
+///
+/// Guarantees a response is sent back for every successfully decoded request,
+/// even if the handler panics or the response encoding/sending fails.
 async fn handle_datagram<B: Backend>(
     ctx: Arc<SharedCtx<B>>,
     session: Arc<Session<B::Handle>>,
@@ -251,10 +263,20 @@ async fn handle_datagram<B: Backend>(
     let request = framing::decode(&data)?;
     let tag = request.tag;
     let msg_type = request.msg_type;
-    let result = handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, request).await;
-    let response = match result {
-        Ok(r) => r,
-        Err(e) => {
+
+    tracing::trace!("datagram req: tag={tag} type={}", msg_type.name());
+
+    // Dispatch in a spawned task to catch handler panics.
+    // Without this, a panic kills the task silently and the importer
+    // waits until the 30s RPC timeout fires, hanging FUSE operations.
+    let dispatch_result = tokio::spawn(async move {
+        handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, request).await
+    })
+    .await;
+
+    let response = match dispatch_result {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             tracing::debug!("{} tag={tag}: {e}", msg_type.name());
             Fcall {
                 size: 0,
@@ -265,8 +287,45 @@ async fn handle_datagram<B: Backend>(
                 },
             }
         }
+        Err(e) => {
+            tracing::error!("{} tag={tag}: handler panicked: {e}", msg_type.name());
+            Fcall {
+                size: 0,
+                msg_type: MsgType::Rlerror,
+                tag,
+                msg: Msg::Lerror { ecode: 5 }, // EIO
+            }
+        }
     };
-    let reply = framing::encode(&response)?;
+
+    tracing::trace!("datagram resp: tag={tag} type={}", response.msg_type.name());
+
+    // Send the response.  If encoding or sending fails (e.g. response exceeds
+    // the QUIC datagram MTU), fall back to a minimal Rlerror so the importer
+    // is not left waiting for a response that never arrives.
+    if let Err(e) = send_datagram(&conn, &response) {
+        tracing::warn!("{} tag={tag}: failed to send datagram response: {e}", msg_type.name());
+        if !matches!(response.msg, Msg::Lerror { .. }) {
+            let err_fc = Fcall {
+                size: 0,
+                msg_type: MsgType::Rlerror,
+                tag,
+                msg: Msg::Lerror { ecode: 5 }, // EIO
+            };
+            if let Err(e2) = send_datagram(&conn, &err_fc) {
+                tracing::error!("{} tag={tag}: failed to send error datagram: {e2}", msg_type.name());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Encode and send a single datagram response.
+fn send_datagram(
+    conn: &quinn::Connection,
+    fc: &Fcall,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let reply = framing::encode(fc)?;
     conn.send_datagram(reply.into())?;
     Ok(())
 }

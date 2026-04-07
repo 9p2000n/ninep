@@ -94,6 +94,8 @@ impl QuicRpcClient {
             msg,
         };
 
+        tracing::trace!("rpc send: tag={tag} type={}", msg_type.name());
+
         // Register inflight before sending (avoid race with response)
         let (tx, rx) = oneshot::channel();
         self.inflight.insert(tag, tx);
@@ -109,11 +111,19 @@ impl QuicRpcClient {
             .await
             .map_err(|_| {
                 self.inflight.remove(&tag);
+                tracing::debug!("rpc timeout: tag={tag} type={}", msg_type.name());
                 RpcError::from("RPC timeout (30s)")
             })?
             .map_err(|_| {
+                tracing::debug!("rpc channel closed: tag={tag} type={}", msg_type.name());
                 RpcError::from("RPC channel closed (connection lost)")
             })?;
+
+        tracing::trace!(
+            "rpc recv: tag={tag} type={} resp={}",
+            msg_type.name(),
+            response.msg_type.name(),
+        );
 
         // Tag is freed when guard drops (here, at end of scope)
         drop(guard);
@@ -136,10 +146,14 @@ impl QuicRpcClient {
             MessageClass::Metadata => {
                 // Try datagram, fall back to stream if too large
                 if !datagram::send_datagram(&self.conn, fc).await? {
+                    tracing::trace!("routing: tag={} type={} datagram→stream (too large)", fc.tag, fc.msg_type.name());
                     self.send_on_stream(fc).await?;
+                } else {
+                    tracing::trace!("routing: tag={} type={} via datagram", fc.tag, fc.msg_type.name());
                 }
             }
             MessageClass::Data | MessageClass::Push => {
+                tracing::trace!("routing: tag={} type={} via stream", fc.tag, fc.msg_type.name());
                 self.send_on_stream(fc).await?;
             }
         }
@@ -194,9 +208,10 @@ async fn dispatch_response(
     fc: Fcall,
 ) {
     if fc.tag == NO_TAG {
-        // Server push message
+        tracing::trace!("push received: type={}", fc.msg_type.name());
         let _ = push_tx.send(fc).await;
     } else if let Some((_, tx)) = inflight.remove(&fc.tag) {
+        tracing::trace!("response dispatched: tag={} type={}", fc.tag, fc.msg_type.name());
         let _ = tx.send(fc);
     } else {
         tracing::warn!("response for unknown tag {}", fc.tag);

@@ -20,6 +20,7 @@ pub async fn handle_readdir<B: Backend>(
         return Err("expected Readdir message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("readdir: fid={fid} offset={offset} count={count}");
 
     let fid_state = session
         .fids
@@ -66,6 +67,7 @@ pub async fn handle_mkdir<B: Backend>(
         return Err("expected Mkdir message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("mkdir: dfid={dfid} name={name} mode={mode:#o}");
 
     let fid_state = session
         .fids

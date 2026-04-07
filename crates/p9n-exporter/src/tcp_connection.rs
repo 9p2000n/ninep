@@ -76,6 +76,7 @@ impl<B: Backend> TcpConnectionHandler<B> {
                         Ok(request) => {
                             let tag = request.tag;
                             let msg_type = request.msg_type;
+                            tracing::trace!("tcp req: tag={tag} type={}", msg_type.name());
                             let result = handlers::dispatch(
                                 &self.session, &self.ctx, &self.watch_tx, &self.push_tx, request,
                             ).await;
@@ -91,6 +92,7 @@ impl<B: Backend> TcpConnectionHandler<B> {
                                     }
                                 }
                             };
+                            tracing::trace!("tcp resp: tag={tag} type={}", response.msg_type.name());
                             let mut writer = self.writer.lock().await;
                             framing::write_message(&mut *writer, &response).await?;
                         }
@@ -120,6 +122,12 @@ impl<B: Backend> TcpConnectionHandler<B> {
     }
 
     fn cleanup(&self) {
+        tracing::debug!(
+            "tcp connection cleanup: conn_id={} fids={} watches={}",
+            self.session.conn_id,
+            self.session.fids.len(),
+            self.session.watch_id_list().len(),
+        );
         if let Some(key) = self.session.get_session_key() {
             let mut flags = 0u32;
             if !self.session.fids.is_empty() {

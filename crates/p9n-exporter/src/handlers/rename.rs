@@ -18,6 +18,7 @@ pub async fn handle<B: Backend>(
         return Err("expected Rename message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("rename: fid={fid} dfid={dfid} name={name}");
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;

@@ -66,6 +66,7 @@ impl LeaseManager {
         lease_type: u8,
         conn_id: u64,
     ) -> GrantResult {
+        tracing::trace!("lease try_grant: qid_path={qid_path} type={lease_type} conn={conn_id}");
         let lease_ids = match self.path_leases.get(&qid_path) {
             Some(ids) => ids.clone(),
             None => return GrantResult::Granted, // no existing leases
@@ -108,6 +109,7 @@ impl LeaseManager {
             for lid in &lease_ids {
                 if let Some(entry) = self.leases.get(lid) {
                     if entry.conn_id != conn_id && entry.lease_type == types::LEASE_READ {
+                        tracing::debug!("lease break: lid={lid} conn={} (write requested by conn={conn_id})", entry.conn_id);
                         let fc = crate::push::leasebreak_fcall(*lid, 0);
                         let _ = entry.push_tx.try_send(fc);
                     }
@@ -127,6 +129,7 @@ impl LeaseManager {
         conn_id: u64,
         push_tx: mpsc::Sender<Fcall>,
     ) {
+        tracing::trace!("lease register: lid={lease_id} qid_path={qid_path} type={lease_type} conn={conn_id}");
         self.leases.insert(
             lease_id,
             LeaseEntry {
@@ -156,6 +159,10 @@ impl LeaseManager {
                 if entry.conn_id == writer_conn_id {
                     continue;
                 }
+                tracing::debug!(
+                    "lease break_for_write: lid={lid} qid_path={qid_path} holder_conn={} writer_conn={writer_conn_id}",
+                    entry.conn_id,
+                );
                 let fc = crate::push::leasebreak_fcall(lid, 0);
                 // Best-effort: if the receiver is full or gone, skip.
                 let _ = entry.push_tx.try_send(fc);
@@ -165,6 +172,7 @@ impl LeaseManager {
 
     /// Remove a lease after the client acknowledges the break (Tleaseack).
     pub fn acknowledge(&self, lease_id: u64) {
+        tracing::trace!("lease acknowledge: lid={lease_id}");
         if let Some((_, entry)) = self.leases.remove(&lease_id) {
             if let Some(mut ids) = self.path_leases.get_mut(&entry.qid_path) {
                 ids.retain(|&id| id != lease_id);
@@ -174,6 +182,7 @@ impl LeaseManager {
 
     /// Remove all leases belonging to a connection (cleanup on disconnect).
     pub fn remove_by_conn(&self, conn_id: u64) {
+        tracing::debug!("lease remove_by_conn: conn={conn_id}");
         let to_remove: Vec<u64> = self
             .leases
             .iter()

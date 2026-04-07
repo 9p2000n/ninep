@@ -72,6 +72,7 @@ impl Drop for FidGuard {
     fn drop(&mut self) {
         if !self.consumed {
             let fid = self.fid;
+            tracing::trace!("fid_guard drop: auto-clunking fid={fid}");
             let rpc = self.rpc.clone();
             // Spawn a background task to send Tclunk — can't block in drop.
             tokio::spawn(async move {

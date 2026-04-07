@@ -22,6 +22,7 @@ pub async fn handle_unlinkat<B: Backend>(
         return Err("expected Unlinkat message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("unlinkat: dirfid={dirfid} name={name} flags={flags:#x}");
 
     let fid_state = session
         .fids
@@ -65,6 +66,7 @@ pub async fn handle_remove<B: Backend>(
         return Err("expected Remove message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("remove: fid={fid}");
 
     let fid_state = session
         .fids
@@ -114,6 +116,7 @@ pub async fn handle_renameat<B: Backend>(
         return Err("expected Renameat message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("renameat: olddirfid={olddirfid} oldname={oldname} newdirfid={newdirfid} newname={newname}");
 
     let old_dir = session
         .fids

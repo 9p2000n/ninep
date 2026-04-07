@@ -16,7 +16,9 @@ pub fn spawn_push_handler(
     leases: Arc<LeaseMap>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        tracing::debug!("push handler task started");
         while let Some(fc) = push_rx.recv().await {
+            tracing::trace!("push handler: type={}", fc.msg_type.name());
             match fc.msg {
                 Msg::Notify {
                     watch_id: _,

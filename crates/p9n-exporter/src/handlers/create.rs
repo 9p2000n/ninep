@@ -25,6 +25,7 @@ pub async fn handle_lcreate<B: Backend>(
         return Err("expected Lcreate message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("lcreate: fid={fid} name={name} flags={flags:#x} mode={mode:#o}");
 
     let fid_state = session
         .fids
@@ -89,6 +90,7 @@ pub async fn handle_symlink<B: Backend>(
         return Err("expected Symlink message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("symlink: fid={fid} name={name} target={symtgt}");
 
     let fid_state = session
         .fids
@@ -133,6 +135,7 @@ pub async fn handle_link<B: Backend>(
         return Err("expected Link message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("link: dfid={dfid} fid={fid} name={name}");
 
     let dfid_state = session
         .fids

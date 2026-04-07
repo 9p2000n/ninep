@@ -228,6 +228,10 @@ fn dispatch_event(path_watches: &DashMap<PathBuf, Vec<WatchRegistration>>, event
 
                 for reg in regs.value() {
                     if reg.mask & event_mask != 0 {
+                        tracing::trace!(
+                            "watch event: wid={} mask={event_mask:#x} name={name}",
+                            reg.watch_id,
+                        );
                         let watch_event = WatchEvent {
                             watch_id: reg.watch_id,
                             event_mask,

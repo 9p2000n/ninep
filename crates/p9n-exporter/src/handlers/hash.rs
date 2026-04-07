@@ -18,6 +18,7 @@ pub async fn handle<B: Backend>(
         return Err("expected Hash".into());
     };
     let tag = fc.tag;
+    tracing::trace!("hash: fid={fid} algo={algo} offset={offset} length={length}");
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;

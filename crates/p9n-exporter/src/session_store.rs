@@ -72,10 +72,14 @@ impl SessionStore {
 
     /// Remove expired sessions across all identities.
     pub fn gc(&self) {
+        let before: usize = self.store.iter().map(|e| e.value().len()).sum();
         for entry in self.store.iter() {
             entry.value().retain(|_, v| v.saved_at.elapsed() <= self.ttl);
         }
-        // Remove empty identity buckets
         self.store.retain(|_, v| !v.is_empty());
+        let after: usize = self.store.iter().map(|e| e.value().len()).sum();
+        if before != after {
+            tracing::debug!("session GC: purged {} expired session(s)", before - after);
+        }
     }
 }

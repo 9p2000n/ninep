@@ -23,6 +23,7 @@ pub async fn handle<B: Backend>(
         return Err("expected Walk message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("walk: fid={fid} newfid={newfid} wnames={wnames:?}");
 
     // Check newfid collision
     if newfid != fid && session.fids.contains(newfid) {
@@ -74,7 +75,9 @@ pub async fn handle<B: Backend>(
         let mut is_dir = false;
 
         for name in &wnames {
-            let (resolved, qid, component_is_dir) = ctx.backend.walk_component(&current, name)?;
+            let target = current.join(name);
+            let (resolved, qid, component_is_dir) = ctx.backend.walk_component(&current, name)
+                .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", target.display())))?;
             qids.push(qid);
             current = resolved;
             is_dir = component_is_dir;

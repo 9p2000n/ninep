@@ -125,12 +125,15 @@ impl Importer {
         };
 
         // Version negotiation
+        tracing::debug!("handshake: negotiating version");
         let msize = negotiate_version(&*rpc, &opts).await?;
 
         // Capability negotiation
+        tracing::debug!("handshake: negotiating caps");
         let negotiated_caps = negotiate_caps(&*rpc).await?;
 
         // Attach
+        tracing::debug!("handshake: attaching");
         let root_fid = 0u32;
         let root_qid = do_attach(&*rpc, root_fid, &opts).await?;
 
@@ -352,6 +355,7 @@ async fn negotiate_version(
     rpc: &impl RpcCaller,
     _opts: &ConnectOpts,
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+    tracing::trace!("sending Tversion");
     let ver_resp = rpc
         .call(MsgType::Tversion, Msg::Version {
             msize: 65536,
@@ -376,6 +380,7 @@ async fn negotiate_version(
 async fn negotiate_caps(
     rpc: &impl RpcCaller,
 ) -> Result<CapSet, Box<dyn std::error::Error + Send + Sync>> {
+    tracing::trace!("sending Tcaps");
     let mut caps = CapSet::new();
     caps.add(CAP_COMPOUND);
     caps.add(CAP_WATCH);
@@ -407,6 +412,7 @@ async fn do_attach(
     root_fid: u32,
     opts: &ConnectOpts,
 ) -> Result<Qid, Box<dyn std::error::Error + Send + Sync>> {
+    tracing::trace!("sending Tattach fid={root_fid} uname={} aname={}", opts.uname, opts.aname);
     let attach_resp = rpc
         .call(MsgType::Tattach, Msg::Attach {
             fid: root_fid,
@@ -430,6 +436,7 @@ async fn establish_session(
     rpc: &impl RpcCaller,
     key: [u8; 16],
 ) -> Result<Option<[u8; 16]>, Box<dyn std::error::Error + Send + Sync>> {
+    tracing::trace!("sending Tsession");
     let session_resp = rpc
         .call(MsgType::Tsession, Msg::Session {
             key,

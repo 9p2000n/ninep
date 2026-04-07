@@ -18,6 +18,7 @@ pub async fn handle_lock<B: Backend>(
         return Err("expected Lock message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("lock: fid={fid} type={lock_type} start={start} length={length}");
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
@@ -43,6 +44,7 @@ pub async fn handle_getlock<B: Backend>(
         return Err("expected GetlockReq message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("getlock: fid={fid} type={lock_type} start={start} length={length}");
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;

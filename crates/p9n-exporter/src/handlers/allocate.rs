@@ -23,6 +23,7 @@ pub async fn handle<B: Backend>(
         return Err("expected Allocate message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("allocate: fid={fid} mode={mode} offset={offset} length={length}");
 
     let fid_state = session
         .fids

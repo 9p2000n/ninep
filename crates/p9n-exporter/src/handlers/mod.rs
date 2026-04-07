@@ -60,14 +60,17 @@ pub fn check_perm<H: Send + Sync + 'static>(
 ) -> Result<(), std::io::Error> {
     // 1. Static policy check
     if ac.check(sid, required).is_ok() {
+        tracing::trace!("perm ok (policy): fid={fid:?} required={required:#x}");
         return Ok(());
     }
     // 2. Dynamic capability token check (if fid available)
     if let Some(fid) = fid {
         if session.check_cap(fid, required) {
+            tracing::trace!("perm ok (cap): fid={fid} required={required:#x}");
             return Ok(());
         }
     }
+    tracing::debug!("perm denied: sid={sid:?} fid={fid:?} required={required:#x}");
     Err(std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,
         format!("access denied: required={required:#x}"),
@@ -117,7 +120,9 @@ async fn check_rate_limit<B: Backend>(
     }
     if let Some(fid) = fid {
         if let Some(limiter) = session.rate_limits.get(&fid) {
+            tracing::trace!("rate limit: fid={fid} bytes={bytes} — acquiring");
             limiter.acquire(1, bytes).await;
+            tracing::trace!("rate limit: fid={fid} — acquired");
         }
     }
 }
@@ -153,6 +158,13 @@ pub async fn dispatch<B: Backend>(
 ) -> HandlerResult {
     let sid = session.spiffe_id.as_deref();
     let msg_fid = fid_from_msg(&fc);
+
+    tracing::trace!(
+        "dispatch: tag={} type={} fid={:?}",
+        fc.tag,
+        fc.msg_type.name(),
+        msg_fid,
+    );
 
     // Validate fid exists for operations that reference one (skip negotiation messages)
     if let Some(fid) = msg_fid {

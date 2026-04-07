@@ -23,6 +23,7 @@ impl<H: Send + Sync + 'static> FidTable<H> {
     }
 
     pub fn insert(&self, fid: u32, state: FidState<H>) {
+        tracing::trace!("fid insert: fid={fid} path={} is_dir={}", state.path.display(), state.is_dir);
         self.fids.insert(fid, state);
     }
 
@@ -35,7 +36,11 @@ impl<H: Send + Sync + 'static> FidTable<H> {
     }
 
     pub fn remove(&self, fid: u32) -> Option<(u32, FidState<H>)> {
-        self.fids.remove(&fid)
+        let removed = self.fids.remove(&fid);
+        if removed.is_some() {
+            tracing::trace!("fid remove: fid={fid}");
+        }
+        removed
     }
 
     pub fn contains(&self, fid: u32) -> bool {

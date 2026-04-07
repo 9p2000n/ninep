@@ -31,6 +31,7 @@ async fn handle_xattrget<B: Backend>(
         return Err("expected Xattrget".into());
     };
     let tag = fc.tag;
+    tracing::trace!("xattrget: fid={fid} name={name}");
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
@@ -59,6 +60,7 @@ async fn handle_xattrset<B: Backend>(
         return Err("expected Xattrset".into());
     };
     let tag = fc.tag;
+    tracing::trace!("xattrset: fid={fid} name={name} len={}", data.len());
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
@@ -87,6 +89,7 @@ async fn handle_xattrlist<B: Backend>(
         return Err("expected Xattrlist".into());
     };
     let tag = fc.tag;
+    tracing::trace!("xattrlist: fid={fid} cookie={cookie} count={count}");
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;

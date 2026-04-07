@@ -16,6 +16,7 @@ pub async fn handle_getattr<B: Backend>(
         return Err("expected Getattr message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("getattr: fid={fid}");
 
     let fid_state = session
         .fids
@@ -56,6 +57,7 @@ pub async fn handle_setattr<B: Backend>(
         return Err("expected Setattr message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("setattr: fid={fid} valid={:#x}", attr.valid);
 
     let fid_state = session
         .fids
@@ -97,6 +99,7 @@ pub async fn handle_statfs<B: Backend>(
         return Err("expected Statfs message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("statfs: fid={fid}");
 
     let fid_state = session
         .fids

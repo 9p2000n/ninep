@@ -3,7 +3,14 @@
 use std::os::unix::io::{AsRawFd, OwnedFd};
 
 /// Convert a tokio JoinError to a boxed error for handler results.
+///
+/// If the blocking task panicked, log at warn level so panics don't go
+/// unnoticed.  The error still propagates as a normal Err → Rlerror to
+/// the client.
 pub fn join_err(e: tokio::task::JoinError) -> Box<dyn std::error::Error + Send + Sync> {
+    if e.is_panic() {
+        tracing::warn!("spawn_blocking task panicked: {e}");
+    }
     Box::new(std::io::Error::new(
         std::io::ErrorKind::Other,
         e.to_string(),

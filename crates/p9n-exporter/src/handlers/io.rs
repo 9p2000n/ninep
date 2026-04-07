@@ -17,6 +17,7 @@ pub async fn handle_lopen<B: Backend>(
         return Err("expected Lopen message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("lopen: fid={fid} flags={flags:#x}");
 
     let fid_state = session
         .fids
@@ -66,6 +67,7 @@ pub async fn handle_read<B: Backend>(
         return Err("expected Read message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("read: fid={fid} offset={offset} count={count}");
 
     let fid_state = session
         .fids
@@ -126,6 +128,7 @@ pub async fn handle_read_fcall<B: Backend>(
         return Err("expected Read message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("read: fid={fid} offset={offset} count={count}");
 
     let fid_state = session
         .fids
@@ -163,6 +166,7 @@ pub async fn handle_write<B: Backend>(
         return Err("expected Write message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("write: fid={fid} offset={offset} len={}", data.len());
 
     let fid_state = session
         .fids
@@ -204,6 +208,7 @@ pub async fn handle_readlink<B: Backend>(
         return Err("expected Readlink message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("readlink: fid={fid}");
 
     let fid_state = session
         .fids
@@ -239,6 +244,7 @@ pub async fn handle_fsync<B: Backend>(
         return Err("expected Fsync message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("fsync: fid={fid}");
 
     let fid_state = session
         .fids

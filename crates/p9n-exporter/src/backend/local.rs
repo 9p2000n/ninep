@@ -126,6 +126,7 @@ impl Backend for LocalBackend {
     }
 
     fn resolve(&self, path: &Path) -> io::Result<PathBuf> {
+        tracing::trace!("backend resolve: {}", path.display());
         // Check if final component is a symlink (don't follow it).
         if let Ok(meta) = std::fs::symlink_metadata(path) {
             if meta.is_symlink() {
@@ -162,6 +163,7 @@ impl Backend for LocalBackend {
     // ── Attach ──
 
     fn attach(&self, root: &Path) -> io::Result<(Qid, bool)> {
+        tracing::trace!("backend attach: {}", root.display());
         if !root.is_dir() {
             std::fs::create_dir_all(root)?;
         }
@@ -172,6 +174,7 @@ impl Backend for LocalBackend {
     // ── Walk ──
 
     fn walk_component(&self, parent: &Path, name: &str) -> io::Result<(PathBuf, Qid, bool)> {
+        tracing::trace!("backend walk: parent={} name={name}", parent.display());
         let target = parent.join(name);
         let resolved = self.resolve(&target)?;
         let meta = std::fs::symlink_metadata(&resolved)?;
@@ -183,6 +186,7 @@ impl Backend for LocalBackend {
     // ── Open ──
 
     fn open(&self, path: &Path, flags: u32, is_dir: bool) -> io::Result<(OwnedFd, Qid)> {
+        tracing::trace!("backend open: {} flags={flags:#x} is_dir={is_dir}", path.display());
         let (owned_fd, meta) = if is_dir {
             let fd = nix::fcntl::open(
                 path.as_os_str(),
@@ -223,6 +227,7 @@ impl Backend for LocalBackend {
     // ── Read / Write ──
 
     fn read(&self, handle: &OwnedFd, offset: u64, count: u32) -> io::Result<Vec<u8>> {
+        tracing::trace!("backend read: offset={offset} count={count}");
         Self::with_borrowed_file(handle, |file| {
             file.seek(io::SeekFrom::Start(offset))?;
             let mut buf = vec![0u8; count as usize];
@@ -233,6 +238,7 @@ impl Backend for LocalBackend {
     }
 
     fn read_into(&self, handle: &OwnedFd, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        tracing::trace!("backend read_into: offset={offset} len={}", buf.len());
         Self::with_borrowed_file(handle, |file| {
             file.seek(io::SeekFrom::Start(offset))?;
             file.read(buf)
@@ -240,6 +246,7 @@ impl Backend for LocalBackend {
     }
 
     fn write(&self, handle: &OwnedFd, offset: u64, data: &[u8]) -> io::Result<usize> {
+        tracing::trace!("backend write: offset={offset} len={}", data.len());
         Self::with_borrowed_file(handle, |file| {
             file.seek(io::SeekFrom::Start(offset))?;
             file.write(data)
@@ -247,6 +254,7 @@ impl Backend for LocalBackend {
     }
 
     fn fsync(&self, handle: &OwnedFd) -> io::Result<()> {
+        tracing::trace!("backend fsync");
         nix::unistd::fsync(handle.as_raw_fd())
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     }
@@ -260,6 +268,7 @@ impl Backend for LocalBackend {
         flags: u32,
         mode: u32,
     ) -> io::Result<(OwnedFd, Qid, PathBuf)> {
+        tracing::trace!("backend lcreate: dir={} name={name} flags={flags:#x} mode={mode:#o}", dir.display());
         let file_path = dir.join(name);
         let resolved = self.resolve(&file_path)?;
 
@@ -291,6 +300,7 @@ impl Backend for LocalBackend {
     }
 
     fn symlink(&self, dir: &Path, name: &str, target: &str) -> io::Result<(Qid, PathBuf)> {
+        tracing::trace!("backend symlink: dir={} name={name} target={target}", dir.display());
         let link_path = dir.join(name);
         let resolved = self.resolve(&link_path)?;
         std::os::unix::fs::symlink(target, &resolved)?;
@@ -299,12 +309,14 @@ impl Backend for LocalBackend {
     }
 
     fn link(&self, target: &Path, dir: &Path, name: &str) -> io::Result<()> {
+        tracing::trace!("backend link: target={} dir={} name={name}", target.display(), dir.display());
         let link_path = dir.join(name);
         let resolved = self.resolve(&link_path)?;
         std::fs::hard_link(target, &resolved)
     }
 
     fn mkdir(&self, parent: &Path, name: &str, mode: u32) -> io::Result<(Qid, PathBuf)> {
+        tracing::trace!("backend mkdir: parent={} name={name} mode={mode:#o}", parent.display());
         let dir_path = parent.join(name);
         let resolved = self.resolve(&dir_path)?;
         std::fs::create_dir(&resolved)?;
@@ -322,6 +334,7 @@ impl Backend for LocalBackend {
         major: u32,
         minor: u32,
     ) -> io::Result<(Qid, PathBuf)> {
+        tracing::trace!("backend mknod: parent={} name={name} mode={mode:#o}", parent.display());
         let node_path = parent.join(name);
         let resolved = self.resolve(&node_path)?;
         let dev = nix::sys::stat::makedev(major as u64, minor as u64);
@@ -342,6 +355,7 @@ impl Backend for LocalBackend {
     // ── Metadata ──
 
     fn getattr(&self, path: &Path) -> io::Result<(Stat, Qid)> {
+        tracing::trace!("backend getattr: {}", path.display());
         let meta = std::fs::symlink_metadata(path)?;
         let stat = Self::make_stat(&meta);
         let qid = Self::make_qid(&meta);
@@ -349,6 +363,7 @@ impl Backend for LocalBackend {
     }
 
     fn setattr(&self, path: &Path, attr: &SetAttr) -> io::Result<()> {
+        tracing::trace!("backend setattr: {}", path.display());
         if attr.valid & P9_SETATTR_MODE != 0 {
             let perms = std::fs::Permissions::from_mode(attr.mode);
             std::fs::set_permissions(path, perms)?;
@@ -399,6 +414,7 @@ impl Backend for LocalBackend {
     }
 
     fn statfs(&self, path: &Path) -> io::Result<StatFs> {
+        tracing::trace!("backend statfs: {}", path.display());
         let svfs = nix::sys::statvfs::statvfs(path)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         Ok(StatFs {
@@ -415,6 +431,7 @@ impl Backend for LocalBackend {
     }
 
     fn readlink(&self, path: &Path) -> io::Result<String> {
+        tracing::trace!("backend readlink: {}", path.display());
         let target = std::fs::read_link(path)?;
         Ok(target.to_string_lossy().to_string())
     }
@@ -422,6 +439,7 @@ impl Backend for LocalBackend {
     // ── Directory listing ──
 
     fn readdir(&self, path: &Path, offset: u64, count: u32) -> io::Result<Vec<u8>> {
+        tracing::trace!("backend readdir: {} offset={offset} count={count}", path.display());
         let entries = std::fs::read_dir(path)?;
         let mut data = Vec::new();
         let mut entry_offset: u64 = 0;
@@ -469,6 +487,7 @@ impl Backend for LocalBackend {
     // ── Delete / Rename ──
 
     fn unlink(&self, path: &Path, is_dir: bool) -> io::Result<()> {
+        tracing::trace!("backend unlink: {} is_dir={is_dir}", path.display());
         if is_dir {
             std::fs::remove_dir(path)
         } else {
@@ -477,12 +496,14 @@ impl Backend for LocalBackend {
     }
 
     fn rename(&self, old: &Path, new: &Path) -> io::Result<()> {
+        tracing::trace!("backend rename: {} → {}", old.display(), new.display());
         std::fs::rename(old, new)
     }
 
     // ── Extended attributes ──
 
     fn xattr_get(&self, path: &Path, name: &str) -> io::Result<Vec<u8>> {
+        tracing::trace!("backend xattr_get: {} name={name}", path.display());
         let c_path = Self::path_to_cstring(path)?;
         let c_name = CString::new(name)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -510,6 +531,7 @@ impl Backend for LocalBackend {
     }
 
     fn xattr_set(&self, path: &Path, name: &str, data: &[u8], flags: u32) -> io::Result<()> {
+        tracing::trace!("backend xattr_set: {} name={name}", path.display());
         let c_path = Self::path_to_cstring(path)?;
         let c_name = CString::new(name)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -529,6 +551,7 @@ impl Backend for LocalBackend {
     }
 
     fn xattr_list(&self, path: &Path) -> io::Result<Vec<u8>> {
+        tracing::trace!("backend xattr_list: {}", path.display());
         let c_path = Self::path_to_cstring(path)?;
         let size = unsafe { libc::listxattr(c_path.as_ptr(), std::ptr::null_mut(), 0) };
         if size < 0 {
@@ -549,6 +572,7 @@ impl Backend for LocalBackend {
     }
 
     fn xattr_size(&self, path: &Path, name: &str) -> io::Result<u64> {
+        tracing::trace!("backend xattr_size: {} name={name}", path.display());
         let c_path = Self::path_to_cstring(path)?;
         let c_name = CString::new(name)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -562,6 +586,7 @@ impl Backend for LocalBackend {
     }
 
     fn xattr_list_size(&self, path: &Path) -> io::Result<u64> {
+        tracing::trace!("backend xattr_list_size: {}", path.display());
         let c_path = Self::path_to_cstring(path)?;
         let size = unsafe { libc::listxattr(c_path.as_ptr(), std::ptr::null_mut(), 0) };
         if size < 0 {
@@ -581,6 +606,7 @@ impl Backend for LocalBackend {
         length: u64,
         proc_id: u32,
     ) -> io::Result<u8> {
+        tracing::trace!("backend lock: type={lock_type} flags={flags} start={start} length={length}");
         let l_type = match lock_type {
             0 => libc::F_RDLCK as i16,
             1 => libc::F_WRLCK as i16,
@@ -617,6 +643,7 @@ impl Backend for LocalBackend {
         length: u64,
         proc_id: u32,
     ) -> io::Result<(u8, u64, u64, u32)> {
+        tracing::trace!("backend getlock: type={lock_type} start={start} length={length}");
         let l_type = match lock_type {
             0 => libc::F_RDLCK as i16,
             1 => libc::F_WRLCK as i16,
@@ -652,6 +679,7 @@ impl Backend for LocalBackend {
         count: u64,
         flags: u32,
     ) -> io::Result<usize> {
+        tracing::trace!("backend copy_range: src_off={src_off} dst_off={dst_off} count={count} flags={flags}");
         use std::os::fd::BorrowedFd;
 
         if flags & COPY_REFLINK != 0 {
@@ -709,6 +737,7 @@ impl Backend for LocalBackend {
         offset: u64,
         length: u64,
     ) -> io::Result<()> {
+        tracing::trace!("backend allocate: mode={mode} offset={offset} length={length}");
         let flags = nix::fcntl::FallocateFlags::from_bits_truncate(mode as i32);
         nix::fcntl::fallocate(handle.as_raw_fd(), flags, offset as i64, length as i64)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
@@ -721,6 +750,7 @@ impl Backend for LocalBackend {
         offset: u64,
         length: u64,
     ) -> io::Result<Vec<u8>> {
+        tracing::trace!("backend hash: algo={algo} offset={offset} length={length}");
         if algo != HASH_BLAKE3 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -748,6 +778,7 @@ impl Backend for LocalBackend {
     // ── Ownership ──
 
     fn chown(&self, path: &Path, uid: u32, gid: u32) -> io::Result<()> {
+        tracing::trace!("backend chown: {} uid={uid} gid={gid}", path.display());
         let nix_uid = if uid != 0 {
             Some(nix::unistd::Uid::from_raw(uid))
         } else {

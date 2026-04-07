@@ -27,6 +27,7 @@ impl LeaseMap {
 
     /// Record a newly granted lease.
     pub fn grant(&self, fh: u32, lease_id: u64, ino: u64) {
+        tracing::debug!("lease grant: fh={fh} lid={lease_id} ino={ino}");
         self.fh_to_lease.insert(fh, lease_id);
         self.lease_to_ino.insert(lease_id, ino);
         self.ino_lease_count
@@ -41,10 +42,11 @@ impl LeaseMap {
         let (_, lease_id) = self.fh_to_lease.remove(&fh)?;
         // If lease_to_ino still has this lease, it hasn't been broken yet.
         if let Some((_, ino)) = self.lease_to_ino.remove(&lease_id) {
+            tracing::debug!("lease release: fh={fh} lid={lease_id} ino={ino}");
             self.decrement_ino(ino);
             Some(lease_id)
         } else {
-            // Lease was already broken by the server; no need to ack.
+            tracing::debug!("lease release: fh={fh} lid={lease_id} — already broken");
             None
         }
     }
@@ -52,6 +54,7 @@ impl LeaseMap {
     /// Handle a server-initiated lease break. Returns the inode to invalidate.
     pub fn break_lease(&self, lease_id: u64) -> Option<u64> {
         let (_, ino) = self.lease_to_ino.remove(&lease_id)?;
+        tracing::debug!("lease break: lid={lease_id} ino={ino}");
         self.decrement_ino(ino);
         Some(ino)
     }

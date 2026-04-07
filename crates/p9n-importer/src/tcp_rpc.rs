@@ -39,9 +39,10 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
                 match framing::read_message(&mut reader).await {
                     Ok(fc) => {
                         if fc.tag == NO_TAG {
-                            // Server push message
+                            tracing::trace!("tcp push received: type={}", fc.msg_type.name());
                             let _ = push_tx2.send(fc).await;
                         } else if let Some((_, tx)) = inflight2.remove(&fc.tag) {
+                            tracing::trace!("tcp response dispatched: tag={} type={}", fc.tag, fc.msg_type.name());
                             let _ = tx.send(fc);
                         } else {
                             tracing::warn!("tcp: response for unknown tag {}", fc.tag);
@@ -95,6 +96,8 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
             msg,
         };
 
+        tracing::trace!("tcp rpc send: tag={tag} type={}", msg_type.name());
+
         let (tx, rx) = oneshot::channel();
         self.inflight.insert(tag, tx);
 
@@ -112,9 +115,19 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
             .await
             .map_err(|_| {
                 self.inflight.remove(&tag);
+                tracing::debug!("tcp rpc timeout: tag={tag} type={}", msg_type.name());
                 RpcError::from("TCP RPC timeout (30s)")
             })?
-            .map_err(|_| RpcError::from("TCP RPC channel closed (connection lost)"))?;
+            .map_err(|_| {
+                tracing::debug!("tcp rpc channel closed: tag={tag} type={}", msg_type.name());
+                RpcError::from("TCP RPC channel closed (connection lost)")
+            })?;
+
+        tracing::trace!(
+            "tcp rpc recv: tag={tag} type={} resp={}",
+            msg_type.name(),
+            response.msg_type.name(),
+        );
 
         drop(guard);
 

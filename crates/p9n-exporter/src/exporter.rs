@@ -213,7 +213,10 @@ impl<B: Backend> Exporter<B> {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    _ = tokio::time::sleep(interval) => ctx.session_store.gc(),
+                    _ = tokio::time::sleep(interval) => {
+                        tracing::trace!("session GC tick");
+                        ctx.session_store.gc();
+                    }
                     _ = token.cancelled() => break,
                 }
             }

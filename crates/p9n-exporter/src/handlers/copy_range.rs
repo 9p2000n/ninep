@@ -30,6 +30,7 @@ pub async fn handle<B: Backend>(
         return Err("expected Copyrange message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("copyrange: src_fid={src_fid} src_off={src_off} dst_fid={dst_fid} dst_off={dst_off} count={count}");
 
     let src_state = session
         .fids

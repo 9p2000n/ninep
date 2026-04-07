@@ -18,6 +18,7 @@ pub async fn handle<B: Backend>(
         return Err("expected Mknod message".into());
     };
     let tag = fc.tag;
+    tracing::trace!("mknod: dfid={dfid} name={name} mode={mode:#o} major={major} minor={minor}");
 
     let fid_state = session.fids.get(dfid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;

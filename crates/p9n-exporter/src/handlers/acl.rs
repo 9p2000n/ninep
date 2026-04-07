@@ -28,6 +28,7 @@ async fn handle_getacl<B: Backend>(
 ) -> HandlerResult {
     let Msg::Getacl { fid, acl_type } = fc.msg else { return Err("expected Getacl".into()); };
     let tag = fc.tag;
+    tracing::trace!("getacl: fid={fid} acl_type={acl_type}");
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
@@ -51,6 +52,7 @@ async fn handle_setacl<B: Backend>(
 ) -> HandlerResult {
     let Msg::Setacl { fid, acl_type, data } = fc.msg else { return Err("expected Setacl".into()); };
     let tag = fc.tag;
+    tracing::trace!("setacl: fid={fid} acl_type={acl_type} len={}", data.len());
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;

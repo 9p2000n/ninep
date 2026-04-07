@@ -78,6 +78,7 @@ impl RpcClient {
         msg_type: MsgType,
         msg: Msg,
     ) -> Result<Fcall, RpcError> {
+        tracing::trace!("rpc_client call: type={}", msg_type.name());
         let rpc = self.inner.load();
         match rpc.call(msg_type, msg.clone()).await {
             Ok(fc) => Ok(fc),

@@ -26,6 +26,7 @@ pub async fn handle_xattrwalk<B: Backend>(
         return Err("expected Xattrwalk".into());
     };
     let tag = fc.tag;
+    tracing::trace!("xattrwalk: fid={fid} newfid={newfid} name={name}");
 
     let fid_state = session.fids.get(fid)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;

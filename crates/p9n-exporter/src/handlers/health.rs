@@ -5,6 +5,7 @@ use p9n_proto::types::MsgType;
 
 /// Handle Thealth: return server health status.
 pub fn handle<H: Send + Sync + 'static>(_session: &Session<H>, fc: Fcall) -> HandlerResult {
+    tracing::trace!("health check");
     Ok(Fcall {
         size: 0,
         msg_type: MsgType::Rhealth,
