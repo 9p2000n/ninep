@@ -50,13 +50,17 @@ pub async fn handle<B: Backend>(
             .fids
             .get(fid)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+        let path = fid_state.path.clone();
+        let qid = fid_state.qid.clone();
+        let is_dir = fid_state.is_dir;
+        drop(fid_state); // Release DashMap read lock before insert to avoid deadlock
         session.fids.insert(
             newfid,
             FidState {
-                path: fid_state.path.clone(),
-                qid: fid_state.qid.clone(),
+                path,
+                qid,
                 handle: None,
-                is_dir: fid_state.is_dir,
+                is_dir,
             },
         );
         return Ok(Fcall {
