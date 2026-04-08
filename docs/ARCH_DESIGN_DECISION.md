@@ -479,3 +479,93 @@ grpc/client.rs — h2 Unix socket connect + FetchX509SVID streaming RPC
 **Integration**: The client produces `SpiffeIdentity` values sent through the existing `watch::Sender<Arc<SpiffeIdentity>>` channel. The `SpiffeCertResolver` and TLS config code are completely unchanged — they only consume from `watch::Receiver`.
 
 **Reconnection**: A background task loops: `connect → fetch → stream.next() → tx.send()`. On disconnection, exponential backoff (5s → 60s cap) before reconnect. The last known SVID remains active in the `watch::channel` until a new one arrives.
+
+---
+
+## 25. RDMA Transport: Custom FFI Over rdma-sys
+
+**Decision**: Write minimal FFI bindings to libibverbs (`rdma/ffi.rs`) instead of using the `rdma-sys` crate.
+
+**Problem**: `rdma-sys` 0.3.0 bundles `bindgen` 0.59, which generates bindings at build time using libclang. On newer kernel headers (6.x+), `bindgen` 0.59 produces incorrect or incomplete bindings due to evolving kernel header macros. Additionally, `rdma-sys` pulls in the entire libibverbs API (~200+ functions) when ninep only needs ~20.
+
+**Options evaluated**:
+
+| Approach | Build deps | Kernel compat | Maintenance |
+|----------|-----------|--------------|-------------|
+| `rdma-sys` 0.3.0 | bindgen + libclang | Broken on 6.x headers | Upstream unmaintained |
+| `rdma-sys` + patched bindgen | Complex build.rs | Fragile | High |
+| **Custom FFI (~20 functions)** | **None** | **All kernels** | **Low (stable ABI)** |
+
+**Rationale**: The libibverbs C ABI is stable (backward-compatible since OFED 1.x). The 20 functions ninep needs (`ibv_open_device`, `ibv_alloc_pd`, `ibv_reg_mr`, `ibv_create_qp`, `ibv_post_send`, `ibv_post_recv`, `ibv_poll_cq`, etc.) have had the same signatures for 15+ years. A hand-written `extern "C"` block with the necessary struct definitions is ~380 lines, fully portable, and needs no build-time code generation.
+
+**Trade-off**: If libibverbs adds new fields to `ibv_qp` or `ibv_wc`, the FFI struct layouts must be manually updated. This is low-risk since ABI changes are exceedingly rare and backward-compatible by convention.
+
+---
+
+## 26. RDMA Memory: Pooled MR Over Per-Message Registration
+
+**Decision**: Pre-allocate a contiguous buffer, register it once as a single MR, and distribute fixed-size slots via a lock-free queue (`MrPool`).
+
+**Problem**: The naive approach registers a new MR for every Send/Recv work request (`ibv_reg_mr` + `ibv_dereg_mr`). Each call costs ~1µs due to kernel page pinning/unpinning. At 100k messages/sec, that's 200ms/sec of kernel time — unacceptable.
+
+**Design**:
+```
+MrPool::new(pd, slot_size=4MB, count=32)
+  │
+  ├─ alloc_zeroed(32 × 4MB = 128MB, page-aligned)
+  ├─ ibv_reg_mr(pd, buf, 128MB, LOCAL_WRITE|REMOTE_READ|REMOTE_WRITE)
+  │   → single kernel call, pins all pages
+  ├─ ArrayQueue::new(32)  // push slot indices 0..31
+  │
+  ├─ checkout() → pop from queue (CAS, ~10ns) → MrSlot
+  │   └─ MrSlot::drop() → push back to queue (CAS, ~10ns)
+  │
+  └─ checkout_async() → yield + retry if empty (up to 10ms)
+```
+
+**Why `crossbeam::ArrayQueue`**: Lock-free bounded queue with CAS-based push/pop. The alternative (`std::sync::Mutex<Vec<u32>>`) would serialize all concurrent sends — every handler task would contend on the same lock. With ArrayQueue, 32 concurrent sends have zero contention (different slots, different atomic CAS addresses).
+
+**Slot lifetime**: `MrSlot` auto-returns on Drop (RAII). For recv buffers posted to the QP, `MrSlot::leak()` converts to `LeasedSlot` (no auto-return). After CQ completion, `LeasedSlot::return_to_pool()` or `MrPool::return_slot(idx)` recycles the slot. This prevents use-after-free: a leased slot cannot be reclaimed while the QP holds a reference.
+
+**Kernel call reduction**: Default config uses 2 MR pools per connection (send + recv) = 2 `ibv_reg_mr` calls, down from ~130 (64 recv + 32 send + per-message registration overhead).
+
+---
+
+## 27. RDMA Authentication: TCP+TLS Bootstrap Over IB MAD
+
+**Decision**: Authenticate RDMA connections by establishing a TCP+TLS session first, exchanging QP parameters over the encrypted channel, then closing TCP.
+
+**Alternatives considered**:
+
+| Approach | Security | Complexity | Compatibility |
+|----------|----------|------------|---------------|
+| IB Subnet Manager (SM) auth | Fabric-level only | Low | IB only (not RoCE) |
+| IPsec over RoCE | Strong | Very high | RoCE only |
+| Custom key exchange over UD QP | Moderate | High | Universal |
+| **TCP+TLS bootstrap** | **Strong (SPIFFE mTLS)** | **Low** | **Universal** |
+
+**Rationale**: TCP+TLS bootstrap reuses the existing SPIFFE mTLS infrastructure (same `tls_config.rs`, same certificate resolver, same trust bundles). No new authentication mechanism to implement, audit, or maintain. The session key is derived from TLS via `export_keying_material`, binding the RDMA session to the cryptographically authenticated TLS connection.
+
+**Data path is unencrypted**: After bootstrap, RDMA messages are not encrypted. This matches NFS/RDMA behavior and is standard practice for datacenter RDMA — the fabric is a trusted network, and RDMA encryption (AES-XTS via `ibv_mr` with `IBV_ACCESS_FLUSH_GLOBAL`) is still emerging in hardware.
+
+---
+
+## 28. RDMA I/O: Three-Phase Progression
+
+**Decision**: Implement RDMA support in three phases rather than jumping directly to one-sided operations.
+
+**Phase progression**:
+
+| Phase | Mechanism | Why |
+|-------|-----------|-----|
+| 1. Two-sided Send/Recv | All messages via RDMA Send/Recv | Functional correctness first — same semantics as TCP, easy to validate |
+| 2. MR pool | Pooled pre-registered memory | Eliminate per-message `ibv_reg_mr` overhead (~130 calls → 2) |
+| 3. One-sided RDMA Read/Write | Tread/Twrite use RDMA Write/Read | Maximum performance — bypasses 9P message payload for data I/O |
+
+**Why not start at Phase 3**: One-sided RDMA requires:
+1. Memory registration on both sides (client registers per-fid buffers)
+2. A control message protocol to exchange rkey/addr (Trdmatoken)
+3. Server-side intercept logic for Tread/Twrite
+4. Careful lifetime management (buffer must not be freed while remote RDMA is in-flight)
+
+**Fallback**: If Trdmatoken is not registered for a fid, `RdmaConnectionHandler` falls through to the standard handler (Phase 1 path). This means Phase 3 is incrementally adoptable — the importer registers tokens only for files it expects to read/write heavily.

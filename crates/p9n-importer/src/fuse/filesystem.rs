@@ -555,6 +555,14 @@ impl Filesystem for P9Filesystem {
             }
         }
 
+        // Register RDMA tokens for one-sided I/O (no-op for QUIC/TCP).
+        let rdma_dir = if flags & (libc::O_WRONLY | libc::O_RDWR) as u32 != 0 {
+            1 // WRITE direction: server RDMA Reads from our buffer
+        } else {
+            0 // READ direction: server RDMA Writes into our buffer
+        };
+        self.rpc.register_rdma_token(open_fid, rdma_dir).await;
+
         tracing::trace!("fuse open: ino={inode} → fh={open_fid}");
         Ok(ReplyOpen { fh: open_fid as u64, flags: 0 })
     }
@@ -606,6 +614,8 @@ impl Filesystem for P9Filesystem {
     ) -> FuseResult<()> {
         tracing::trace!("fuse release: fh={fh}");
         let fid = fh as u32;
+        // Deregister RDMA token (no-op for QUIC/TCP).
+        self.rpc.deregister_rdma_token(fid);
         // Release lease if one was held (returns None if already broken by server).
         if let Some(lease_id) = self.leases.release_by_fh(fid) {
             let _ = self.rpc.call(MsgType::Tleaseack, Msg::Leaseack { lease_id }).await;

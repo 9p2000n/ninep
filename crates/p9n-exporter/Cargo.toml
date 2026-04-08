@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = []
 workload-api = ["p9n-auth/workload-api"]
+rdma = ["p9n-transport/rdma"]
 
 [dependencies]
 p9n-proto = { path = "../p9n-proto" }

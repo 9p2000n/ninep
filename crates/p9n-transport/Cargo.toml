@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+rdma = []
+
 [dependencies]
 p9n-proto = { path = "../p9n-proto" }
 p9n-auth = { path = "../p9n-auth" }
@@ -16,3 +20,5 @@ bytes = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
+libc = "0.2"
+crossbeam-queue = "0.3"

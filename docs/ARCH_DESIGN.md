@@ -14,7 +14,7 @@ ninep is a Rust implementation of the 9P2000.N remote filesystem protocol, struc
                          └──────┬───────┘
                                 │
                          ┌──────┴───────┐
-                         │ p9n-transport│  QUIC + TCP+TLS dual transport
+                         │ p9n-transport│  QUIC + TCP+TLS + RDMA transport
                          └──────┬───────┘
                         ┌───────┴────────┐
                  ┌──────┴─────┐   ┌──────┴─────┐
@@ -117,7 +117,7 @@ Custom claims: `p9n_rights` (permission bitmask), `p9n_depth` (walk depth limit)
 
 ## 4. Transport Layer (p9n-transport)
 
-### 4.1 Dual Transport Architecture
+### 4.1 Triple Transport Architecture
 
 ```
 p9n-transport/
@@ -129,9 +129,15 @@ p9n-transport/
   │   ├─ streams.rs        Bidirectional stream RPC
   │   ├─ framing.rs        Delegates to generic framing
   │   └─ zero_rtt.rs       0-RTT session detection
-  └─ tcp/
-      ├─ config.rs         tokio-rustls server/client setup
-      └─ connection.rs     TcpTransport (single stream, Mutex<Writer>)
+  ├─ tcp/
+  │   ├─ config.rs         tokio-rustls server/client setup
+  │   └─ connection.rs     TcpTransport (single stream, Mutex<Writer>)
+  └─ rdma/                 [feature: rdma]
+      ├─ ffi.rs            Minimal libibverbs FFI bindings (no rdma-sys)
+      ├─ verbs.rs          RAII wrappers: Context, PD, CQ, QP, AsyncCQ
+      ├─ mr_pool.rs        Pre-registered MR pool (lock-free ArrayQueue)
+      ├─ config.rs         TCP+TLS bootstrap, QP parameter exchange
+      └─ connection.rs     RdmaTransport (Send/Recv + RDMA Read/Write)
 ```
 
 ### 4.2 QUIC Transport
@@ -166,6 +172,83 @@ Client reader ◄──[Fcall tag=N]── TCP stream ◄── Server writer
 
 Writer protected by `Mutex` (handler responses and push notifications may write concurrently).
 
+### 4.4 RDMA Transport (feature `rdma`)
+
+InfiniBand/RoCE transport using libibverbs. Three-phase design:
+
+```
+Phase 1: Two-sided Send/Recv
+  All 9P messages flow through RDMA Send/Recv work requests.
+  Functionally equivalent to TCP, but over RDMA fabric (zero TCP/IP overhead).
+
+Phase 2: Pre-registered MR pool
+  MrPool: single ibv_reg_mr (page-aligned buffer) → lock-free ArrayQueue of slots
+  ├─ MrSlot: auto-return on drop (for send buffers)
+  └─ LeasedSlot: explicit return via return_to_pool() (for recv buffers in QP)
+
+Phase 3: One-sided RDMA Read/Write
+  Client registers per-fid RDMA buffers via Trdmatoken.
+  ├─ Tread: server reads file → RDMA Write into client buffer → lightweight Rread
+  └─ Twrite: server RDMA Reads from client buffer → writes to file → Rwrite
+```
+
+Connection bootstrap (TCP+TLS → RDMA):
+
+```
+Client                                                    Server
+  │                                                         │
+  │══════ TCP connect to RDMA bootstrap addr ═══════════════│
+  │══════ TLS handshake (SPIFFE mTLS) ══════════════════════│
+  │                                                         │
+  │  derive session_key: export_keying_material()           │
+  │                                                         │
+  │◄── server QP endpoint (qp_num, lid, gid, psn) ──────────│ setup_rdma_resources()
+  │                                                         │
+  │─── client QP endpoint (qp_num, lid, gid, psn) ─────────►│
+  │                                                         │
+  │  QP: INIT → RTR → RTS                                   │ QP: INIT → RTR → RTS
+  │  Pre-post 64 recv buffers from recv_pool                │ Pre-post 64 recv buffers
+  │                                                         │
+  │══════ TCP connection closed ════════════════════════════│
+  │                                                         │
+  │◄═══════ All data now flows over RDMA verbs ════════════►│
+```
+
+Message dispatch (same pattern as QUIC/TCP):
+
+```
+RdmaTransport::new(conn)
+  │
+  ├─ Background task: recv CQ poller (via AsyncFd on completion channel)
+  │    └─ poll completions → decode Fcall → dispatch by tag
+  │       tag == NO_TAG → push_tx channel
+  │       other tags → inflight DashMap<tag, oneshot::Sender>
+  │
+  ├─ rpc(fc): send + await tag-matched response (30s timeout)
+  │
+  ├─ send(fc): checkout slot → copy encoded → post Send → poll send CQ
+  │
+  ├─ rdma_write(data, remote_addr, rkey): one-sided Write to remote buffer
+  │
+  └─ rdma_read(len, remote_addr, rkey): one-sided Read from remote buffer
+```
+
+MR pool internals:
+
+```
+MrPool
+  ├─ buf: *mut u8          Page-aligned contiguous buffer (slot_size × count)
+  ├─ mr: *mut ibv_mr       Single registered MR covering entire buffer
+  ├─ free: ArrayQueue<u32> Lock-free queue of available slot indices
+  ├─ lkey: u32             Local access key (same for all slots)
+  └─ rkey: u32             Remote access key (given to peer for one-sided ops)
+
+Default pool sizes:
+  Send pool: 32 slots × 4 MB = 128 MB (concurrent sends from handler tasks)
+  Recv pool: 64 slots × 4 MB = 256 MB (pre-posted to receive queue)
+  Data pool: 16 slots × 4 MB = 64 MB (client-side, per-fid RDMA buffers)
+```
+
 ---
 
 ## 5. Exporter (Server) Architecture
@@ -190,6 +273,16 @@ Exporter process
   │         └─ select! {
   │              read_message → dispatch → write_message (serial)
   │              watch_rx → write_message tag=NO_TAG (inline)
+  │            }
+  │
+  ├─ RDMA bootstrap listener (TCP+TLS, optional, feature `rdma`)
+  │    └─ accept_tls() → QP exchange → spawn RdmaConnectionHandler
+  │         └─ select! {
+  │              transport.recv_push() → dispatch → transport.send() (serial)
+  │                ├─ Tread/Twrite: intercept for RDMA Read/Write path
+  │                └─ other: standard handler dispatch
+  │              watch_rx → push::send_notify via RDMA Send
+  │              push_rx → push via RDMA Send
   │            }
   │
   ├─ Session GC task (periodic, configurable interval)
@@ -254,7 +347,7 @@ Incoming Fcall
 
 ### 5.5 Handler Organization
 
-37 handler modules grouped by function:
+Handler modules grouped by function:
 
 ```
 handlers/
@@ -265,7 +358,7 @@ handlers/
   Security:     spiffe (TstartlsSpiffe/Tfetchbundle/Tspiffeverify), capgrant
   Distributed:  lease, consistency, compound
   Observability: trace, health, serverstats
-  Transport:    quicstream, stream_io, compress, ratelimit
+  Transport:    quicstream, rdma (Trdmatoken), stream_io, compress, ratelimit
   Catch-all:    stubs (returns ENOSYS for unimplemented messages)
 ```
 
@@ -351,11 +444,12 @@ SessionStore
 ### 6.1 Connection Setup
 
 ```
-Importer::connect() / connect_tcp()
+Importer::connect() / connect_tcp() / connect_rdma()
   │
-  ├─ Establish QUIC or TCP+TLS connection
+  ├─ Establish QUIC, TCP+TLS, or RDMA connection
+  │    └─ RDMA: TCP+TLS bootstrap → QP exchange → RDMA verbs
   ├─ Derive session key: export_keying_material("9P2000.N session")
-  ├─ Create QuicRpcClient (QUIC) or TcpRpcClient (TCP)
+  ├─ Create QuicRpcClient / TcpRpcClient / RdmaRpcClient
   │    └─ Wrapped in RpcHandle enum for unified interface
   ├─ Tversion → Rversion (negotiate version + msize)
   ├─ Tcaps → Rcaps (negotiate capabilities)
@@ -366,7 +460,7 @@ Importer::connect() / connect_tcp()
 ### 6.2 RPC Layer
 
 ```
-RpcHandle (enum: Quic | Tcp)
+RpcHandle (enum: Quic | Tcp | Rdma)
   │
   └─ call(msg_type, msg) → Result<Fcall>
        ├─ TagGuard RAII (auto-free on drop/error/timeout)
@@ -484,6 +578,11 @@ Per TCP connection:
   1 connection handler task (serial read → dispatch → write)
   M blocking I/O tasks (same pool)
 
+Per RDMA connection (feature `rdma`):
+  1 connection handler task (select! loop: recv + watch + push)
+  1 background recv CQ poller (AsyncFd on completion channel)
+  M blocking I/O tasks (same pool)
+
 Global:
   1 session GC task (periodic)
   1 notify OS watcher thread (independent of tokio)
@@ -494,7 +593,7 @@ Global:
 ```
 1 tokio runtime
   ├─ fuse3 async filesystem (handles FUSE kernel ops)
-  ├─ RPC background datagram reader (QUIC) or stream reader (TCP)
+  ├─ RPC background datagram reader (QUIC) or stream reader (TCP) or recv CQ poller (RDMA)
   ├─ RPC background push stream acceptor (QUIC only)
   └─ Push receiver task (cache invalidation)
 ```
@@ -512,6 +611,11 @@ Global:
 | Session.msize | AtomicU32 | None — lock-free |
 | Session.authenticated | AtomicBool | None — lock-free |
 | TCP writer | Mutex | Medium — serialized writes |
+| RDMA inflight (tag dispatch) | DashMap | Low — per-tag |
+| RDMA send pool | ArrayQueue (lock-free) | None — CAS per slot |
+| RDMA recv pool | ArrayQueue (lock-free) | None — CAS per slot |
+| RDMA push channel | Mutex<mpsc::Receiver> | Low — single consumer |
+| Session.rdma_tokens | DashMap | Low — per-fid |
 
 ---
 

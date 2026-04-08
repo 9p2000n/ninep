@@ -20,6 +20,8 @@ use tokio::sync::{Mutex, mpsc};
 pub enum Transport {
     Quic,
     Tcp,
+    #[cfg(feature = "rdma")]
+    Rdma,
 }
 
 /// State needed to re-establish a connection after disconnect.
@@ -34,6 +36,9 @@ struct ReconnectCtx {
     identity: p9n_auth::spiffe::SpiffeIdentity,
     /// Trust bundle for TLS verification.
     trust_store: p9n_auth::spiffe::trust_bundle::TrustBundleStore,
+    /// RDMA device name (None = auto-detect first device).
+    #[cfg(feature = "rdma")]
+    rdma_device: Option<String>,
 }
 
 /// A reconnecting RPC client.
@@ -68,8 +73,16 @@ impl RpcClient {
                 endpoint,
                 identity,
                 trust_store,
+                #[cfg(feature = "rdma")]
+                rdma_device: None,
             },
         }
+    }
+
+    /// Set the RDMA device name for reconnection.
+    #[cfg(feature = "rdma")]
+    pub fn set_rdma_device(&mut self, device: Option<String>) {
+        self.ctx.rdma_device = device;
     }
 
     /// Send a 9P request. On transport failure, reconnect and retry once.
@@ -95,6 +108,16 @@ impl RpcClient {
     /// Close the underlying transport (for graceful shutdown).
     pub async fn close(&self) {
         self.inner.load().close().await;
+    }
+
+    /// Register an RDMA token for a fid (no-op for QUIC/TCP).
+    pub async fn register_rdma_token(&self, fid: u32, direction: u8) {
+        self.inner.load().register_rdma_token(fid, direction).await;
+    }
+
+    /// Deregister RDMA token for a fid (no-op for QUIC/TCP).
+    pub fn deregister_rdma_token(&self, fid: u32) {
+        self.inner.load().deregister_rdma_token(fid);
     }
 
     /// Attempt to reconnect. Only one task performs the reconnect;
@@ -133,6 +156,17 @@ impl RpcClient {
                     &self.ctx.identity,
                     &self.ctx.trust_store,
                     self.ctx.push_tx.clone(),
+                ).await
+            }
+            #[cfg(feature = "rdma")]
+            Transport::Rdma => {
+                importer::reconnect_rdma(
+                    &self.ctx.addr,
+                    &self.ctx.hostname,
+                    &self.ctx.identity,
+                    &self.ctx.trust_store,
+                    self.ctx.push_tx.clone(),
+                    self.ctx.rdma_device.as_deref(),
                 ).await
             }
         };

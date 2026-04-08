@@ -1,12 +1,12 @@
 # ninep
 
-A Rust implementation of the [9P2000.N](https://github.com/9p2000n/9P2000.N/tree/main/spec/9P2000.N-protocol.md) protocol — a modular, capability-negotiated extension to the Plan 9 remote filesystem protocol. Supports both QUIC and TCP+TLS transports with SPIFFE workload identity authentication.
+A Rust implementation of the [9P2000.N](https://github.com/9p2000n/9P2000.N/tree/main/spec/9P2000.N-protocol.md) protocol — a modular, capability-negotiated extension to the Plan 9 remote filesystem protocol. Supports QUIC, TCP+TLS, and RDMA transports with SPIFFE workload identity authentication.
 
 ## Overview
 
 ninep exports and imports filesystems over the network:
 
-- **p9n-exporter** exports a local directory over QUIC or TCP+TLS, serving 9P2000.N requests
+- **p9n-exporter** exports a local directory over QUIC, TCP+TLS, or RDMA, serving 9P2000.N requests
 - **p9n-importer** mounts a remote export as a local FUSE filesystem
 
 Both authenticate via SPIFFE X.509-SVIDs (mTLS) and authorize operations through a multi-layer access control system with per-identity filesystem isolation and JWT capability tokens.
@@ -14,11 +14,12 @@ Both authenticate via SPIFFE X.509-SVIDs (mTLS) and authorize operations through
 ## Architecture
 
 ```
-               QUIC (mTLS via SPIFFE X.509-SVID) or TCP+TLS
+          QUIC (mTLS) / TCP+TLS / RDMA (TCP+TLS bootstrap)
  ┌──────────────┐   ──────────────────────────────────   ┌──────────────┐
- │ p9n-importer │◄── metadata (datagrams/serial)      ──►│ p9n-exporter │
- │              │◄── data (streams/serial)            ──►│              │
+ │ p9n-importer │◄── metadata (datagrams/serial/send) ──►│ p9n-exporter │
+ │              │◄── data (streams/serial/send)       ──►│              │
  │  FUSE mount  │◄── push: Rnotify (inotify events)   ── │   local fs   │
+ │              │◄── RDMA Read/Write (one-sided I/O)  ──►│              │
  └──────┬───────┘                                        └──────┬───────┘
         │                                                       │
     /mnt/9p/                                               /srv/export/
@@ -30,7 +31,7 @@ Both authenticate via SPIFFE X.509-SVIDs (mTLS) and authorize operations through
 |-------|---------|
 | **p9n-proto** | Wire types (9P2000.N), marshal/unmarshal codec, capability negotiation, message classification |
 | **p9n-auth** | SPIFFE X.509-SVID & JWT-SVID, trust bundles, TLS config, cert hot-reload, chain verification, Workload API (optional) |
-| **p9n-transport** | QUIC + TCP+TLS dual transport, datagram/stream routing, QUIC framing |
+| **p9n-transport** | QUIC + TCP+TLS + RDMA triple transport, datagram/stream routing, QUIC framing, RDMA verbs & MR pool |
 | **p9n-exporter** | File exporter: message handlers, local filesystem backend, inotify watch, access control, lease management |
 | **p9n-importer** | File importer: async FUSE filesystem (fuse3), concurrent RPC, lease-based cache coherence, auto-reconnect |
 
@@ -49,10 +50,17 @@ Produces two binaries: `p9n-exporter` and `p9n-importer`.
 | Feature | Effect |
 |---------|--------|
 | `workload-api` | Enables SPIFFE Workload API support (gRPC over Unix socket to SPIRE Agent). Adds `h2` and `http` dependencies. |
+| `rdma` | Enables RDMA (InfiniBand/RoCE) transport. Requires `libibverbs-dev` system package. Adds `crossbeam-queue` and `libc` dependencies. |
 
 ```bash
 # Build with Workload API support
 cargo build --workspace --features workload-api
+
+# Build with RDMA support (requires libibverbs-dev)
+cargo build --workspace --features rdma
+
+# Build with both
+cargo build --workspace --features rdma,workload-api
 ```
 
 ## Usage
@@ -104,6 +112,16 @@ p9n-exporter \
   --spiffe-agent-socket /run/spire/agent.sock
 ```
 
+With RDMA transport (requires `--features rdma` at build time):
+
+```bash
+p9n-exporter \
+  --listen [::]:5640 \
+  --rdma-listen [::]:5642 \       # RDMA bootstrap listener (TCP+TLS)
+  --export /srv/shared \
+  --cert ... --key ... --ca ...
+```
+
 ### Importer
 
 ```bash
@@ -119,6 +137,13 @@ p9n-importer \
   --transport tcp \
   --mount /mnt/9p \
   --cert ... --key ... --ca ...
+
+# RDMA mode (requires --features rdma)
+p9n-importer \
+  --exporter 192.168.1.10:5642 \
+  --transport rdma \
+  --mount /mnt/9p \
+  --cert ... --key ... --ca ...
 ```
 
 Optional flags: `--hostname` (TLS SNI, default `localhost`), `--uname` (attach username), `--aname` (remote path).
@@ -127,16 +152,19 @@ Non-root users can mount via `fusermount3` (fuse3's `unprivileged` feature).
 
 ## Transport
 
-### Dual Protocol Support
+### Triple Protocol Support
 
-| | QUIC | TCP+TLS |
-|--|------|---------|
-| Default port | 5640 | 5641 (optional) |
-| Multiplexing | Per-stream (256 concurrent) | Serial with tag-based demux |
-| Metadata routing | QUIC datagrams (lowest latency) | Same stream as data |
-| Server push | Unidirectional streams | Tag=0xFFFF on same stream |
-| 0-RTT resumption | Deliberately disabled ([rationale](docs/ARCH_DESIGN_DECISION.md#3-transport-why-quic-over-tcp)) | N/A |
-| Linux `mount -t 9p` | Not compatible | Compatible (with TLS) |
+| | QUIC | TCP+TLS | RDMA |
+|--|------|---------|------|
+| Default port | 5640 | 5641 (optional) | 5642 (optional) |
+| Multiplexing | Per-stream (256 concurrent) | Serial with tag-based demux | Tag-based demux via Send/Recv |
+| Metadata routing | QUIC datagrams (lowest latency) | Same stream as data | RDMA Send/Recv |
+| Data I/O | Bidirectional streams | Same stream | RDMA Read/Write (one-sided, Phase 3) |
+| Server push | Unidirectional streams | Tag=0xFFFF on same stream | RDMA Send with tag=0xFFFF |
+| 0-RTT resumption | Deliberately disabled ([rationale](docs/ARCH_DESIGN_DECISION.md#3-transport-why-quic-over-tcp)) | N/A | N/A |
+| Authentication | QUIC mTLS handshake | TLS 1.3 handshake | TCP+TLS bootstrap → QP exchange |
+| Feature flag | (default) | (default) | `rdma` |
+| Linux `mount -t 9p` | Not compatible | Compatible (with TLS) | Not compatible |
 
 ### QUIC Message Routing
 
@@ -145,6 +173,22 @@ Non-root users can mount via `fusermount3` (fuse3's `unprivileged` feature).
 | **Datagrams** | Tversion, Tcaps, Tsession, Thealth, Twatch, ... | Small control-plane; lowest latency, tag-based response matching |
 | **Bidirectional streams** | Twalk, Tread, Twrite, Tgetattr, Treaddir, ... | Data operations; ordered, flow-controlled |
 | **Unidirectional streams** | Rnotify, Rleasebreak, Rstreamdata | Server push (tag=0xFFFF) |
+
+### RDMA Transport (feature `rdma`)
+
+InfiniBand/RoCE transport using libibverbs, behind the `rdma` Cargo feature flag. Three-phase implementation:
+
+| Phase | Mechanism | Purpose |
+|-------|-----------|---------|
+| **Phase 1** | Two-sided Send/Recv | All 9P messages over RDMA fabric (functionally equivalent to TCP) |
+| **Phase 2** | Pre-registered MR pool | Single `ibv_reg_mr` per pool, lock-free slot checkout via `crossbeam::ArrayQueue`. Reduces kernel calls from ~130 to 2 per connection |
+| **Phase 3** | One-sided RDMA Read/Write | Tread → server RDMA Writes file data directly into client memory; Twrite → server RDMA Reads from client buffer. Registered via Trdmatoken |
+
+**Authentication**: TCP+TLS bootstrap with SPIFFE mTLS (same as TCP transport), then RDMA QP parameter exchange over the TLS stream, then the TCP connection closes and all data flows over RDMA verbs.
+
+**Memory pool**: `MrPool` allocates a contiguous page-aligned buffer, registers it once, and distributes fixed-size slots (4 MB each, matching 9P msize) via lock-free queue. `MrSlot` auto-returns on drop; `LeasedSlot` (for recv buffers posted to QP) must be explicitly returned after CQ completion.
+
+**CQ integration**: Receive CQ notifications are integrated with tokio via `AsyncFd` on the completion channel fd — zero CPU while waiting. Send CQ uses busy-poll (completions are near-instant for connected RC QPs).
 
 ### 0-RTT
 
@@ -190,7 +234,7 @@ All base message types implemented: Tversion, Tauth, Tattach, Twalk, Tlopen, Tlc
 |--------|----------|--------|
 | **Negotiation** | Tcaps | Implemented |
 | **Security** | Tstartls, Tauthneg, Tcapgrant, Tcapuse, Tauditctl, TstartlsSpiffe, Tfetchbundle, Tspiffeverify | 7/8 implemented (Tstartls N/A for QUIC) |
-| **Transport** | Tquicstream, Trdmatoken, Trdmanotify, Tcxlmap, Tcxlcoherence | 1/5 (QUIC only; RDMA/CXL future) |
+| **Transport** | Tquicstream, Trdmatoken, Trdmanotify, Tcxlmap, Tcxlcoherence | 2/5 (QUIC + RDMA; CXL future) |
 | **Performance** | Tcompound, Tcompress, Tcopyrange, Tallocate, Tseekhole, Tmmaphint | 4/6 implemented |
 | **Filesystem** | Twatch, Tunwatch, Tnotify, Tgetacl, Tsetacl, Tsnapshot, Tclone, Txattrget, Txattrset, Txattrlist | 8/10 (snapshot/clone need btrfs/zfs) |
 | **Distributed** | Tlease, Tleaserenew, Tleasebreak, Tleaseack, Tsession, Tconsistency, Ttopology | All implemented |
@@ -199,7 +243,7 @@ All base message types implemented: Tversion, Tauth, Tattach, Twalk, Tlopen, Tlc
 | **Streaming** | Tasync, Tpoll, Tstreamopen, Tstreamdata, Tstreamclose | 5/5 (all implemented) |
 | **Content** | Tsearch, Thash | 1/2 (search P3) |
 
-**Total: 72/77 T-message types implemented (93.5%)**
+**Total: 73/77 T-message types implemented (94.8%)**
 
 ## File Watching (inotify)
 
@@ -225,6 +269,9 @@ The exporter integrates Linux inotify via the `notify` crate with DashMap-based 
 - **Streaming I/O**: Tstreamopen/Tstreamdata/Tstreamclose with tracked file offsets and fsync-on-close
 - **Rate limiting**: Optional per-fid token bucket (IOPS + BPS), async backpressure, configurable via `--enable-rate-limit`
 - **Auto-reconnect**: Transparent QUIC/TCP reconnection with session resumption via `RpcClient`
+- **RDMA one-sided I/O**: Tread/Twrite bypass 9P message payloads — server RDMA Writes file data directly into client-registered memory (reads) or RDMA Reads from client buffer (writes), eliminating serialization and network copy overhead
+- **RDMA MR pool**: Single `ibv_reg_mr` per pool (reduces kernel calls from ~130 to 2), lock-free `ArrayQueue` slot checkout enables concurrent sends without mutex contention
+- **RDMA CQ/tokio integration**: Receive CQ uses `AsyncFd` on completion channel fd for zero-CPU wait; send CQ uses busy-poll for sub-microsecond completions
 
 ## Testing
 
@@ -269,16 +316,17 @@ Tests use `rcgen` for self-signed SPIFFE certificates and `tempfile` for isolate
 
 ```
 ninep/
-  Cargo.toml                         Workspace root
-  README.md                          This file
+  Cargo.toml                          Workspace root
+  README.md                           This file
+  CLAUDE.md                           Developer guide
   docs/
-    ARCH_DESIGN.md                       Architectural design
-    ARCH_DESIGN_DECISION.md              Architectural decisions with rationale
-    RCGEN_USAGE.md                       rcgen usage for SPIFFE SVIDs
-    SECURITY_DESIGN.md                   9-layer security architecture
-    SPIRE_SETUP.md                       SPIRE environment setup
-    THREAD_MODEL.md                      Thread model analysis (exporter/importer)
-    TROUBLESHOOTING.md                   Common issues and solutions (FUSE, AppArmor)
+    ARCH_DESIGN.md                      Architectural design
+    ARCH_DESIGN_DECISION.md             Architectural decisions with rationale
+    RCGEN_USAGE.md                      rcgen usage for SPIFFE SVIDs
+    SECURITY_DESIGN.md                  9-layer security architecture
+    SPIRE_SETUP.md                      SPIRE environment setup
+    THREAD_MODEL.md                     Thread model analysis (exporter/importer)
+    TROUBLESHOOTING.md                  Common issues and solutions (FUSE, AppArmor)
 
   crates/
     p9n-proto/                         Protocol library (transport-agnostic)
@@ -309,7 +357,7 @@ ninep/
         client.rs                          h2 client for FetchX509SVID streaming RPC
       tests/auth_test.rs                 JWT/JWK/trust/chain tests
 
-    p9n-transport/                     Dual transport layer
+    p9n-transport/                     Triple transport layer
       src/framing.rs                     Generic AsyncRead/AsyncWrite framing
       src/quic/config.rs                 Quinn endpoint builder (SPIFFE mTLS)
       src/quic/connection.rs             QuicTransport with tag-based datagram routing
@@ -320,10 +368,15 @@ ninep/
       src/quic/zero_rtt.rs               0-RTT session detection (deliberately unused)
       src/tcp/config.rs                  tokio-rustls server/client setup
       src/tcp/connection.rs              TcpTransport
+      src/rdma/ffi.rs                    [rdma feature] Minimal libibverbs FFI bindings
+      src/rdma/verbs.rs                  [rdma feature] RAII wrappers (Context, PD, CQ, QP, AsyncCQ)
+      src/rdma/mr_pool.rs                [rdma feature] Pre-registered MR pool with lock-free slots
+      src/rdma/config.rs                 [rdma feature] TCP+TLS bootstrap, QP parameter exchange
+      src/rdma/connection.rs             [rdma feature] RdmaTransport (Send/Recv + RDMA Read/Write)
       tests/transport_test.rs            framing + router unit tests
 
     p9n-exporter/                      File exporter (server)
-      src/exporter.rs                    Dual-protocol accept loop (QUIC + TCP)
+      src/exporter.rs                    Triple-protocol accept loop (QUIC + TCP + RDMA)
       src/quic_connection.rs             QUIC connection handler (per-stream spawn)
       src/tcp_connection.rs              TCP connection handler (serial + push)
       src/config.rs                      ExporterConfig (configurable limits)
@@ -337,14 +390,17 @@ ninep/
       src/push.rs                        Server push channel (Rnotify, Rleasebreak)
       src/backend/local.rs               Local filesystem backend
       src/util.rs                        Shared join_err/map_io_error/spiffe extraction
-      src/handlers/                      handler modules
+      src/rdma_connection.rs             [rdma feature] RDMA connection handler (one-sided I/O intercept)
+      src/handlers/                      Handler modules
+      src/handlers/rdma.rs               [rdma feature] Trdmatoken handler (client buffer registration)
       tests/integration_test.rs          full-stack integration tests
 
     p9n-importer/                      File importer (client)
-      src/importer.rs                    RpcHandle enum (QUIC/TCP), connect + negotiate
+      src/importer.rs                    RpcHandle enum (QUIC/TCP/RDMA), connect + negotiate
       src/rpc_client.rs                  Reconnecting RPC client wrapper
       src/quic_rpc.rs                    QUIC RPC with concurrent tag dispatch
       src/tcp_rpc.rs                     TCP RPC with serial tag dispatch
+      src/rdma_rpc.rs                    [rdma feature] RDMA RPC with per-fid token management
       src/shutdown.rs                    Graceful shutdown coordination
       src/error.rs                       RPC error types with errno mapping
       src/push_receiver.rs               Server push handler (Rnotify/Rleasebreak → cache)
@@ -376,6 +432,8 @@ ninep/
 | Atomic swap | `arc-swap` 1 | Lock-free RPC handle hot-swap on reconnect |
 | POSIX | `nix` 0.29 | File I/O syscalls (fs, user, dir) |
 | Cancellation | `tokio-util` 0.7 | CancellationToken for Tflush |
+| Lock-free queue | `crossbeam-queue` 0.3 | RDMA MR pool slot checkout (optional, `rdma` feature) |
+| RDMA verbs | `libibverbs` (system) | InfiniBand/RoCE verbs via minimal FFI (optional, `rdma` feature) |
 | HTTP/2 | `h2` 0.4 | gRPC Workload API client (optional, `workload-api` feature) |
 
 ## Related

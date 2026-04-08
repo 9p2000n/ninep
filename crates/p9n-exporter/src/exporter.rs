@@ -4,6 +4,8 @@ use crate::backend::local::LocalBackend;
 use crate::lease_manager::LeaseManager;
 use crate::quic_connection::QuicConnectionHandler;
 use crate::tcp_connection::TcpConnectionHandler;
+#[cfg(feature = "rdma")]
+use crate::rdma_connection::RdmaConnectionHandler;
 use crate::session_store::SessionStore;
 use crate::shared::SharedCtx;
 use crate::watch_manager::WatchManager;
@@ -24,6 +26,12 @@ pub struct Exporter<B: Backend = LocalBackend> {
     ctx: Arc<SharedCtx<B>>,
     tcp_listener: Option<tokio::net::TcpListener>,
     tcp_acceptor: Option<TlsAcceptor>,
+    #[cfg(feature = "rdma")]
+    rdma_listener: Option<tokio::net::TcpListener>,
+    #[cfg(feature = "rdma")]
+    rdma_acceptor: Option<TlsAcceptor>,
+    #[cfg(feature = "rdma")]
+    rdma_device: Option<String>,
     shutdown_token: CancellationToken,
 }
 
@@ -88,6 +96,12 @@ impl<B: Backend> Exporter<B> {
             ctx,
             tcp_listener: None,
             tcp_acceptor: None,
+            #[cfg(feature = "rdma")]
+            rdma_listener: None,
+            #[cfg(feature = "rdma")]
+            rdma_acceptor: None,
+            #[cfg(feature = "rdma")]
+            rdma_device: None,
             shutdown_token: CancellationToken::new(),
         })
     }
@@ -112,10 +126,55 @@ impl<B: Backend> Exporter<B> {
         Ok(())
     }
 
+    /// Enable RDMA listening on the given address.
+    ///
+    /// The RDMA bootstrap uses TCP+TLS for authentication (same SPIFFE mTLS),
+    /// then exchanges QP parameters and transitions to RDMA verbs for data.
+    #[cfg(feature = "rdma")]
+    pub async fn enable_rdma(
+        &mut self,
+        addr: SocketAddr,
+        identity: &p9n_auth::spiffe::SpiffeIdentity,
+        trust_store: &p9n_auth::spiffe::trust_bundle::TrustBundleStore,
+        device_name: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tls_config = tls_config::server_config(identity, trust_store)
+            .map_err(|e| format!("RDMA TLS config: {e}"))?;
+        let acceptor = TlsAcceptor::from(Arc::new(tls_config));
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        tracing::info!("RDMA listener on {addr} (TCP+TLS bootstrap)");
+        self.rdma_listener = Some(listener);
+        self.rdma_acceptor = Some(acceptor);
+        self.rdma_device = device_name;
+        Ok(())
+    }
+
     pub fn access_mut(&mut self) -> &mut AccessControl {
         &mut Arc::get_mut(&mut self.ctx)
             .expect("shared context already cloned")
             .access
+    }
+
+    /// Accept an RDMA connection (or pend forever if RDMA is not enabled).
+    #[cfg(feature = "rdma")]
+    async fn accept_rdma(
+        &self,
+    ) -> Result<
+        (p9n_transport::rdma::config::RdmaConnection, Option<String>, std::net::SocketAddr),
+        Box<dyn std::error::Error>,
+    > {
+        rdma_accept(
+            &self.rdma_listener,
+            &self.rdma_acceptor,
+            self.rdma_device.as_deref(),
+        )
+        .await
+    }
+
+    #[cfg(not(feature = "rdma"))]
+    async fn accept_rdma(&self) -> Result<(), Box<dyn std::error::Error>> {
+        std::future::pending::<()>().await;
+        unreachable!()
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -164,6 +223,26 @@ impl<B: Backend> Exporter<B> {
                             tracing::warn!("TCP accept error: {e}");
                         }
                     }
+                }
+                result = self.accept_rdma() => {
+                    #[cfg(feature = "rdma")]
+                    match result {
+                        Ok((rdma_conn, spiffe_id, remote)) => {
+                            let ctx = self.ctx.clone();
+                            handlers.spawn(async move {
+                                tracing::info!("accepted RDMA connection from {remote}");
+                                let mut handler = RdmaConnectionHandler::new(rdma_conn, ctx, spiffe_id);
+                                if let Err(e) = handler.run().await {
+                                    tracing::warn!("RDMA connection {remote} error: {e}");
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!("RDMA accept error: {e}");
+                        }
+                    }
+                    #[cfg(not(feature = "rdma"))]
+                    { let _ = result; }
                 }
                 _ = tokio::signal::ctrl_c() => {
                     tracing::info!("received SIGINT, shutting down...");
@@ -246,6 +325,41 @@ async fn tcp_accept(
     let (stream, addr) = listener.accept().await?;
     let tls_stream = acceptor.accept(stream).await?;
     Ok((tls_stream, addr))
+}
+
+/// Accept an RDMA connection if an RDMA listener is configured.
+///
+/// Accepts a TCP+TLS bootstrap connection, exchanges QP parameters,
+/// and returns the established RDMA connection.
+#[cfg(feature = "rdma")]
+async fn rdma_accept(
+    listener: &Option<tokio::net::TcpListener>,
+    acceptor: &Option<TlsAcceptor>,
+    device_name: Option<&str>,
+) -> Result<
+    (p9n_transport::rdma::config::RdmaConnection, Option<String>, std::net::SocketAddr),
+    Box<dyn std::error::Error>,
+> {
+    let (listener, acceptor) = match (listener, acceptor) {
+        (Some(l), Some(a)) => (l, a),
+        _ => {
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    };
+    let (tcp_stream, addr) = listener.accept().await?;
+
+    // Extract SPIFFE ID from the TLS peer certificate during bootstrap.
+    let (rdma_conn, _session_key) =
+        p9n_transport::rdma::config::accept(tcp_stream, acceptor, device_name).await?;
+
+    // For now, SPIFFE ID extraction happens during TLS, but the TLS stream
+    // is consumed by config::accept. We'll pass None and let the session
+    // handler deal with identity via 9P auth if needed.
+    // TODO: Extract SPIFFE ID from the TLS cert during accept() and return it.
+    let spiffe_id = None;
+
+    Ok((rdma_conn, spiffe_id, addr))
 }
 
 /// Generate a 256-bit HMAC key from system entropy.

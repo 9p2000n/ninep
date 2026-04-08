@@ -33,6 +33,7 @@ pub mod mknod;
 pub mod negotiate;
 pub mod quicstream;
 pub mod ratelimit;
+pub mod rdma;
 pub mod remove;
 pub mod rename;
 pub mod serverstats;
@@ -366,6 +367,7 @@ pub async fn dispatch<B: Backend>(
 
         // ── Transport ──
         MsgType::Tquicstream => quicstream::handle(session, fc),
+        MsgType::Trdmatoken => rdma::handle(session, ctx, fc),
 
         _ => stubs::handle(fc),
     }

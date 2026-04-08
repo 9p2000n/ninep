@@ -3,29 +3,31 @@
 ## Global Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         p9n-exporter (server)                           │
-│                                                                         │
-│  Tokio multi-threaded Runtime (#[tokio::main], workers = CPU cores)     │
-│  ├─ Main event loop: select! { QUIC accept, TCP accept, Ctrl-C }        │
-│  ├─ One tokio task per connection (QuicConnectionHandler / TcpHandler)  │
-│  ├─ [QUIC] Additional spawn per stream/datagram                         │
-│  ├─ [TCP]  Serial processing per connection                             │
-│  ├─ All filesystem I/O → spawn_blocking (32 call sites)                 │
-│  └─ Session GC periodic task                                            │
-│                                                                         │
-│  OS thread (notify crate inotify):                                      │
-│  └─ Event callback → DashMap lookup → try_send(mpsc) → watch_rx         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                         p9n-importer (client)                           │
-│                                                                         │
-│  Tokio multi-threaded Runtime (#[tokio::main], workers = CPU cores)     │
-│  ├─ fuse3 native async (no block_on, no spawn_blocking)                 │
-│  ├─ [QUIC] Background datagram reader + push stream acceptor            │
-│  ├─ [TCP]  Background single reader task + Arc<Mutex> writer            │
-│  ├─ RPC: tag + oneshot channel for request/response matching            │
-│  └─ FidGuard RAII drop → spawn Tclunk                                   │
-└─────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                         p9n-exporter (server)                                 │
+│                                                                               │
+│  Tokio multi-threaded Runtime (#[tokio::main], workers = CPU cores)           │
+│  ├─ Main event loop: select! { QUIC accept, TCP accept, RDMA accept, Ctrl-C } │
+│  ├─ One tokio task per connection (QuicConnectionHandler / TcpHandler)        │
+│  ├─ [QUIC] Additional spawn per stream/datagram                               │
+│  ├─ [TCP]  Serial processing per connection                                   │
+│  ├─ [RDMA] One handler task + background recv CQ poller per connection        │
+│  ├─ All filesystem I/O → spawn_blocking (32 call sites)                       │
+│  └─ Session GC periodic task                                                  │
+│                                                                               │
+│  OS thread (notify crate inotify):                                            │
+│  └─ Event callback → DashMap lookup → try_send(mpsc) → watch_rx               │
+├───────────────────────────────────────────────────────────────────────────────┤
+│                         p9n-importer (client)                                 │
+│                                                                               │
+│  Tokio multi-threaded Runtime (#[tokio::main], workers = CPU cores)           │
+│  ├─ fuse3 native async (no block_on, no spawn_blocking)                       │
+│  ├─ [QUIC] Background datagram reader + push stream acceptor                  │
+│  ├─ [TCP]  Background single reader task + Arc<Mutex> writer                  │
+│  ├─ [RDMA] Background recv CQ poller (AsyncFd) + per-fid RDMA buffers         │
+│  ├─ RPC: tag + oneshot channel for request/response matching                  │
+│  └─ FidGuard RAII drop → spawn Tclunk                                         │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -49,6 +51,19 @@ Multiple streams on the same QUIC connection are **processed in parallel**.
 - `read_message()` → **serial** dispatch handler → write response
 - `watch_rx.recv()` → push multiplexed on the same TCP stream
 - Writer protected by `Arc<Mutex<WriteHalf>>`
+
+**RDMA (serial with one-sided fast path, feature `rdma`):** One handler task per connection, `select!` loop:
+- `transport.recv_push()` → serial dispatch → `transport.send()` response
+  - `Tread`/`Twrite` intercepted for RDMA one-sided path (if Trdmatoken registered)
+  - Other messages dispatched to standard handlers
+- `watch_rx.recv()` → push sent via RDMA Send (tag=NO_TAG)
+- `push_rx.recv()` → push sent via RDMA Send
+
+Additionally, one **background recv CQ poller** task per connection:
+- Waits on `AsyncFd` (completion channel fd) — zero CPU while idle
+- Drains CQ completions → decode Fcall → dispatch by tag via DashMap
+- Re-arms CQ notification after draining
+- Reposts recv buffer slots from pool after consumption
 
 ### 1.3 Filesystem I/O — spawn_blocking + Backend trait
 
@@ -93,6 +108,10 @@ Key design decisions:
 | `Session.msize` | `AtomicU32` | Message size limit |
 | `SessionStore` | Nested `DashMap` | Cross-connection session resumption |
 | `WatchManager.watcher` | `Mutex` | Held briefly only during watch/unwatch registration |
+| `Session.rdma_tokens` | `DashMap<u32, RdmaToken>` | Per-fid RDMA buffer registration (RDMA only) |
+| RDMA `MrPool.free` | `crossbeam::ArrayQueue` | Lock-free slot checkout/return (CAS per op) |
+| RDMA `RdmaTransport.inflight` | `DashMap<u16, oneshot>` | Per-tag response dispatch |
+| RDMA `RdmaTransport.push_rx` | `Mutex<mpsc::Receiver>` | Single consumer (connection handler) |
 
 ### 1.6 Session Cleanup
 
@@ -156,7 +175,15 @@ Background reader task
 
 A single reader task reads the entire TCP stream, demultiplexing by tag. Writes are serialized by `Arc<Mutex<WriteHalf>>`.
 
-### 2.5 FidGuard RAII Cleanup
+### 2.5 RDMA Background Tasks (1, feature `rdma`)
+
+| Task | Function | Lifetime |
+|------|----------|----------|
+| Recv CQ poller | `AsyncFd` on completion channel → decode → dispatch by tag | Exits on connection close or QP error |
+
+The poller waits on epoll (zero CPU) until the completion channel signals readiness, then drains all CQ completions. Send completions use busy-poll (sub-microsecond). Per-fid RDMA buffers are managed by `RdmaRpcClient.fid_buffers: DashMap<u32, LeasedSlot>`.
+
+### 2.6 FidGuard RAII Cleanup
 
 ```rust
 impl Drop for FidGuard {
@@ -215,6 +242,9 @@ Two background tasks cooperate:
 | **Exporter**: tokio task ↔ tokio task | Shared Session | DashMap / Atomic | Lock-free or sharded |
 | **Importer**: FUSE task → RPC → background reader | Request/response | `oneshot` channel | Pure async await |
 | **Importer**: background reader → FUSE task | Push messages | `mpsc` channel | Pure async |
+| **RDMA Exporter**: recv CQ poller → handler task | Decoded Fcall | `mpsc` channel | Pure async (AsyncFd) |
+| **RDMA Exporter**: handler task → send pool | Send buffer | `ArrayQueue` (lock-free) | CAS only |
+| **RDMA Importer**: recv CQ poller → RPC caller | Response dispatch | `DashMap` + `oneshot` | Lock-free |
 | **Transport**: cert watcher → cert updater | Cert rotation | `watch` channel + `RwLock` | Microsecond write lock |
 
 ---
@@ -222,7 +252,8 @@ Two background tasks cooperate:
 ## 5. Key Design Points
 
 1. **Exporter has an OS thread boundary** (notify inotify); importer is **pure tokio, zero OS threads**.
-2. **QUIC multi-stream concurrency vs TCP single-connection serial** — consistent on both sides.
+2. **Three transport models**: QUIC multi-stream concurrency, TCP single-connection serial, RDMA two-sided Send/Recv with one-sided Read/Write fast path — consistent dispatch pattern on both sides.
 3. **Exporter's blocking pool is performance-critical** — 512 thread cap, all Backend I/O goes through it. `Arc<SharedCtx<B>>` and `Arc<H>` are cloned into closures (atomic increment, ~1ns) instead of raw fd integers.
-4. **DashMap used throughout** — FID table, Session, inflight, watch registration — all sharded locks. StreamState caches `Arc<H>` to avoid per-operation fid lookups.
+4. **DashMap used throughout** — FID table, Session, inflight, watch registration, RDMA tokens — all sharded locks. StreamState caches `Arc<H>` to avoid per-operation fid lookups.
 5. **Importer does no local I/O** — everything is delegated to the exporter, so no `spawn_blocking` needed.
+6. **RDMA uses lock-free data structures** — `crossbeam::ArrayQueue` for MR pool slot management (CAS per checkout/return), `DashMap` for tag dispatch and fid buffer tracking. The only mutex is on `push_rx` (single consumer, low contention).

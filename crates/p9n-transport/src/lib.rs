@@ -8,3 +8,6 @@ pub mod tcp;
 pub use error::TransportError;
 pub use quic::QuicTransport;
 pub use tcp::TcpTransport;
+
+#[cfg(feature = "rdma")]
+pub mod rdma;

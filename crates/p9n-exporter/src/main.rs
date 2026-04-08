@@ -16,6 +16,16 @@ struct Args {
     #[arg(long)]
     tcp_listen: Option<SocketAddr>,
 
+    /// RDMA listen address (optional, TCP+TLS bootstrap for RDMA)
+    #[cfg(feature = "rdma")]
+    #[arg(long)]
+    rdma_listen: Option<SocketAddr>,
+
+    /// RDMA device name (auto-detect if not set)
+    #[cfg(feature = "rdma")]
+    #[arg(long)]
+    rdma_device: Option<String>,
+
     /// SPIFFE X.509-SVID certificate (PEM)
     #[arg(long)]
     cert: String,
@@ -64,6 +74,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(tcp_addr) = args.tcp_listen {
         exporter.enable_tcp(tcp_addr, &identity, &trust_store).await?;
+    }
+
+    #[cfg(feature = "rdma")]
+    if let Some(rdma_addr) = args.rdma_listen {
+        exporter.enable_rdma(rdma_addr, &identity, &trust_store, args.rdma_device).await?;
     }
 
     exporter.run().await

@@ -10,6 +10,8 @@ pub mod util;
 pub mod shared;
 pub mod quic_connection;
 pub mod tcp_connection;
+#[cfg(feature = "rdma")]
+pub mod rdma_connection;
 pub mod session;
 pub mod session_store;
 pub mod fid_table;

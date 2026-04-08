@@ -133,6 +133,28 @@ pub struct Session<H: Send + Sync + 'static = OwnedFd> {
     pub rate_limits: DashMap<u32, RateLimiter>,
     /// In-flight requests: tag → CancellationToken. Used by Tflush.
     pub inflight: DashMap<u16, CancellationToken>,
+    /// Per-fid RDMA tokens: fid → RdmaToken. Registered via Trdmatoken.
+    /// When present, Tread/Twrite use one-sided RDMA Read/Write instead
+    /// of copying data through the message payload.
+    pub rdma_tokens: DashMap<u32, RdmaToken>,
+}
+
+/// An RDMA token registered by the client for a specific fid.
+///
+/// Holds the remote memory registration info so the server can
+/// RDMA Write (for reads) or RDMA Read (for writes) directly
+/// to/from the client's buffer.
+#[derive(Debug, Clone)]
+pub struct RdmaToken {
+    /// 0 = READ (server will RDMA Write data into client buffer),
+    /// 1 = WRITE (server will RDMA Read data from client buffer).
+    pub direction: u8,
+    /// Remote key for the client's registered memory region.
+    pub rkey: u32,
+    /// Remote virtual address of the client's buffer.
+    pub addr: u64,
+    /// Size of the client's registered buffer.
+    pub length: u32,
 }
 
 impl<H: Send + Sync + 'static> Session<H> {
@@ -153,6 +175,7 @@ impl<H: Send + Sync + 'static> Session<H> {
             active_streams: DashMap::new(),
             rate_limits: DashMap::new(),
             inflight: DashMap::new(),
+            rdma_tokens: DashMap::new(),
         }
     }
 
@@ -165,6 +188,7 @@ impl<H: Send + Sync + 'static> Session<H> {
         self.active_leases.clear();
         self.active_streams.clear();
         self.rate_limits.clear();
+        self.rdma_tokens.clear();
         self.spiffe_verified.store(false, Ordering::Relaxed);
         // Cancel all in-flight requests
         for entry in self.inflight.iter() {

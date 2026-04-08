@@ -10,6 +10,8 @@ ninep implements a 9-layer security model built on SPIFFE workload identity. Eve
 
 ### 1. Connection Establishment (TLS Layer)
 
+For RDMA transport, the same TLS authentication occurs during the TCP+TLS bootstrap phase before RDMA QP exchange (see RDMA Authentication below).
+
 ```
 Importer                          QUIC/TLS                         Exporter
   │                                   │                               │
@@ -306,9 +308,10 @@ The exporter serves its trust bundle store via Tfetchbundle and validates third-
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ Layer 1: TLS Transport (QUIC mTLS)                               │
+│ Layer 1: TLS Transport (QUIC mTLS / TCP+TLS / RDMA bootstrap)    │
 │ ├─ rustls WebPkiClientVerifier validates certificate chains      │
 │ ├─ Both sides must present valid X.509-SVIDs from trusted CAs    │
+│ ├─ RDMA: TCP+TLS bootstrap for auth, then QP exchange over TLS   │
 │ └─ Invalid/expired/unsigned → connection refused                 │
 ├──────────────────────────────────────────────────────────────────┤
 │ Layer 2: Identity Extraction (connection setup)                  │
@@ -406,3 +409,51 @@ Properties:
 | Session state | `p9n-exporter/src/session.rs` | active_caps, spiffe_verified, inflight |
 | Ownership mapping | `p9n-exporter/src/handlers/create.rs` | apply_ownership after file creation |
 | Key derivation | `p9n-importer/src/importer.rs` | export_keying_material for session key |
+| RDMA bootstrap | `p9n-transport/src/rdma/config.rs` | TCP+TLS handshake, QP parameter exchange |
+| RDMA handler | `p9n-exporter/src/rdma_connection.rs` | RDMA connection lifecycle + one-sided I/O |
+| RDMA token | `p9n-exporter/src/handlers/rdma.rs` | Trdmatoken registration |
+
+---
+
+## RDMA Authentication (feature `rdma`)
+
+RDMA transport reuses the same SPIFFE mTLS authentication as TCP+TLS, but only for the bootstrap phase. Once RDMA QP parameters are exchanged, the TCP connection closes and all data flows over RDMA verbs.
+
+### Authentication Flow
+
+```
+Importer                         TCP+TLS                          Exporter
+  │                                  │                               │
+  │═════ TCP connect to RDMA bootstrap address ══════════════════════│
+  │                                  │                               │
+  │═════ TLS 1.3 mTLS handshake (same as TCP transport) ═════════════│
+  │  Client X.509-SVID ─────────────►│                               │
+  │                                  │──► rustls WebPkiClientVerifier│
+  │◄──── Server X.509-SVID ──────────│◄── validation passed          │
+  │                                  │                               │
+  │  derive session key:             │    derive session key:        │
+  │  export_keying_material(         │    export_keying_material(    │
+  │    "9P2000.N-session") → K       │      "9P2000.N-session") → K  │
+  │                                  │                               │
+  │◄── server QP endpoint ───────────│ encode(qp_num,lid,gid,psn)    │
+  │    (26 bytes over TLS)           │                               │
+  │                                  │                               │
+  │─── client QP endpoint ──────────►│ decode → remote endpoint      │
+  │    (26 bytes over TLS)           │                               │
+  │                                  │                               │
+  │═════ TCP connection closed ══════╪═══════════════════════════════│
+  │                                  │                               │
+  │◄═══════════ RDMA verbs (all data) ══════════════════════════════►│
+```
+
+### Security Properties
+
+1. **Same authentication strength as TCP+TLS**: The TLS handshake validates both sides' X.509-SVIDs against trusted CAs before any RDMA parameters are exchanged.
+
+2. **Session key derived from TLS**: The 128-bit session key is derived from TLS 1.3 keying material (`export_keying_material`), binding the RDMA session to the authenticated TLS connection.
+
+3. **QP parameters exchanged over encrypted channel**: The QP number, LID, GID, and PSN are transmitted over the TLS stream — a man-in-the-middle cannot inject forged QP parameters.
+
+4. **No encryption on RDMA data path**: After the TCP bootstrap closes, RDMA messages are **not encrypted**. This is by design — RDMA operates on trusted datacenter fabric (InfiniBand or RoCE), where encryption is handled at the network layer or is unnecessary. This matches NFS/RDMA behavior.
+
+5. **RDMA buffer registration security**: Trdmatoken only allows a client to register buffers for its own fids. The server validates fid ownership before storing the remote rkey/addr. One-sided RDMA Read/Write operations are constrained to the registered buffer region.

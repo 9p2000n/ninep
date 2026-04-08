@@ -37,4 +37,8 @@ pub enum TransportError {
 
     #[error("{0}")]
     Other(String),
+
+    #[cfg(feature = "rdma")]
+    #[error("RDMA verb error: {0}")]
+    Rdma(String),
 }

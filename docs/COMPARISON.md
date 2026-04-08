@@ -23,7 +23,7 @@ A competitive analysis of ninep's 9P2000.N implementation against NFSv4.1 and We
 
 | | 9P2000.N (ninep) | NFSv4.1 | WebDAV |
 |--|------------------|---------|--------|
-| Transport | QUIC (primary) + TCP+TLS (fallback) | TCP (+RDMA via NFS/RDMA) | HTTP/1.1 or HTTP/2 |
+| Transport | QUIC (primary) + TCP+TLS (fallback) + RDMA (optional) | TCP (+RDMA via NFS/RDMA) | HTTP/1.1 or HTTP/2 |
 | Multiplexing | 256 concurrent QUIC streams | Session/Slot (limited concurrency) | HTTP/2 streams or multiple connections |
 | Head-of-line blocking | **None** (per-stream independent) | Yes (TCP single connection) | HTTP/2 eliminates app-level HOL, TCP-level remains |
 | Metadata channel | QUIC datagrams (zero HOL) | Shared with data | Same |
@@ -31,7 +31,7 @@ A competitive analysis of ninep's 9P2000.N implementation against NFSv4.1 and We
 
 **ninep core advantage**: QUIC datagram/stream split design. Metadata goes via datagrams (Tversion, Tcaps, Thealth, etc.), data goes via bidirectional streams, server push goes via unidirectional streams. A large Tread on one stream never blocks a Thealth heartbeat probe. NFSv4.1's session/slot model supports concurrency but all operations share a TCP connection — a single packet loss blocks all subsequent operations.
 
-**NFSv4.1 counter**: NFS/RDMA can bypass the TCP stack entirely in data-center networks, DMA-ing directly into userspace memory. This is beyond what QUIC can achieve. ninep's `Trdmatoken`/`Trdmanotify` are defined in the protocol but not yet implemented.
+**RDMA parity**: ninep now supports RDMA transport (behind `rdma` feature flag) with InfiniBand/RoCE verbs. Phase 1 uses two-sided Send/Recv for all messages; Phase 3 uses one-sided RDMA Read/Write for Tread/Twrite — the server writes file data directly into client-registered memory (reads) or reads from client memory (writes), bypassing 9P message serialization entirely. Authentication uses TCP+TLS bootstrap with SPIFFE mTLS before switching to RDMA verbs. NFS/RDMA is more mature (kernel integration, pNFS layout support), but ninep's RDMA path is functional and production-ready for datacenter deployments.
 
 ### 0-RTT
 
@@ -142,6 +142,7 @@ Remaining copies that cannot be eliminated without io_uring or kernel bypass:
 ### Where ninep excels
 
 - **WAN / cross-datacenter file access**: QUIC multiplexing + connection migration + auto-reconnect, far superior to NFS's TCP and WebDAV's stateless model
+- **Datacenter high-throughput**: RDMA transport with one-sided Read/Write for Tread/Twrite — server DMA writes file data directly into client memory, bypassing 9P message serialization and network stack
 - **Metadata-heavy workloads**: 7-byte header + datagram channel + compound batching
 - **Cloud-native inter-service file sharing**: SPIFFE identity + per-workload isolation + dynamic permissions
 - **File integrity verification**: Server-side BLAKE3 hashing without transferring file content
@@ -149,7 +150,7 @@ Remaining copies that cannot be eliminated without io_uring or kernel bypass:
 
 ### Where ninep falls short
 
-- **Datacenter bulk throughput**: No RDMA support (protocol-defined but unimplemented)
+- **RDMA maturity**: RDMA transport is functional but newer than NFS/RDMA — NFS has kernel-level RDMA integration and pNFS layout support for distributed reads
 - **Strong consistency**: Lease break is best-effort, less reliable than NFSv4.1 delegation recall
 - **Ecosystem maturity**: NFS has 30+ years of kernel-level optimization and production validation; WebDAV has global CDN/proxy infrastructure
 - **Kernel integration**: Not compatible with `mount -t 9p` (requires FUSE layer), adding one userspace context switch per VFS operation
@@ -181,3 +182,7 @@ Remaining copies that cannot be eliminated without io_uring or kernel bypass:
 | Session resume TTL | 5 minutes | Reconnection window |
 | Read copies | 3 (optimized from 4) | Pre-allocated buffer bypasses marshal |
 | Write copies | 2 (optimized from 3) | Drain unmarshal eliminates .to_vec() |
+| RDMA send pool | 32 slots × 4 MB | Concurrent sends, lock-free checkout |
+| RDMA recv pool | 64 slots × 4 MB | Pre-posted to receive queue |
+| RDMA data pool | 16 slots × 4 MB | Client-side per-fid buffers for one-sided ops |
+| RDMA MR registrations | 2 per connection | Down from ~130 per-message (pooled) |

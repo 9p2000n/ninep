@@ -35,9 +35,14 @@ struct Args {
     #[arg(long)]
     ca: String,
 
-    /// Transport protocol: "quic" or "tcp" (TLS)
+    /// Transport protocol: "quic", "tcp", or "rdma"
     #[arg(long, default_value = "quic")]
     transport: String,
+
+    /// RDMA device name (auto-detect if not set)
+    #[cfg(feature = "rdma")]
+    #[arg(long)]
+    rdma_device: Option<String>,
 
     /// Username for attach (default: current user or "nobody")
     #[arg(long)]
@@ -66,7 +71,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut importer = connect(&args, auth).await?;
 
     let endpoint = importer.endpoint.take();
-    let transport = if args.transport == "tcp" { Transport::Tcp } else { Transport::Quic };
+    let transport = match args.transport.as_str() {
+        "tcp" => Transport::Tcp,
+        #[cfg(feature = "rdma")]
+        "rdma" => Transport::Rdma,
+        _ => Transport::Quic,
+    };
 
     // Build the reconnecting RPC client. The push_tx is shared: on reconnect
     // a clone is passed to the new QuicRpcClient/TcpRpcClient, so the push
@@ -118,14 +128,24 @@ async fn connect(
     args: &Args,
     auth: p9n_auth::SpiffeAuth,
 ) -> Result<p9n_importer::importer::Importer, Box<dyn std::error::Error + Send + Sync>> {
-    if args.transport == "tcp" {
-        p9n_importer::importer::Importer::connect_tcp(
-            &args.exporter, &args.hostname, auth,
-        ).await
-    } else {
-        p9n_importer::importer::Importer::connect_quic(
-            &args.exporter, &args.hostname, auth,
-        ).await
+    match args.transport.as_str() {
+        "tcp" => {
+            p9n_importer::importer::Importer::connect_tcp(
+                &args.exporter, &args.hostname, auth,
+            ).await
+        }
+        #[cfg(feature = "rdma")]
+        "rdma" => {
+            p9n_importer::importer::Importer::connect_rdma(
+                &args.exporter, &args.hostname, auth,
+                args.rdma_device.as_deref(),
+            ).await
+        }
+        _ => {
+            p9n_importer::importer::Importer::connect_quic(
+                &args.exporter, &args.hostname, auth,
+            ).await
+        }
     }
 }
 

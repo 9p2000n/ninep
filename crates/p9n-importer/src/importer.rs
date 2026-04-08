@@ -1,6 +1,8 @@
 use crate::error::RpcError;
 use crate::quic_rpc::QuicRpcClient;
 use crate::tcp_rpc::TcpRpcClient;
+#[cfg(feature = "rdma")]
+use crate::rdma_rpc::RdmaRpcClient;
 use p9n_proto::caps::CapSet;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::*;
@@ -8,10 +10,12 @@ use p9n_proto::wire::Qid;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-/// Unified RPC handle that delegates to QUIC or TCP+TLS transport.
+/// Unified RPC handle that delegates to QUIC, TCP+TLS, or RDMA transport.
 pub enum RpcHandle {
     Quic(Arc<QuicRpcClient>),
     Tcp(Arc<TcpRpcClient<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>>),
+    #[cfg(feature = "rdma")]
+    Rdma(Arc<RdmaRpcClient>),
 }
 
 impl RpcHandle {
@@ -24,6 +28,8 @@ impl RpcHandle {
         match self {
             Self::Quic(rpc) => rpc.call(msg_type, msg).await,
             Self::Tcp(rpc) => rpc.call(msg_type, msg).await,
+            #[cfg(feature = "rdma")]
+            Self::Rdma(rpc) => rpc.call(msg_type, msg).await,
         }
     }
 
@@ -32,6 +38,8 @@ impl RpcHandle {
         match self {
             Self::Quic(rpc) => rpc.is_alive(),
             Self::Tcp(rpc) => rpc.is_alive(),
+            #[cfg(feature = "rdma")]
+            Self::Rdma(rpc) => rpc.is_alive(),
         }
     }
 
@@ -40,7 +48,32 @@ impl RpcHandle {
         match self {
             Self::Quic(rpc) => rpc.close(),
             Self::Tcp(rpc) => rpc.close().await,
+            #[cfg(feature = "rdma")]
+            Self::Rdma(rpc) => rpc.close(),
         }
+    }
+
+    /// Register an RDMA token for a fid (no-op for QUIC/TCP).
+    ///
+    /// When using RDMA transport, this allocates a buffer and tells the
+    /// server to use one-sided RDMA operations for this fid's I/O.
+    pub async fn register_rdma_token(&self, fid: u32, direction: u8) {
+        #[cfg(feature = "rdma")]
+        if let Self::Rdma(rpc) = self {
+            if let Err(e) = rpc.register_rdma_token(fid, direction).await {
+                tracing::debug!("RDMA token registration failed for fid={fid}: {e}");
+            }
+        }
+        let _ = (fid, direction); // suppress unused warnings for non-rdma builds
+    }
+
+    /// Deregister RDMA token for a fid (no-op for QUIC/TCP).
+    pub fn deregister_rdma_token(&self, fid: u32) {
+        #[cfg(feature = "rdma")]
+        if let Self::Rdma(rpc) = self {
+            rpc.deregister_rdma_token(fid);
+        }
+        let _ = fid;
     }
 }
 
@@ -218,6 +251,62 @@ impl Importer {
             endpoint: None,
         })
     }
+
+    /// Connect over RDMA (requires SPIFFE auth + RDMA hardware/SoftRoCE).
+    #[cfg(feature = "rdma")]
+    pub async fn connect_rdma(
+        addr: &str,
+        hostname: &str,
+        auth: p9n_auth::SpiffeAuth,
+        device_name: Option<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let tls_config = p9n_auth::spiffe::tls_config::client_config(
+            &auth.identity,
+            &auth.trust_store,
+        )?;
+        let server_addr: std::net::SocketAddr = addr.parse()?;
+        let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
+        let server_name = rustls::pki_types::ServerName::try_from(hostname.to_string())?;
+
+        let (rdma_conn, session_key_bytes) =
+            p9n_transport::rdma::config::client_connect(
+                server_addr, &tls_connector, server_name, device_name,
+            )
+            .await?;
+        tracing::info!("RDMA connected to {addr}");
+
+        let (push_tx, push_rx) = mpsc::channel(64);
+        let rpc = Arc::new(RdmaRpcClient::new(rdma_conn, push_tx.clone()));
+
+        let opts = ConnectOpts {
+            addr: addr.to_string(),
+            hostname: hostname.to_string(),
+            ..Default::default()
+        };
+
+        let msize = negotiate_version(&*rpc, &opts).await?;
+        let negotiated_caps = negotiate_caps(&*rpc).await?;
+        let root_fid = 0u32;
+        let root_qid = do_attach(&*rpc, root_fid, &opts).await?;
+
+        let session_key = if negotiated_caps.has(CAP_SESSION) {
+            establish_session(&*rpc, session_key_bytes).await?
+        } else {
+            None
+        };
+
+        Ok(Self {
+            rpc: Arc::new(RpcHandle::Rdma(rpc)),
+            msize,
+            caps: negotiated_caps,
+            root_qid,
+            root_fid,
+            session_key,
+            push_tx,
+            push_rx,
+            endpoint: None,
+        })
+    }
 }
 
 // ── Reconnect helpers ──
@@ -317,6 +406,48 @@ pub async fn reconnect_tcp(
     })
 }
 
+/// Re-establish an RDMA connection.
+#[cfg(feature = "rdma")]
+pub async fn reconnect_rdma(
+    addr: &str,
+    hostname: &str,
+    identity: &p9n_auth::spiffe::SpiffeIdentity,
+    trust_store: &p9n_auth::spiffe::trust_bundle::TrustBundleStore,
+    push_tx: mpsc::Sender<Fcall>,
+    device_name: Option<&str>,
+) -> Result<ReconnectResult, Box<dyn std::error::Error + Send + Sync>> {
+    let tls_config = p9n_auth::spiffe::tls_config::client_config(identity, trust_store)?;
+    let server_addr: std::net::SocketAddr = addr.parse()?;
+    let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
+    let server_name = rustls::pki_types::ServerName::try_from(hostname.to_string())?;
+
+    let (rdma_conn, session_key_bytes) =
+        p9n_transport::rdma::config::client_connect(
+            server_addr, &tls_connector, server_name, device_name,
+        )
+        .await?;
+    tracing::info!("RDMA reconnected to {addr}");
+
+    let rpc = Arc::new(RdmaRpcClient::new(rdma_conn, push_tx));
+
+    let opts = ConnectOpts {
+        addr: addr.to_string(),
+        hostname: hostname.to_string(),
+        ..Default::default()
+    };
+
+    negotiate_version(&*rpc, &opts).await?;
+    negotiate_caps(&*rpc).await?;
+    do_attach(&*rpc, 0, &opts).await?;
+
+    let session_key = establish_session(&*rpc, session_key_bytes).await?;
+
+    Ok(ReconnectResult {
+        rpc: Arc::new(RpcHandle::Rdma(rpc)),
+        session_key,
+    })
+}
+
 // ── Shared handshake helpers ──
 
 /// Trait for calling 9P RPCs — implemented by both QuicRpcClient and TcpRpcClient<W>.
@@ -347,6 +478,17 @@ impl<W: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> R
         msg: Msg,
     ) -> impl std::future::Future<Output = Result<Fcall, RpcError>> + Send {
         TcpRpcClient::call(self, msg_type, msg)
+    }
+}
+
+#[cfg(feature = "rdma")]
+impl RpcCaller for RdmaRpcClient {
+    fn call(
+        &self,
+        msg_type: MsgType,
+        msg: Msg,
+    ) -> impl std::future::Future<Output = Result<Fcall, RpcError>> + Send {
+        RdmaRpcClient::call(self, msg_type, msg)
     }
 }
 

@@ -87,3 +87,27 @@ impl<W: tokio::io::AsyncWrite + Unpin + Send + 'static> PushSender for TcpPushSe
         Ok(())
     }
 }
+
+/// RDMA push sender: delivers push messages via RDMA Send with tag=NO_TAG.
+#[cfg(feature = "rdma")]
+pub struct RdmaPushSender {
+    transport: Arc<p9n_transport::rdma::RdmaTransport>,
+}
+
+#[cfg(feature = "rdma")]
+impl RdmaPushSender {
+    pub fn new(transport: Arc<p9n_transport::rdma::RdmaTransport>) -> Self {
+        Self { transport }
+    }
+}
+
+#[cfg(feature = "rdma")]
+impl PushSender for RdmaPushSender {
+    async fn send_push(
+        &self,
+        fc: Fcall,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.transport.send(&fc).await?;
+        Ok(())
+    }
+}
