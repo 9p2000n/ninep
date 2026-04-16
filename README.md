@@ -122,6 +122,15 @@ p9n-exporter \
   --cert ... --key ... --ca ...
 ```
 
+Tuning the blocking thread pool (for NFS backends or high concurrency):
+
+```bash
+p9n-exporter \
+  --blocking-threads 512 \        # default: 256, each thread ~8 MB stack
+  --export /mnt/nfs-share \
+  --cert ... --key ... --ca ...
+```
+
 ### Importer
 
 ```bash
