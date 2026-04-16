@@ -285,22 +285,22 @@ The exporter integrates Linux inotify via the `notify` crate with DashMap-based 
 ## Testing
 
 ```
-Proto unit tests (23):       codec round-trips (all message types), tag allocator/
+Proto unit tests:            codec round-trips (all message types), tag allocator/
                              guard RAII, buf zero-copy, message classification,
                              capset bitmask operations, wire helpers
 
-Auth unit tests (11+):       JWT cap token sign/verify/reject, JWK parsing,
+Auth unit tests:             JWT cap token sign/verify/reject, JWK parsing,
                              trust bundle store, SPIFFE ID extraction, X.509
                              chain verify (valid/unknown/wrong CA).
                              With workload-api: gRPC frame round-trip/fragment/
                              multi-message, protobuf decode (single/multi/unknown
                              fields/empty), DER cert split (single/multi/long/empty)
 
-Transport unit tests (8):    framing encode/decode round-trip (5 message types),
+Transport unit tests:        framing encode/decode round-trip (5 message types),
                              async write/read via duplex (single, multi-message,
                              too-small reject), router datagram/stream/push
 
-Exporter integration (24):   version negotiation, walk/getattr, read/write,
+Exporter integration:        version negotiation, walk/getattr, read/write,
                              mkdir/readdir, unlink/rename, walk nonexistent,
                              symlink/readlink, remove, statfs, concurrent reads,
                              caps negotiation, compound walk+getattr, BLAKE3 hash,
@@ -308,15 +308,15 @@ Exporter integration (24):   version negotiation, walk/getattr, read/write,
                              stale fid rejected, consistency, server stats, locking,
                              streaming write/read, rate limiting (token bucket throttle)
 
-Importer unit tests (26):    InodeMap (root, get_or_insert, existing qid, different
-                             qids, remove, remove nonexistent, monotonic, 7),
+Importer unit tests:         InodeMap (root, get_or_insert, existing qid, different
+                             qids, remove, remove nonexistent, monotonic),
                              FidPool (monotonic, reserved skip, starts_at_one,
-                             concurrent, 4),
+                             concurrent),
                              AttrCache (put/get, nonexistent, TTL expiry, leased
-                             ignores TTL, invalidate, LRU eviction, 6),
+                             ignores TTL, invalidate, LRU eviction),
                              LeaseMap (grant/has, release_by_fh, break, release
-                             after break, multiple per inode, break unknown, 6),
-                             RpcError (errno, transport errno, display, 3)
+                             after break, multiple per inode, break unknown),
+                             RpcError (errno, transport errno, display)
 ```
 
 Tests use `rcgen` for self-signed SPIFFE certificates and `tempfile` for isolated export directories. Integration tests run the full QUIC loopback stack — no FUSE or system mounts required.
@@ -364,7 +364,7 @@ ninep/
         frame.rs                           gRPC length-prefixed frame codec
         proto.rs                           Hand-written protobuf (X509SVIDRequest/Response)
         client.rs                          h2 client for FetchX509SVID streaming RPC
-      tests/auth_test.rs                 JWT/JWK/trust/chain tests (+12 grpc tests)
+      tests/auth_test.rs                 JWT/JWK/trust/chain tests
 
     p9n-transport/                     Triple transport layer
       src/framing.rs                     Generic AsyncRead/AsyncWrite framing
@@ -382,7 +382,7 @@ ninep/
       src/rdma/mr_pool.rs                [rdma feature] Pre-registered MR pool with lock-free slots
       src/rdma/config.rs                 [rdma feature] TCP+TLS bootstrap, QP parameter exchange
       src/rdma/connection.rs             [rdma feature] RdmaTransport (Send/Recv + RDMA Read/Write)
-      tests/transport_test.rs            11 framing + router unit tests
+      tests/transport_test.rs            framing + router unit tests
 
     p9n-exporter/                      File exporter (server)
       src/exporter.rs                    Triple-protocol accept loop (QUIC + TCP + RDMA)
@@ -400,7 +400,7 @@ ninep/
       src/backend/local.rs               Local filesystem backend
       src/util.rs                        Shared join_err/map_io_error/spiffe extraction
       src/rdma_connection.rs             [rdma feature] RDMA connection handler (one-sided I/O intercept)
-      src/handlers/                      38 handler modules (mod.rs + 37 message handlers)
+      src/handlers/                      Handler modules
       src/handlers/rdma.rs               [rdma feature] Trdmatoken handler (client buffer registration)
       tests/integration_test.rs          full-stack integration tests
 
