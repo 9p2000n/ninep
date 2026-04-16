@@ -285,22 +285,22 @@ The exporter integrates Linux inotify via the `notify` crate with DashMap-based 
 ## Testing
 
 ```
-Proto unit tests:            codec round-trips (all message types), tag allocator/
+Proto unit tests (23):       codec round-trips (all message types), tag allocator/
                              guard RAII, buf zero-copy, message classification,
                              capset bitmask operations, wire helpers
 
-Auth unit tests:             JWT cap token sign/verify/reject, JWK parsing,
+Auth unit tests (11+):       JWT cap token sign/verify/reject, JWK parsing,
                              trust bundle store, SPIFFE ID extraction, X.509
                              chain verify (valid/unknown/wrong CA).
                              With workload-api: gRPC frame round-trip/fragment/
                              multi-message, protobuf decode (single/multi/unknown
                              fields/empty), DER cert split (single/multi/long/empty)
 
-Transport unit tests:        framing encode/decode round-trip (5 message types),
+Transport unit tests (8):    framing encode/decode round-trip (5 message types),
                              async write/read via duplex (single, multi-message,
                              too-small reject), router datagram/stream/push
 
-Exporter integration:        version negotiation, walk/getattr, read/write,
+Exporter integration (24):   version negotiation, walk/getattr, read/write,
                              mkdir/readdir, unlink/rename, walk nonexistent,
                              symlink/readlink, remove, statfs, concurrent reads,
                              caps negotiation, compound walk+getattr, BLAKE3 hash,
@@ -308,15 +308,15 @@ Exporter integration:        version negotiation, walk/getattr, read/write,
                              stale fid rejected, consistency, server stats, locking,
                              streaming write/read, rate limiting (token bucket throttle)
 
-Importer unit tests:         InodeMap (root, get_or_insert, existing qid, different
-                             qids, remove, remove nonexistent, monotonic),
+Importer unit tests (26):    InodeMap (root, get_or_insert, existing qid, different
+                             qids, remove, remove nonexistent, monotonic, 7),
                              FidPool (monotonic, reserved skip, starts_at_one,
-                             concurrent),
+                             concurrent, 4),
                              AttrCache (put/get, nonexistent, TTL expiry, leased
-                             ignores TTL, invalidate, LRU eviction,
+                             ignores TTL, invalidate, LRU eviction, 6),
                              LeaseMap (grant/has, release_by_fh, break, release
-                             after break, multiple per inode, break unknown),
-                             RpcError (errno, transport errno, display)
+                             after break, multiple per inode, break unknown, 6),
+                             RpcError (errno, transport errno, display, 3)
 ```
 
 Tests use `rcgen` for self-signed SPIFFE certificates and `tempfile` for isolated export directories. Integration tests run the full QUIC loopback stack — no FUSE or system mounts required.
@@ -364,7 +364,7 @@ ninep/
         frame.rs                           gRPC length-prefixed frame codec
         proto.rs                           Hand-written protobuf (X509SVIDRequest/Response)
         client.rs                          h2 client for FetchX509SVID streaming RPC
-      tests/auth_test.rs                 JWT/JWK/trust/chain tests
+      tests/auth_test.rs                 JWT/JWK/trust/chain tests (+12 grpc tests)
 
     p9n-transport/                     Triple transport layer
       src/framing.rs                     Generic AsyncRead/AsyncWrite framing
@@ -374,7 +374,7 @@ ninep/
       src/quic/framing.rs                QUIC-specific framing
       src/quic/streams.rs                Bidirectional stream RPC
       src/quic/router.rs                 Datagram vs stream message routing
-      src/quic/zero_rtt.rs               0-RTT session detection (deliberately unused)
+      src/quic/connect.rs                Client 1-RTT connect helper (0-RTT deliberately disabled)
       src/tcp/config.rs                  tokio-rustls server/client setup
       src/tcp/connection.rs              TcpTransport
       src/rdma/ffi.rs                    [rdma feature] Minimal libibverbs FFI bindings
@@ -382,7 +382,7 @@ ninep/
       src/rdma/mr_pool.rs                [rdma feature] Pre-registered MR pool with lock-free slots
       src/rdma/config.rs                 [rdma feature] TCP+TLS bootstrap, QP parameter exchange
       src/rdma/connection.rs             [rdma feature] RdmaTransport (Send/Recv + RDMA Read/Write)
-      tests/transport_test.rs            framing + router unit tests
+      tests/transport_test.rs            11 framing + router unit tests
 
     p9n-exporter/                      File exporter (server)
       src/exporter.rs                    Triple-protocol accept loop (QUIC + TCP + RDMA)
@@ -400,7 +400,7 @@ ninep/
       src/backend/local.rs               Local filesystem backend
       src/util.rs                        Shared join_err/map_io_error/spiffe extraction
       src/rdma_connection.rs             [rdma feature] RDMA connection handler (one-sided I/O intercept)
-      src/handlers/                      Handler modules
+      src/handlers/                      38 handler modules (mod.rs + 37 message handlers)
       src/handlers/rdma.rs               [rdma feature] Trdmatoken handler (client buffer registration)
       tests/integration_test.rs          full-stack integration tests
 
@@ -441,6 +441,7 @@ ninep/
 | Atomic swap | `arc-swap` 1 | Lock-free RPC handle hot-swap on reconnect |
 | POSIX | `nix` 0.29 | File I/O syscalls (fs, user, dir) |
 | Cancellation | `tokio-util` 0.7 | CancellationToken for Tflush |
+| Mutex & Lock | `parking_lot` 0.12 | Non-poisoning Mutex/RwLock for short critical sections. |
 | Lock-free queue | `crossbeam-queue` 0.3 | RDMA MR pool slot checkout (optional, `rdma` feature) |
 | RDMA verbs | `libibverbs` (system) | InfiniBand/RoCE verbs via minimal FFI (optional, `rdma` feature) |
 | HTTP/2 | `h2` 0.4 | gRPC Workload API client (optional, `workload-api` feature) |

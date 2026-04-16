@@ -89,8 +89,8 @@ pub struct Importer {
     /// new connections on reconnect.
     pub push_tx: mpsc::Sender<p9n_proto::fcall::Fcall>,
     pub push_rx: mpsc::Receiver<p9n_proto::fcall::Fcall>,
-    /// QUIC endpoint, retained so session tickets survive across reconnections
-    /// (required for 0-RTT).
+    /// QUIC endpoint, retained so the same UDP socket is reused across
+    /// reconnections.
     pub endpoint: Option<quinn::Endpoint>,
 }
 
@@ -117,8 +117,7 @@ impl Importer {
     /// Connect over QUIC (requires SPIFFE auth).
     ///
     /// Creates a new QUIC endpoint. The endpoint is stored in the returned
-    /// `Importer` so that session tickets persist — pass it to
-    /// [`reconnect()`] to benefit from 0-RTT on subsequent connections.
+    /// `Importer` so that the same UDP socket can be reused on reconnect.
     pub async fn connect_quic(
         addr: &str,
         hostname: &str,
@@ -130,23 +129,16 @@ impl Importer {
 
     /// Connect over QUIC using an existing endpoint.
     ///
-    /// Reusing the endpoint across reconnections enables 0-RTT: the rustls
-    /// session store inside the endpoint caches session tickets from previous
-    /// connections, allowing quinn to skip the TLS handshake round-trip.
+    /// Always performs a full 1-RTT handshake. 0-RTT is deliberately not
+    /// attempted — see `docs/ARCH_DESIGN_DECISION.md` for the rationale.
     pub async fn connect_quic_with_endpoint(
         endpoint: &quinn::Endpoint,
         addr: &str,
         hostname: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let server_addr: std::net::SocketAddr = addr.parse()?;
-        let result = p9n_transport::quic::zero_rtt::connect(endpoint, server_addr, hostname).await?;
-        let conn = result.conn;
-
-        if result.used_0rtt {
-            tracing::info!("connected to {addr} (0-RTT)");
-        } else {
-            tracing::info!("connected to {addr}");
-        }
+        let conn = p9n_transport::quic::connect::connect(endpoint, server_addr, hostname).await?;
+        tracing::info!("connected to {addr}");
 
         let (push_tx, push_rx) = mpsc::channel(64);
         let rpc = Arc::new(QuicRpcClient::new(conn.clone(), push_tx.clone()));
@@ -324,9 +316,9 @@ pub struct ReconnectResult {
     pub session_key: Option<[u8; 16]>,
 }
 
-/// Re-establish a QUIC connection using an existing endpoint (enables 0-RTT).
+/// Re-establish a QUIC connection using an existing endpoint.
 ///
-/// Performs the full handshake: version → caps → attach → session.
+/// Performs the full 1-RTT handshake: version → caps → attach → session.
 /// The `push_tx` is cloned into the new `QuicRpcClient` so that push messages
 /// continue to flow into the same channel used before the disconnect.
 pub async fn reconnect_quic(
@@ -336,14 +328,7 @@ pub async fn reconnect_quic(
     push_tx: mpsc::Sender<Fcall>,
 ) -> Result<ReconnectResult, Box<dyn std::error::Error + Send + Sync>> {
     let server_addr: std::net::SocketAddr = addr.parse()?;
-    // Use full 1-RTT handshake for reconnect (skip 0-RTT). During 0-RTT the
-    // TLS handshake is not yet confirmed, so datagrams sent in that window may
-    // be silently dropped if the server rejects the early data. The 9P
-    // negotiation messages (Tversion, Tcaps, …) are classified as Metadata and
-    // routed via datagrams, which makes them vulnerable to this loss. Waiting
-    // for the full handshake costs < 1 ms on loopback and avoids a 30-second
-    // timeout on the first reconnect attempt.
-    let conn = endpoint.connect(server_addr, hostname)?.await?;
+    let conn = p9n_transport::quic::connect::connect(endpoint, server_addr, hostname).await?;
     tracing::info!("reconnected to {addr}");
 
     let rpc = Arc::new(QuicRpcClient::new(conn.clone(), push_tx));

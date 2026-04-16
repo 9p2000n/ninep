@@ -36,13 +36,14 @@ pub fn server_config(
         .build()
         .map_err(|e| AuthError::Tls(format!("client verifier: {e}")))?;
 
-    let mut config = rustls::ServerConfig::builder()
+    let config = rustls::ServerConfig::builder()
         .with_client_cert_verifier(verifier)
         .with_single_cert(certs, key)
         .map_err(|e| AuthError::Tls(format!("server config: {e}")))?;
 
-    // Enable 0-RTT early data. QUIC requires exactly 0xFFFF_FFFF.
-    config.max_early_data_size = 0xFFFF_FFFF;
+    // 0-RTT intentionally left disabled (max_early_data_size defaults to 0).
+    // See docs/ARCH_DESIGN_DECISION.md: datagram-borne negotiation messages
+    // can be dropped during the 0-RTT window before the handshake is confirmed.
 
     Ok(config)
 }
@@ -71,14 +72,14 @@ pub fn client_config(
         trust_store, crypto_provider,
     );
 
-    let mut config = rustls::ClientConfig::builder()
+    let config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
         .with_client_auth_cert(certs, key)
         .map_err(|e| AuthError::Tls(format!("client config: {e}")))?;
 
-    // Enable TLS 1.3 0-RTT early data with in-memory session ticket storage.
-    config.enable_early_data = true;
+    // 0-RTT intentionally left disabled (enable_early_data defaults to false).
+    // See docs/ARCH_DESIGN_DECISION.md.
 
     Ok(config)
 }
@@ -97,12 +98,12 @@ pub fn server_config_dynamic(
         .build()
         .map_err(|e| AuthError::Tls(format!("client verifier: {e}")))?;
 
-    let mut config = rustls::ServerConfig::builder()
+    let config = rustls::ServerConfig::builder()
         .with_client_cert_verifier(verifier)
         .with_cert_resolver(resolver);
 
-    // Enable 0-RTT early data. QUIC requires exactly 0xFFFF_FFFF.
-    config.max_early_data_size = 0xFFFF_FFFF;
+    // 0-RTT intentionally left disabled (max_early_data_size defaults to 0).
+    // See docs/ARCH_DESIGN_DECISION.md.
 
     Ok(config)
 }

@@ -42,7 +42,6 @@ pub fn client_endpoint(auth: &SpiffeAuth) -> Result<quinn::Endpoint, TransportEr
     ));
 
     // Transport tuning (stream concurrency, datagram buffer).
-    // 0-RTT itself is enabled via rustls ClientConfig (enable_early_data + session store).
     client_config.transport_config(Arc::new({
         let mut tc = quinn::TransportConfig::default();
         tc.max_concurrent_bidi_streams(256u32.into());

@@ -30,7 +30,7 @@ struct ReconnectCtx {
     hostname: String,
     transport: Transport,
     push_tx: mpsc::Sender<Fcall>,
-    /// QUIC endpoint (preserves session tickets for 0-RTT).
+    /// QUIC endpoint (reused across reconnects to keep the same UDP socket).
     endpoint: Option<quinn::Endpoint>,
     /// SPIFFE identity for TLS client cert (both QUIC and TCP reconnect).
     identity: p9n_auth::spiffe::SpiffeIdentity,
