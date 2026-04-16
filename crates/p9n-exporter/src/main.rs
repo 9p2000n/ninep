@@ -47,6 +47,12 @@ struct Args {
     #[arg(long)]
     enable_rate_limit: bool,
 
+    /// Maximum OS threads for blocking filesystem I/O (default: 256).
+    /// Each thread uses ~8 MB stack. Tune up for NFS/high-concurrency,
+    /// down for memory-constrained environments.
+    #[arg(long, default_value = "256")]
+    blocking_threads: usize,
+
     /// SPIRE Agent socket path for SPIFFE Workload API
     /// (e.g., /run/spire/agent.sock). When set, --cert/--key/--ca are not required.
     #[cfg(feature = "workload-api")]
@@ -54,11 +60,19 @@ struct Args {
     spiffe_agent_socket: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     init();
     let args = Args::parse();
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .max_blocking_threads(args.blocking_threads)
+        .build()?;
+
+    rt.block_on(async_main(args))
+}
+
+async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let auth = load_auth(&args).await?;
     load_jwt_keys(&auth, &args.jwt_keys)?;
 
@@ -67,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut config = p9n_exporter::config::ExporterConfig::default();
     config.enable_rate_limit = args.enable_rate_limit;
+    config.max_blocking_threads = args.blocking_threads;
 
     let mut exporter = p9n_exporter::exporter::Exporter::with_config(
         args.listen, args.export, auth, config,
@@ -80,6 +95,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(rdma_addr) = args.rdma_listen {
         exporter.enable_rdma(rdma_addr, &identity, &trust_store, args.rdma_device).await?;
     }
+
+    tracing::info!(
+        blocking_threads = args.blocking_threads,
+        "tokio runtime configured"
+    );
 
     exporter.run().await
 }

@@ -28,6 +28,15 @@ pub struct ExporterConfig {
     /// Maximum bytes/sec a client may request per fid (default: 1 GiB/s).
     /// Only effective when `enable_rate_limit` is true.
     pub max_bps: u64,
+    /// Maximum number of OS threads in the tokio blocking pool
+    /// (used by `spawn_blocking` for filesystem I/O). Default: 256.
+    ///
+    /// Each thread consumes ~8 MB stack. On slow backends (NFS, spinning
+    /// disk) with high concurrency, the pool can fill up — further
+    /// `spawn_blocking` calls will queue until a thread frees up.
+    /// Tune up for high-concurrency NFS exports, down for memory-
+    /// constrained environments.
+    pub max_blocking_threads: usize,
 }
 
 impl Default for ExporterConfig {
@@ -42,6 +51,7 @@ impl Default for ExporterConfig {
             enable_rate_limit: false,
             max_iops: 100_000,
             max_bps: 1024 * 1024 * 1024, // 1 GiB/s
+            max_blocking_threads: 256,
         }
     }
 }
