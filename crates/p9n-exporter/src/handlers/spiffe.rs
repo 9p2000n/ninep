@@ -172,7 +172,7 @@ pub fn handle_spiffeverify<B: Backend>(
             };
 
             // Extract trust domain from JWT claims (without signature verification)
-            let claimed_id = match jwt_svid::extract_spiffe_id_from_jwt(token) {
+            let claimed_id = match jwt_svid::extract_spiffe_id_from_jwt_unverified(token) {
                 Ok(id) => id,
                 Err(_) => {
                     return Ok(Fcall {

@@ -683,7 +683,17 @@ impl Backend for LocalBackend {
         use std::os::fd::BorrowedFd;
 
         if flags & COPY_REFLINK != 0 {
-            // COW clone via ioctl(FICLONERANGE)
+            // COW clone via ioctl(FICLONERANGE).
+            //
+            // Layout must match `struct file_clone_range` from
+            // <linux/fs.h>:
+            //   __s64  src_fd;
+            //   __u64  src_offset;
+            //   __u64  src_length;
+            //   __u64  dest_offset;
+            //
+            // FICLONERANGE = _IOW(0x94, 13, struct file_clone_range)
+            //              = 0x4020940d
             #[repr(C)]
             struct FileCloneRange {
                 src_fd: i64,
@@ -698,6 +708,8 @@ impl Backend for LocalBackend {
                 src_length: count,
                 dest_offset: dst_off,
             };
+            // SAFETY: arg is repr(C) with layout matching the kernel's
+            // file_clone_range struct. dst fd is a valid open file descriptor.
             let ret = unsafe { libc::ioctl(dst.as_raw_fd(), FICLONERANGE, &arg) };
             if ret < 0 {
                 return Err(io::Error::last_os_error());

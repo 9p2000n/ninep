@@ -207,7 +207,7 @@ pub fn verify_jwt_svid(
 /// Extract the SPIFFE ID from a JWT-SVID without full verification.
 ///
 /// Useful for logging/routing but NOT for authentication decisions.
-pub fn extract_spiffe_id_from_jwt(token: &str) -> Result<String, AuthError> {
+pub fn extract_spiffe_id_from_jwt_unverified(token: &str) -> Result<String, AuthError> {
     let mut validation = jsonwebtoken::Validation::default();
     validation.insecure_disable_signature_validation();
     validation.set_required_spec_claims::<&str>(&[]);

@@ -21,6 +21,9 @@ pub struct RdmaContext {
     ctx: *mut ffi::ibv_context,
 }
 
+// SAFETY: The ibv_context pointer is obtained from ibv_open_device which
+// returns a thread-safe handle. All libibverbs functions that operate on
+// an ibv_context are internally synchronized.
 unsafe impl Send for RdmaContext {}
 unsafe impl Sync for RdmaContext {}
 
@@ -125,6 +128,9 @@ pub struct ProtectionDomain {
     _ctx: Arc<RdmaContext>,
 }
 
+// SAFETY: PD is pinned for the lifetime of this wrapper (Arc<RdmaContext>
+// prevents the device from closing). PD operations are thread-safe in
+// libibverbs.
 unsafe impl Send for ProtectionDomain {}
 unsafe impl Sync for ProtectionDomain {}
 
@@ -162,6 +168,8 @@ pub struct CompletionChannel {
     _ctx: Arc<RdmaContext>,
 }
 
+// SAFETY: The completion channel fd is encapsulated and not shared.
+// ibv_get_cq_event is the only consumer and is called under AsyncFd guard.
 unsafe impl Send for CompletionChannel {}
 unsafe impl Sync for CompletionChannel {}
 
@@ -175,9 +183,24 @@ impl CompletionChannel {
                 ));
             }
             // Set non-blocking for tokio AsyncFd compatibility.
+            // SAFETY: channel is non-null (checked above), fd is a valid
+            // file descriptor owned by the completion channel.
             let fd = (*channel).fd;
             let flags = libc::fcntl(fd, libc::F_GETFL);
-            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            if flags == -1 {
+                ffi::ibv_destroy_comp_channel(channel);
+                return Err(TransportError::Rdma(format!(
+                    "fcntl(F_GETFL) failed: {}",
+                    io::Error::last_os_error()
+                )));
+            }
+            if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == -1 {
+                ffi::ibv_destroy_comp_channel(channel);
+                return Err(TransportError::Rdma(format!(
+                    "fcntl(F_SETFL) failed: {}",
+                    io::Error::last_os_error()
+                )));
+            }
             Ok(Self {
                 channel,
                 _ctx: ctx,
@@ -214,6 +237,9 @@ pub struct CompletionQueue {
     channel: Arc<CompletionChannel>,
 }
 
+// SAFETY: CQ is created from a thread-safe context and channel.
+// ibv_poll_cq is safe to call from any thread; concurrent polls are
+// prevented by the caller's protocol (single recv_loop task).
 unsafe impl Send for CompletionQueue {}
 unsafe impl Sync for CompletionQueue {}
 
@@ -299,6 +325,9 @@ pub struct QueuePair {
     _pd: Arc<ProtectionDomain>,
 }
 
+// SAFETY: QP is bound to a PD (kept alive via Arc). ibv_post_send and
+// ibv_post_recv are thread-safe for distinct work requests. The caller
+// ensures each slot is used exclusively.
 unsafe impl Send for QueuePair {}
 unsafe impl Sync for QueuePair {}
 
@@ -337,6 +366,8 @@ impl QueuePair {
     }
 
     pub fn qp_num(&self) -> u32 {
+        // SAFETY: self.qp is non-null (checked at construction) and qp_num
+        // is an immutable field set by ibv_create_qp.
         unsafe { (*self.qp).qp_num }
     }
 

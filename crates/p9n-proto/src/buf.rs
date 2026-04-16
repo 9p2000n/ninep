@@ -116,14 +116,19 @@ impl Buf {
 
     pub fn get_u32(&mut self) -> Result<u32> {
         self.check(4)?;
-        let v = u32::from_le_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
+        let p = self.pos;
+        let v = u32::from_le_bytes([self.data[p], self.data[p+1], self.data[p+2], self.data[p+3]]);
         self.pos += 4;
         Ok(v)
     }
 
     pub fn get_u64(&mut self) -> Result<u64> {
         self.check(8)?;
-        let v = u64::from_le_bytes(self.data[self.pos..self.pos + 8].try_into().unwrap());
+        let p = self.pos;
+        let v = u64::from_le_bytes([
+            self.data[p], self.data[p+1], self.data[p+2], self.data[p+3],
+            self.data[p+4], self.data[p+5], self.data[p+6], self.data[p+7],
+        ]);
         self.pos += 8;
         Ok(v)
     }

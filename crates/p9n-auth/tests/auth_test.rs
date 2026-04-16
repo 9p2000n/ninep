@@ -106,7 +106,7 @@ fn test_cap_token_expired_rejected() {
 }
 
 #[test]
-fn test_extract_spiffe_id_from_jwt() {
+fn test_extract_spiffe_id_from_jwt_unverified() {
     let key = [0x42u8; 32];
     let token = jwt_svid::encode_cap_token(
         &key,
@@ -117,7 +117,7 @@ fn test_extract_spiffe_id_from_jwt() {
     )
     .expect("encode failed");
 
-    let id = jwt_svid::extract_spiffe_id_from_jwt(&token).expect("extract failed");
+    let id = jwt_svid::extract_spiffe_id_from_jwt_unverified(&token).expect("extract failed");
     assert_eq!(id, "spiffe://test.org/workload/api");
 }
 

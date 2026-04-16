@@ -87,7 +87,7 @@ pub async fn accept(
     tcp_stream: TcpStream,
     tls_acceptor: &TlsAcceptor,
     device_name: Option<&str>,
-) -> Result<(RdmaConnection, [u8; 16]), TransportError> {
+) -> Result<(RdmaConnection, [u8; 16], Vec<Vec<u8>>), TransportError> {
     let peer = tcp_stream.peer_addr().map_err(TransportError::Io)?;
     debug!(?peer, "RDMA bootstrap: accepting TLS");
 
@@ -95,14 +95,19 @@ pub async fn accept(
         TransportError::Rdma(format!("TLS accept failed: {e}"))
     })?;
 
-    // Derive session key from TLS keying material.
-    let session_key = {
+    // Extract peer certificates and session key before the TLS stream
+    // is consumed. The certificates are needed for SPIFFE ID extraction.
+    let (session_key, peer_certs) = {
         let (_, server_conn) = tls.get_ref();
         let mut key = [0u8; 16];
         server_conn
             .export_keying_material(&mut key, b"9P2000.N-session", None)
             .map_err(|e| TransportError::Rdma(format!("export_keying_material: {e}")))?;
-        key
+        let certs = server_conn
+            .peer_certificates()
+            .map(|c| c.iter().map(|d| d.to_vec()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        (key, certs)
     };
 
     // Set up RDMA resources.
@@ -132,7 +137,7 @@ pub async fn accept(
     debug!(?peer, "RDMA connection established (server)");
 
     // TLS stream dropped here — TCP connection closes.
-    Ok((conn, session_key))
+    Ok((conn, session_key, peer_certs))
 }
 
 /// Client-side: connect to an RDMA-enabled exporter.

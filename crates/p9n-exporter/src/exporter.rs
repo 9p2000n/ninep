@@ -351,14 +351,10 @@ async fn rdma_accept(
     let (tcp_stream, addr) = listener.accept().await?;
 
     // Extract SPIFFE ID from the TLS peer certificate during bootstrap.
-    let (rdma_conn, _session_key) =
+    let (rdma_conn, _session_key, peer_certs) =
         p9n_transport::rdma::config::accept(tcp_stream, acceptor, device_name).await?;
 
-    // For now, SPIFFE ID extraction happens during TLS, but the TLS stream
-    // is consumed by config::accept. We'll pass None and let the session
-    // handler deal with identity via 9P auth if needed.
-    // TODO: Extract SPIFFE ID from the TLS cert during accept() and return it.
-    let spiffe_id = None;
+    let spiffe_id = crate::util::spiffe_id_from_certs(&peer_certs);
 
     Ok((rdma_conn, spiffe_id, addr))
 }

@@ -234,7 +234,7 @@ All base message types implemented: Tversion, Tauth, Tattach, Twalk, Tlopen, Tlc
 |--------|----------|--------|
 | **Negotiation** | Tcaps | Implemented |
 | **Security** | Tstartls, Tauthneg, Tcapgrant, Tcapuse, Tauditctl, TstartlsSpiffe, Tfetchbundle, Tspiffeverify | 7/8 implemented (Tstartls N/A for QUIC) |
-| **Transport** | Tquicstream, Trdmatoken, Trdmanotify, Tcxlmap, Tcxlcoherence | 2/5 (QUIC + RDMA; CXL future) |
+| **Transport** | Tquicstream, Trdmatoken, Trdmanotify, Tcxlmap, Tcxlcoherence | 3/5 (QUIC multistream push, RDMA; CXL future) |
 | **Performance** | Tcompound, Tcompress, Tcopyrange, Tallocate, Tseekhole, Tmmaphint | 4/6 implemented |
 | **Filesystem** | Twatch, Tunwatch, Tnotify, Tgetacl, Tsetacl, Tsnapshot, Tclone, Txattrget, Txattrset, Txattrlist | 8/10 (snapshot/clone need btrfs/zfs) |
 | **Distributed** | Tlease, Tleaserenew, Tleasebreak, Tleaseack, Tsession, Tconsistency, Ttopology | All implemented |
