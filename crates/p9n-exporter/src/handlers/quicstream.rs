@@ -22,7 +22,7 @@ pub async fn handle<H: Send + Sync + 'static>(
     bind_tx: Option<&BindTx>,
     fc: Fcall,
 ) -> HandlerResult {
-    let Msg::Quicstream { stream_type, stream_id: _ } = fc.msg else {
+    let Msg::Quicstream { stream_type, stream_id: req_stream_id } = fc.msg else {
         return Err("expected Quicstream".into());
     };
     let tag = fc.tag;
@@ -39,11 +39,20 @@ pub async fn handle<H: Send + Sync + 'static>(
     if stream_type != STREAM_TYPE_PUSH {
         return Ok(lerror(tag, libc::EOPNOTSUPP as u32));
     }
-    // 4. One binding per session; rebinding is rejected.
+    // 4. For push bindings the request stream_id field is reserved and
+    //    MUST be 0. The client cannot hold a valid QUIC stream id for
+    //    the push channel (the server opens it), so any non-zero value
+    //    is a protocol error. Rejecting non-zero here also preserves
+    //    the semantic space for future stream_types that may assign
+    //    meaning to the field. See docs/QUICSTREAM.md §3.3.
+    if req_stream_id != 0 {
+        return Ok(lerror(tag, libc::EINVAL as u32));
+    }
+    // 5. One binding per session; rebinding is rejected.
     if session.quic_push_binding.lock().unwrap().is_some() {
         return Ok(lerror(tag, libc::EBUSY as u32));
     }
-    // 5. The QUIC connection loop must have given us a bind channel. A
+    // 6. The QUIC connection loop must have given us a bind channel. A
     //    missing channel is a programmer error — fail loud in debug and
     //    EOPNOTSUPP in release.
     let bind_tx = match bind_tx {

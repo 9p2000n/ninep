@@ -66,21 +66,53 @@ Rquicstream: size[4] 155 tag[2] stream_id[8]
 ### Field interpretation in this implementation
 
 - `Tquicstream.stream_type`: MUST be `2`. Other values return `EOPNOTSUPP`.
-- `Tquicstream.stream_id`: **ignored on receive**. The client has no way to
-  dictate a quinn stream ID (those are assigned by quinn when a stream is
-  opened). Clients SHOULD send `0`.
+- `Tquicstream.stream_id` (request): semantics are **per `stream_type`**.
+  - For `stream_type == 2` (push): the field is **reserved** and MUST be
+    `0`. Any non-zero value returns `EINVAL`. The client cannot hold a
+    valid QUIC stream id for the push channel because the server is the
+    one that opens it, so there is no meaningful value for the client
+    to put here.
+  - For `stream_type ∈ {0, 1, 3}`: the field's semantics are **reserved**
+    for future specification. Because the current implementation rejects
+    these stream_types with `EOPNOTSUPP` before reaching the field check,
+    the field value is not examined today. A future extension that
+    assigns meaning to the field MUST be gated on a new capability bit
+    (e.g., `transport.quic.multistream.v2`) so that current servers do
+    not misinterpret new client messages.
 - `Rquicstream.stream_id`: an **opaque alias** returned by the server. Defined
   as `u64::from(send.id())` where `send` is the persistent `quinn::SendStream`
   the server opened. The client SHOULD NOT interpret or match this value for
   routing — it is informational, useful only for logs and test assertions.
   The client continues to treat any incoming uni-stream as a push stream.
 
-The rationale for ignoring the request `stream_id` and returning a
-server-assigned value: QUIC stream IDs encode initiator side, directionality,
-and a per-side monotonic index. The client cannot predict what ID quinn will
-assign to a server-initiated uni-stream. Any scheme that lets the client
-pre-declare an ID would require a parallel identifier space, which provides
-no value because pushes are demuxed by stream (not by ID) on the client.
+The rationale for the `MUST be 0` rule on request and a server-assigned
+value on response: QUIC stream IDs encode initiator side, directionality,
+and a per-side monotonic index. For the push channel the server is the
+initiator, so the client cannot predict what ID quinn will assign and
+cannot pre-declare a meaningful value. Treating the field as a hard
+reserved zero (rather than a hint or a client-local handle) eliminates
+ambiguity and preserves the semantic space for future stream_types that
+may actually need a client-provided id.
+
+### Future extension policy for `Tquicstream.stream_id`
+
+When a later revision of this protocol adds real implementations for
+`stream_type` 0/1/3, those implementations MAY assign meaning to the
+request `stream_id` field (for example, "please route messages of type X
+onto QUIC stream Y that I have already opened"). The transition rules:
+
+1. The new meaning MUST be announced via a new capability bit; current
+   servers that do not advertise it continue to return `EOPNOTSUPP` for
+   those stream_types.
+2. The new meaning applies only when the new capability is negotiated.
+   A server that supports both old and new behavior still enforces
+   `MUST be 0` for `stream_type == 2` regardless.
+3. Clients MUST NOT assume the old MUST-zero rule extends to the new
+   stream_types; they MUST consult the capability before sending
+   non-zero values.
+
+This keeps today's strict-zero rule forward-compatible with any future
+addition.
 
 ### Pre-conditions
 
@@ -92,6 +124,7 @@ hold:
 | `session.transport_kind == Quic` | `EOPNOTSUPP` |
 | `CAP_QUIC_MULTI` in negotiated caps | `EOPNOTSUPP` |
 | `stream_type == 2` | `EOPNOTSUPP` |
+| `stream_id == 0` (when `stream_type == 2`) | `EINVAL` |
 | `session.quic_push_binding` is empty | `EBUSY` |
 
 These checks run in the listed order. The first failure short-circuits.
@@ -242,7 +275,7 @@ pub async fn handle<H>(
     binder: &dyn PushBinder,
     fc: Fcall,
 ) -> HandlerResult {
-    let Msg::Quicstream { stream_type, stream_id: _ } = fc.msg else { ... };
+    let Msg::Quicstream { stream_type, stream_id: req_stream_id } = fc.msg else { ... };
     let tag = fc.tag;
 
     if session.transport_kind != TransportKind::Quic {
@@ -253,6 +286,10 @@ pub async fn handle<H>(
     }
     if stream_type != 2 {
         return lerror(tag, libc::EOPNOTSUPP);
+    }
+    if req_stream_id != 0 {
+        // reserved for push; see §3.3
+        return lerror(tag, libc::EINVAL);
     }
     if session.quic_push_binding.get().is_some() {
         return lerror(tag, libc::EBUSY);
@@ -281,10 +318,11 @@ existing QUIC harness.
 | 4 | `test_quicstream_bind_persistence` | After bind, two Rnotify pushes arrive on the same `quinn::RecvStream` (compare `recv.id()`) |
 | 5 | `test_quicstream_ebusy_on_rebind` | Second `Tquicstream(2)` returns `Rlerror(EBUSY)` |
 | 6 | `test_quicstream_eopnotsupp_wrong_type` | `Tquicstream(0)`, `(1)`, `(3)` return `Rlerror(EOPNOTSUPP)` |
-| 7 | `test_quicstream_eopnotsupp_without_cap` | Skip Tcaps negotiation, send Tquicstream, receive `Rlerror(EOPNOTSUPP)` |
-| 8 | `test_quicstream_fallback_after_reset` | After binding, forcibly close the persistent stream from the client side; next push arrives via a fresh ephemeral uni-stream |
-| 9 | `test_quicstream_eopnotsupp_on_tcp` | Send `Tquicstream(2)` over TCP connection, receive `Rlerror(EOPNOTSUPP)` |
-| 10 | `test_quicstream_legacy_client_compat` | Client that never sends Tquicstream continues to receive pushes (ephemeral uni-streams) |
+| 7 | `test_quicstream_einval_nonzero_stream_id` | `Tquicstream(2, stream_id != 0)` returns `Rlerror(EINVAL)`; a follow-up `Tquicstream(2, 0)` still binds successfully |
+| 8 | `test_quicstream_eopnotsupp_without_cap` | Skip Tcaps negotiation, send Tquicstream, receive `Rlerror(EOPNOTSUPP)` |
+| 9 | `test_quicstream_fallback_after_reset` | After binding, forcibly close the persistent stream from the client side; next push arrives via a fresh ephemeral uni-stream |
+| 10 | `test_quicstream_eopnotsupp_on_tcp` | Send `Tquicstream(2)` over TCP connection, receive `Rlerror(EOPNOTSUPP)` |
+| 11 | `test_quicstream_legacy_client_compat` | Client that never sends Tquicstream continues to receive pushes (ephemeral uni-streams) |
 
 ## Timing
 

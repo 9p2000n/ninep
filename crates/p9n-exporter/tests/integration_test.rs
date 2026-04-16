@@ -1285,6 +1285,38 @@ async fn test_quicstream_ebusy_on_rebind() {
 }
 
 #[tokio::test]
+async fn test_quicstream_einval_nonzero_stream_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let (addr, certs) = start_exporter(dir.path().to_str().unwrap()).await;
+    let conn = connect(addr, &certs).await;
+    negotiate_for_quicstream(&conn).await;
+
+    // Push binding requests must carry stream_id=0; any other value
+    // is a protocol error. See docs/QUICSTREAM.md §3.3.
+    for bad_id in [1u64, 42, 0xDEAD_BEEF, u64::MAX] {
+        let r = rpc_raw(&conn, MsgType::Tquicstream, 10, Msg::Quicstream {
+            stream_type: 2, stream_id: bad_id,
+        }).await;
+        match r.msg {
+            Msg::Lerror { ecode } => {
+                assert_eq!(
+                    ecode, libc::EINVAL as u32,
+                    "stream_id={bad_id} should return EINVAL",
+                );
+            }
+            other => panic!("expected Rlerror(EINVAL), got {other:?}"),
+        }
+    }
+
+    // After rejections the binding slot must still be empty — the
+    // happy-path bind should still work.
+    let r = rpc(&conn, MsgType::Tquicstream, 11, Msg::Quicstream {
+        stream_type: 2, stream_id: 0,
+    }).await.expect("zero stream_id should succeed after EINVALs");
+    assert!(matches!(r.msg, Msg::Rquicstream { stream_id } if stream_id != 0));
+}
+
+#[tokio::test]
 async fn test_quicstream_eopnotsupp_wrong_type() {
     let dir = tempfile::tempdir().unwrap();
     let (addr, certs) = start_exporter(dir.path().to_str().unwrap()).await;
