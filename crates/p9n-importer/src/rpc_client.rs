@@ -13,6 +13,8 @@ use arc_swap::ArcSwap;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::sync::{Mutex, mpsc};
 
 /// Transport type, determines reconnection path.
@@ -41,6 +43,30 @@ struct ReconnectCtx {
     rdma_device: Option<String>,
 }
 
+/// Reconnect activity counters. Mutation goes through `record_*`; logs and
+/// metrics export read via `snapshot()`.
+#[derive(Default)]
+struct ReconnectCounters {
+    successes: AtomicU64,
+    failures: AtomicU64,
+}
+
+impl ReconnectCounters {
+    fn record_success(&self) -> u64 {
+        self.successes.fetch_add(1, Ordering::Relaxed) + 1
+    }
+    fn record_failure(&self) -> u64 {
+        self.failures.fetch_add(1, Ordering::Relaxed) + 1
+    }
+    #[allow(dead_code)] // used by the pending /metrics endpoint
+    fn snapshot(&self) -> (u64, u64) {
+        (
+            self.successes.load(Ordering::Relaxed),
+            self.failures.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// A reconnecting RPC client.
 ///
 /// All FUSE filesystem operations go through `call()`. On transport failure
@@ -49,6 +75,11 @@ pub struct RpcClient {
     inner: ArcSwap<RpcHandle>,
     reconnect_lock: Mutex<()>,
     ctx: ReconnectCtx,
+    /// The conn_id of the currently active underlying RpcHandle. Updated on
+    /// each successful reconnect, logged in every call so events before/after
+    /// a disconnect can be distinguished.
+    current_conn_id: AtomicU64,
+    counters: ReconnectCounters,
 }
 
 impl RpcClient {
@@ -61,6 +92,7 @@ impl RpcClient {
         push_tx: mpsc::Sender<Fcall>,
         identity: p9n_auth::spiffe::SpiffeIdentity,
         trust_store: p9n_auth::spiffe::trust_bundle::TrustBundleStore,
+        initial_conn_id: u64,
     ) -> Self {
         Self {
             inner: ArcSwap::from(rpc),
@@ -76,6 +108,8 @@ impl RpcClient {
                 #[cfg(feature = "rdma")]
                 rdma_device: None,
             },
+            current_conn_id: AtomicU64::new(initial_conn_id),
+            counters: ReconnectCounters::default(),
         }
     }
 
@@ -85,20 +119,38 @@ impl RpcClient {
         self.ctx.rdma_device = device;
     }
 
+    /// The conn_id currently in use by the underlying RPC handle.
+    pub fn conn_id(&self) -> u64 {
+        self.current_conn_id.load(Ordering::Relaxed)
+    }
+
     /// Send a 9P request. On transport failure, reconnect and retry once.
     pub async fn call(
         &self,
         msg_type: MsgType,
         msg: Msg,
     ) -> Result<Fcall, RpcError> {
-        tracing::trace!("rpc_client call: type={}", msg_type.name());
+        let conn_id = self.current_conn_id.load(Ordering::Relaxed);
+        tracing::trace!(conn_id, msg_type = msg_type.name(), "rpc_client call");
         let rpc = self.inner.load();
         match rpc.call(msg_type, msg.clone()).await {
             Ok(fc) => Ok(fc),
             Err(e) if e.is_transport() => {
-                tracing::warn!("RPC transport error, attempting reconnect...");
+                tracing::warn!(
+                    conn_id,
+                    msg_type = msg_type.name(),
+                    error = %e,
+                    "RPC transport error; attempting reconnect",
+                );
                 self.reconnect().await;
                 // Retry once with the (potentially) new connection.
+                let new_conn_id = self.current_conn_id.load(Ordering::Relaxed);
+                tracing::debug!(
+                    old_conn_id = conn_id,
+                    new_conn_id,
+                    msg_type = msg_type.name(),
+                    "retrying RPC after reconnect",
+                );
                 self.inner.load().call(msg_type, msg).await
             }
             Err(e) => Err(e),
@@ -125,11 +177,38 @@ impl RpcClient {
     async fn reconnect(&self) {
         let _guard = self.reconnect_lock.lock().await;
 
+        let old_conn_id = self.current_conn_id.load(Ordering::Relaxed);
+
         // Double-check: another task may have already reconnected while we waited
         // for the lock. is_alive() is synchronous (no I/O, no timeout risk).
         if self.inner.load().is_alive() {
+            let now_conn_id = self.current_conn_id.load(Ordering::Relaxed);
+            if now_conn_id != old_conn_id {
+                tracing::debug!(
+                    old_conn_id,
+                    now_conn_id,
+                    "reconnect skipped: another task already reconnected",
+                );
+            } else {
+                tracing::debug!(conn_id = old_conn_id, "reconnect skipped: connection still alive");
+            }
             return;
         }
+
+        let transport_name = match self.ctx.transport {
+            Transport::Quic => "quic",
+            Transport::Tcp => "tcp",
+            #[cfg(feature = "rdma")]
+            Transport::Rdma => "rdma",
+        };
+        tracing::info!(
+            old_conn_id,
+            transport = transport_name,
+            addr = %self.ctx.addr,
+            hostname = %self.ctx.hostname,
+            "reconnect: closing old connection",
+        );
+        let started = Instant::now();
 
         // Close the old connection to release resources (background reader tasks,
         // keep-alive timers). Without this, failed reconnect attempts would leave
@@ -139,7 +218,7 @@ impl RpcClient {
         let result = match self.ctx.transport {
             Transport::Quic => {
                 let Some(ref ep) = self.ctx.endpoint else {
-                    tracing::error!("cannot reconnect QUIC: no endpoint");
+                    tracing::error!(old_conn_id, "cannot reconnect QUIC: no endpoint stored");
                     return;
                 };
                 importer::reconnect_quic(
@@ -171,14 +250,53 @@ impl RpcClient {
             }
         };
 
+        let elapsed_ms = started.elapsed().as_millis() as u64;
         match result {
             Ok(r) => {
+                self.current_conn_id.store(r.conn_id, Ordering::Relaxed);
                 self.inner.store(r.rpc);
-                tracing::info!("reconnected successfully");
+                let reconnects_total = self.counters.record_success();
+                tracing::info!(
+                    old_conn_id,
+                    new_conn_id = r.conn_id,
+                    transport = transport_name,
+                    elapsed_ms,
+                    reconnects_total,
+                    "reconnect succeeded",
+                );
             }
             Err(e) => {
-                tracing::error!("reconnect failed: {e}");
+                let failures_total = self.counters.record_failure();
+                tracing::error!(
+                    old_conn_id,
+                    transport = transport_name,
+                    elapsed_ms,
+                    failures_total,
+                    error = %e,
+                    "reconnect failed",
+                );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counters_default_and_snapshot() {
+        let c = ReconnectCounters::default();
+        assert_eq!(c.snapshot(), (0, 0));
+    }
+
+    #[test]
+    fn counters_record_returns_running_total() {
+        let c = ReconnectCounters::default();
+        assert_eq!(c.record_success(), 1);
+        assert_eq!(c.record_success(), 2);
+        assert_eq!(c.record_failure(), 1);
+        assert_eq!(c.record_failure(), 2);
+        assert_eq!(c.snapshot(), (2, 2));
     }
 }

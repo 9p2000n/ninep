@@ -1,6 +1,31 @@
 //! Shared utilities for exporter handlers.
 
+use std::io;
 use std::os::unix::io::{AsRawFd, OwnedFd};
+
+/// Log and build the standard "unknown fid" error for a handler reject.
+///
+/// Replaces the 4-line `.ok_or_else(|| { tracing::debug!(...); io::Error::... })`
+/// pattern with a one-line call site:
+///
+/// ```ignore
+/// let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Twalk"))?;
+/// ```
+#[inline]
+pub fn unknown_fid(fid: u32, op: &'static str) -> io::Error {
+    tracing::debug!(fid, op, "handler rejected: unknown fid");
+    io::Error::new(io::ErrorKind::NotFound, format!("unknown fid {fid}"))
+}
+
+/// Log and build the standard "fid not open" error.
+///
+/// Used when a handler expects `FidState.handle.is_some()` but finds it `None`
+/// (e.g. Tread/Twrite on a fid that has not been Tlopen'd yet).
+#[inline]
+pub fn fid_not_open(fid: u32, op: &'static str) -> io::Error {
+    tracing::debug!(fid, op, "handler rejected: fid not open");
+    io::Error::new(io::ErrorKind::Other, "fid not open")
+}
 
 /// Convert a tokio JoinError to a boxed error for handler results.
 ///

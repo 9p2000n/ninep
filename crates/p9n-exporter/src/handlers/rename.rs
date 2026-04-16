@@ -7,7 +7,7 @@ use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::join_err;
+use crate::util::{join_err, unknown_fid};
 
 pub async fn handle<B: Backend>(
     session: &Session<B::Handle>,
@@ -18,16 +18,14 @@ pub async fn handle<B: Backend>(
         return Err("expected Rename message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("rename: fid={fid} dfid={dfid} name={name}");
+    tracing::debug!(tag, fid, dfid, name = %name, "Trename received");
 
-    let fid_state = session.fids.get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Trename"))?;
     let old_path = fid_state.path.clone();
     let fid_qid_path = fid_state.qid.path;
     drop(fid_state);
 
-    let dfid_state = session.fids.get(dfid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown dfid"))?;
+    let dfid_state = session.fids.get(dfid).ok_or_else(|| unknown_fid(dfid, "Trename"))?;
     let new_dir = dfid_state.path.clone();
     let dfid_qid_path = dfid_state.qid.path;
     drop(dfid_state);
@@ -39,11 +37,14 @@ pub async fn handle<B: Backend>(
     let new_path = new_dir.join(&name);
 
     let ctx = ctx.clone();
+    let name_for_log = name.clone();
     tokio::task::spawn_blocking(move || {
         let resolved_old = ctx.backend.resolve(&old_path)?;
         let resolved_new = ctx.backend.resolve(&new_path)?;
         ctx.backend.rename(&resolved_old, &resolved_new)
     }).await.map_err(join_err)??;
+
+    tracing::debug!(tag, fid, dfid, name = %name_for_log, "Trename result");
 
     Ok(Fcall { size: 0, msg_type: MsgType::Rrename, tag, msg: Msg::Empty })
 }

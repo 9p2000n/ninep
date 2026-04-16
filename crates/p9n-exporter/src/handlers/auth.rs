@@ -16,8 +16,14 @@ pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) -> Hand
     let Msg::Auth { afid, uname, aname } = fc.msg else {
         return Err("expected Auth message".into());
     };
+    let tag = fc.tag;
 
-    tracing::debug!("Tauth afid={afid} uname={uname} aname={aname}");
+    tracing::debug!(
+        tag, afid,
+        uname = %uname,
+        aname = %aname,
+        "Tauth received",
+    );
 
     // In QUIC+SPIFFE mode, the TLS handshake already authenticated the peer.
     // We create the auth fid as a marker that the client went through the
@@ -40,10 +46,18 @@ pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) -> Hand
 
     session.set_authenticated(true);
 
+    tracing::info!(
+        tag, afid,
+        uname = %uname,
+        aname = %aname,
+        qid_path = qid.path,
+        "Tauth completed",
+    );
+
     Ok(Fcall {
         size: 0,
         msg_type: MsgType::Rauth,
-        tag: fc.tag,
+        tag,
         msg: Msg::Rauth { aqid: qid },
     })
 }

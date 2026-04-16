@@ -11,6 +11,7 @@ use p9n_transport::quic::framing;
 use crate::util::map_io_error;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tracing::{Instrument, Span};
 
 pub struct QuicConnectionHandler<B: Backend> {
     conn: quinn::Connection,
@@ -34,12 +35,15 @@ impl<B: Backend> QuicConnectionHandler<B> {
         // any transient duplicates.
         let (bind_tx, bind_rx) = mpsc::channel(4);
         let spiffe_id = extract_spiffe_id_from_conn(&conn);
+        let conn_id = lease_manager::next_conn_id();
+        let remote = conn.remote_address();
 
         if let Some(ref id) = spiffe_id {
-            tracing::info!("peer authenticated: {id}");
+            tracing::info!(conn_id, peer = %id, %remote, "peer authenticated");
+        } else {
+            tracing::info!(conn_id, %remote, "peer connected (anonymous)");
         }
 
-        let conn_id = lease_manager::next_conn_id();
         let mut session = Session::new(conn_id, crate::session::TransportKind::Quic);
         session.spiffe_id = spiffe_id;
         let pusher = QuicPushSender::new(conn.clone());
@@ -59,6 +63,17 @@ impl<B: Backend> QuicConnectionHandler<B> {
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let span = tracing::info_span!(
+            "quic_conn",
+            conn_id = self.session.conn_id,
+            peer = self.session.spiffe_id.as_deref().unwrap_or("anonymous"),
+            remote = %self.conn.remote_address(),
+        );
+        self.run_loop().instrument(span).await
+    }
+
+    async fn run_loop(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tracing::debug!("connection loop start");
         loop {
             tokio::select! {
                 result = self.conn.accept_bi() => {
@@ -69,13 +84,19 @@ impl<B: Backend> QuicConnectionHandler<B> {
                             let watch_tx = self.watch_tx.clone();
                             let push_tx = self.push_tx.clone();
                             let bind_tx = self.bind_tx.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = handle_stream(ctx, session, watch_tx, push_tx, bind_tx, send, recv).await {
-                                    tracing::warn!("stream error: {e}");
+                            tokio::spawn(
+                                async move {
+                                    if let Err(e) = handle_stream(ctx, session, watch_tx, push_tx, bind_tx, send, recv).await {
+                                        tracing::warn!(error = %e, "stream handler error");
+                                    }
                                 }
-                            });
+                                .instrument(Span::current()),
+                            );
                         }
-                        Err(e) => { tracing::debug!("connection closed: {e}"); break; }
+                        Err(e) => {
+                            tracing::debug!(error = %e, "accept_bi closed");
+                            break;
+                        }
                     }
                 }
                 result = self.conn.read_datagram() => {
@@ -87,13 +108,20 @@ impl<B: Backend> QuicConnectionHandler<B> {
                             let push_tx = self.push_tx.clone();
                             let bind_tx = self.bind_tx.clone();
                             let conn = self.conn.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = handle_datagram(ctx, session, watch_tx, push_tx, bind_tx, conn, data).await {
-                                    tracing::warn!("datagram error: {e}");
+                            let dlen = data.len();
+                            tokio::spawn(
+                                async move {
+                                    if let Err(e) = handle_datagram(ctx, session, watch_tx, push_tx, bind_tx, conn, data).await {
+                                        tracing::warn!(error = %e, dlen, "datagram handler error");
+                                    }
                                 }
-                            });
+                                .instrument(Span::current()),
+                            );
                         }
-                        Err(e) => { tracing::debug!("datagram error: {e}"); break; }
+                        Err(e) => {
+                            tracing::debug!(error = %e, "datagram read closed");
+                            break;
+                        }
                     }
                 }
                 Some(responder) = self.bind_rx.recv() => {
@@ -102,16 +130,28 @@ impl<B: Backend> QuicConnectionHandler<B> {
                     // await is expected to return immediately (quinn does
                     // not block a server-initiated uni-stream opener).
                     let result = self.pusher.bind_persistent().await;
+                    match &result {
+                        Ok(alias) => tracing::debug!(alias, "persistent push stream bound"),
+                        Err(e) => tracing::warn!(error = %e, "persistent push stream bind failed"),
+                    }
                     let _ = responder.send(result);
                 }
                 Some(event) = self.watch_rx.recv() => {
+                    let wid = event.watch_id;
+                    let mask = event.event_mask;
                     if let Err(e) = self.pusher.send_push(push::notify_fcall(event)).await {
-                        tracing::debug!("push notify error: {e}");
+                        tracing::debug!(error = %e, wid, mask = format_args!("{:#x}", mask), "push notify send failed");
+                    } else {
+                        tracing::trace!(wid, mask = format_args!("{:#x}", mask), "push notify sent");
                     }
                 }
                 Some(fc) = self.push_rx.recv() => {
+                    let mt = fc.msg_type.name();
+                    let tag = fc.tag;
                     if let Err(e) = self.pusher.send_push(fc).await {
-                        tracing::debug!("push error: {e}");
+                        tracing::debug!(error = %e, msg_type = mt, tag, "push forward failed");
+                    } else {
+                        tracing::trace!(msg_type = mt, tag, "push forwarded");
                     }
                 }
             }
@@ -121,12 +161,14 @@ impl<B: Backend> QuicConnectionHandler<B> {
     }
 
     fn cleanup(&self) {
-        tracing::debug!(
-            "quic connection cleanup: conn_id={} fids={} watches={}",
-            self.session.conn_id,
-            self.session.fids.len(),
-            self.session.watch_id_list().len(),
+        let fids_before = self.session.fids.len();
+        let watches_before = self.session.watch_id_list().len();
+        tracing::info!(
+            fids = fids_before,
+            watches = watches_before,
+            "connection cleanup start",
         );
+        let mut session_resumable = false;
         if let Some(key) = self.session.get_session_key() {
             let mut flags = 0u32;
             if !self.session.fids.is_empty() {
@@ -136,6 +178,8 @@ impl<B: Backend> QuicConnectionHandler<B> {
             if !wids.is_empty() {
                 flags |= SESSION_WATCHES;
             }
+            session_resumable = true;
+            tracing::debug!(flags = format_args!("{:#x}", flags), "session saved for resume");
             self.ctx
                 .session_store
                 .save(key, self.session.spiffe_id.clone(), flags);
@@ -145,11 +189,13 @@ impl<B: Backend> QuicConnectionHandler<B> {
         }
         self.ctx.watch_mgr.remove_all_for_sender(&self.watch_tx);
         self.ctx.lease_mgr.remove_by_conn(self.session.conn_id);
-        let fid_count = self.session.fids.len();
         self.session.fids.clear();
-        if fid_count > 0 {
-            tracing::debug!("cleaned up {fid_count} fids on disconnect");
-        }
+        tracing::info!(
+            fids_released = fids_before,
+            watches_released = watches_before,
+            session_resumable,
+            "connection cleanup done",
+        );
     }
 }
 
@@ -166,8 +212,9 @@ async fn handle_stream<B: Backend>(
     let request = framing::read_message(&mut recv).await?;
     let tag = request.tag;
     let msg_type = request.msg_type;
+    let mt_name = msg_type.name();
 
-    tracing::trace!("stream req: tag={tag} type={}", msg_type.name());
+    tracing::trace!(tag, msg_type = mt_name, "stream req");
 
     // Register in-flight (allows Tflush to cancel this request)
     let cancel = session.register_inflight(tag);
@@ -196,7 +243,7 @@ async fn handle_stream<B: Backend>(
 
         if let Err(e) = pre {
             session.deregister_inflight(tag);
-            tracing::debug!("{} tag={tag}: {e}", msg_type.name());
+            tracing::debug!(tag, msg_type = mt_name, error = %e, "pre-check failed");
             let err_fc = Fcall {
                 size: 0, msg_type: MsgType::Rlerror, tag,
                 msg: Msg::Lerror { ecode: map_io_error(&*e) },
@@ -212,7 +259,7 @@ async fn handle_stream<B: Backend>(
         let result = tokio::select! {
             r = handlers::io::handle_read(&session, &ctx, request) => r,
             _ = cancel.cancelled() => {
-                tracing::debug!("request tag={tag} cancelled by Tflush");
+                tracing::debug!(tag, msg_type = mt_name, "request cancelled by Tflush");
                 Err("flushed".into())
             }
         };
@@ -220,11 +267,11 @@ async fn handle_stream<B: Backend>(
 
         match result {
             Ok(ReadResult::Raw(ref wire)) => {
-                tracing::trace!("stream resp: tag={tag} type=Rread len={}", wire.len());
+                tracing::trace!(tag, msg_type = "Rread", len = wire.len(), "stream resp");
                 framing::write_raw(&mut send, wire).await?;
             }
             Err(e) => {
-                tracing::debug!("{} tag={tag}: {e}", msg_type.name());
+                tracing::debug!(tag, msg_type = mt_name, error = %e, "handler error");
                 let err_fc = Fcall {
                     size: 0, msg_type: MsgType::Rlerror, tag,
                     msg: Msg::Lerror { ecode: map_io_error(&*e) },
@@ -240,7 +287,7 @@ async fn handle_stream<B: Backend>(
     let result = tokio::select! {
         r = handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, Some(&bind_tx), request) => r,
         _ = cancel.cancelled() => {
-            tracing::debug!("request tag={tag} cancelled by Tflush");
+            tracing::debug!(tag, msg_type = mt_name, "request cancelled by Tflush");
             Err("flushed".into())
         }
     };
@@ -250,7 +297,7 @@ async fn handle_stream<B: Backend>(
     let response = match result {
         Ok(r) => r,
         Err(e) => {
-            tracing::debug!("{} tag={tag}: {e}", msg_type.name());
+            tracing::debug!(tag, msg_type = mt_name, error = %e, "handler error");
             Fcall {
                 size: 0,
                 msg_type: MsgType::Rlerror,
@@ -261,7 +308,7 @@ async fn handle_stream<B: Backend>(
             }
         }
     };
-    tracing::trace!("stream resp: tag={tag} type={}", response.msg_type.name());
+    tracing::trace!(tag, msg_type = response.msg_type.name(), "stream resp");
     framing::write_message(&mut send, &response).await?;
     send.finish()?;
     Ok(())
@@ -283,21 +330,25 @@ async fn handle_datagram<B: Backend>(
     let request = framing::decode(&data)?;
     let tag = request.tag;
     let msg_type = request.msg_type;
+    let mt_name = msg_type.name();
 
-    tracing::trace!("datagram req: tag={tag} type={}", msg_type.name());
+    tracing::trace!(tag, msg_type = mt_name, dlen = data.len(), "datagram req");
 
     // Dispatch in a spawned task to catch handler panics.
     // Without this, a panic kills the task silently and the importer
     // waits until the 30s RPC timeout fires, hanging FUSE operations.
-    let dispatch_result = tokio::spawn(async move {
-        handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, Some(&bind_tx), request).await
-    })
+    let dispatch_result = tokio::spawn(
+        async move {
+            handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, Some(&bind_tx), request).await
+        }
+        .instrument(Span::current()),
+    )
     .await;
 
     let response = match dispatch_result {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-            tracing::debug!("{} tag={tag}: {e}", msg_type.name());
+            tracing::debug!(tag, msg_type = mt_name, error = %e, "handler error");
             Fcall {
                 size: 0,
                 msg_type: MsgType::Rlerror,
@@ -308,7 +359,7 @@ async fn handle_datagram<B: Backend>(
             }
         }
         Err(e) => {
-            tracing::error!("{} tag={tag}: handler panicked: {e}", msg_type.name());
+            tracing::error!(tag, msg_type = mt_name, error = %e, "handler panicked");
             Fcall {
                 size: 0,
                 msg_type: MsgType::Rlerror,
@@ -318,13 +369,13 @@ async fn handle_datagram<B: Backend>(
         }
     };
 
-    tracing::trace!("datagram resp: tag={tag} type={}", response.msg_type.name());
+    tracing::trace!(tag, msg_type = response.msg_type.name(), "datagram resp");
 
     // Send the response.  If encoding or sending fails (e.g. response exceeds
     // the QUIC datagram MTU), fall back to a minimal Rlerror so the importer
     // is not left waiting for a response that never arrives.
     if let Err(e) = send_datagram(&conn, &response) {
-        tracing::warn!("{} tag={tag}: failed to send datagram response: {e}", msg_type.name());
+        tracing::warn!(tag, msg_type = mt_name, error = %e, "datagram response send failed");
         if !matches!(response.msg, Msg::Lerror { .. }) {
             let err_fc = Fcall {
                 size: 0,
@@ -333,7 +384,7 @@ async fn handle_datagram<B: Backend>(
                 msg: Msg::Lerror { ecode: 5 }, // EIO
             };
             if let Err(e2) = send_datagram(&conn, &err_fc) {
-                tracing::error!("{} tag={tag}: failed to send error datagram: {e2}", msg_type.name());
+                tracing::error!(tag, msg_type = mt_name, error = %e2, "error datagram send failed");
             }
         }
     }

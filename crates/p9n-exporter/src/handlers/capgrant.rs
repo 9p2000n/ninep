@@ -11,6 +11,7 @@ use p9n_auth::spiffe::jwt_svid;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
+use crate::util::unknown_fid;
 
 const MAX_CAP_TTL: u64 = 86400; // 24 hours maximum token lifetime
 
@@ -21,7 +22,7 @@ pub fn handle_capgrant<B: Backend>(
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Capgrant {
-        fid: _,
+        fid,
         rights,
         expiry,
         depth,
@@ -30,11 +31,19 @@ pub fn handle_capgrant<B: Backend>(
         return Err("expected Capgrant message".into());
     };
     let tag = fc.tag;
+    tracing::debug!(
+        tag, fid,
+        rights = format_args!("{:#x}", rights),
+        depth,
+        expiry,
+        "Tcapgrant received",
+    );
 
     let client_id = session
         .spiffe_id
         .as_deref()
         .ok_or_else(|| {
+            tracing::debug!(fid, "Tcapgrant rejected: no SPIFFE identity");
             std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "Tcapgrant requires SPIFFE identity",
@@ -44,6 +53,7 @@ pub fn handle_capgrant<B: Backend>(
     // Granted rights cannot exceed the client's policy maximum
     let policy = ctx.access.resolve(Some(client_id));
     let granted_rights = rights & (policy.permissions as u64);
+    let dropped_rights = rights & !(policy.permissions as u64);
 
     // Cap the expiry to MAX_CAP_TTL from now
     let now = std::time::SystemTime::now()
@@ -55,6 +65,7 @@ pub fn handle_capgrant<B: Backend>(
     } else {
         now + 3600 // default 1 hour
     };
+    let expiry_clamped = expiry > 0 && effective_expiry < expiry;
 
     // Sign the token
     let token = jwt_svid::encode_cap_token(
@@ -69,8 +80,16 @@ pub fn handle_capgrant<B: Backend>(
         Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
     })?;
 
-    tracing::debug!(
-        "capgrant: rights={granted_rights:#x} depth={depth} expiry={effective_expiry} for {client_id}"
+    tracing::info!(
+        tag, fid,
+        client_id = %client_id,
+        rights_requested = format_args!("{:#x}", rights),
+        rights_granted = format_args!("{:#x}", granted_rights),
+        rights_dropped = format_args!("{:#x}", dropped_rights),
+        depth,
+        effective_expiry,
+        expiry_clamped,
+        "Tcapgrant signed",
     );
 
     Ok(Fcall {
@@ -91,11 +110,13 @@ pub fn handle_capuse<B: Backend>(
         return Err("expected Capuse message".into());
     };
     let tag = fc.tag;
+    tracing::debug!(tag, fid, token_len = token.len(), "Tcapuse received");
 
     let client_id = session
         .spiffe_id
         .as_deref()
         .ok_or_else(|| {
+            tracing::debug!(fid, "Tcapuse rejected: no SPIFFE identity");
             std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "Tcapuse requires SPIFFE identity",
@@ -116,13 +137,17 @@ pub fn handle_capuse<B: Backend>(
         ))
     })?;
 
+    let rights = result.p9n_rights.unwrap_or(0);
+    let depth = result.p9n_depth.unwrap_or(0);
+    let expiry = result.expiry;
+
     // Store the active capability in the session
     session.active_caps.insert(
         fid,
         CapToken {
-            rights: result.p9n_rights.unwrap_or(0),
-            depth: result.p9n_depth.unwrap_or(0),
-            expiry: result.expiry,
+            rights,
+            depth,
+            expiry,
         },
     );
 
@@ -131,13 +156,16 @@ pub fn handle_capuse<B: Backend>(
         .fids
         .get(fid)
         .map(|s| s.qid.clone())
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid")
-        })?;
+        .ok_or_else(|| unknown_fid(fid, "Tcapuse"))?;
 
-    tracing::debug!(
-        "capuse: fid={fid} rights={:#x} for {client_id}",
-        result.p9n_rights.unwrap_or(0)
+    tracing::info!(
+        tag, fid,
+        client_id = %client_id,
+        rights = format_args!("{:#x}", rights),
+        depth,
+        expiry,
+        active_caps = session.active_caps.len(),
+        "Tcapuse activated",
     );
 
     Ok(Fcall {

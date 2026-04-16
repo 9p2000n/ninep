@@ -1,6 +1,7 @@
 use crate::access::AccessControl;
 use crate::backend::Backend;
 use crate::backend::local::LocalBackend;
+use crate::heartbeat::Heartbeat;
 use crate::lease_manager::LeaseManager;
 use crate::quic_connection::QuicConnectionHandler;
 use crate::tcp_connection::TcpConnectionHandler;
@@ -180,6 +181,7 @@ impl<B: Backend> Exporter<B> {
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.spawn_gc_task();
+        self.spawn_heartbeat_task();
 
         let mut handlers = JoinSet::new();
         let mut sigterm = signal(SignalKind::terminate())
@@ -232,7 +234,7 @@ impl<B: Backend> Exporter<B> {
                             let ctx = self.ctx.clone();
                             handlers.spawn(async move {
                                 tracing::info!("accepted RDMA connection from {remote}");
-                                let mut handler = RdmaConnectionHandler::new(rdma_conn, ctx, spiffe_id);
+                                let mut handler = RdmaConnectionHandler::new(rdma_conn, ctx, spiffe_id, Some(remote));
                                 if let Err(e) = handler.run().await {
                                     tracing::warn!("RDMA connection {remote} error: {e}");
                                 }
@@ -291,16 +293,77 @@ impl<B: Backend> Exporter<B> {
         let ctx = self.ctx.clone();
         let interval = self.ctx.config.session_gc_interval;
         tokio::spawn(async move {
+            let mut ticks: u64 = 0;
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(interval) => {
-                        tracing::trace!("session GC tick");
-                        ctx.session_store.gc();
+                        ticks = ticks.wrapping_add(1);
+                        let (before, after, purged) = ctx.session_store.gc();
+                        tracing::debug!(
+                            tick = ticks,
+                            interval_secs = interval.as_secs(),
+                            before,
+                            after,
+                            purged,
+                            identities = ctx.session_store.identity_count(),
+                            "session_store GC tick",
+                        );
                     }
-                    _ = token.cancelled() => break,
+                    _ = token.cancelled() => {
+                        tracing::debug!(ticks, "session_store GC task exiting (shutdown)");
+                        break;
+                    }
                 }
             }
         });
+    }
+
+    /// Spawn a background task that periodically logs subsystem stats — even
+    /// when idle — so operators can see "alive but no work" vs. a stuck server.
+    ///
+    /// Each subsystem emits its own log line per tick (see `heartbeat.rs`).
+    /// Adding a new subsystem = adding one `.add(...)` closure below.
+    fn spawn_heartbeat_task(&self) {
+        let interval = self.ctx.config.heartbeat_interval;
+        let ctx_lease = self.ctx.clone();
+        let ctx_watch = self.ctx.clone();
+        let ctx_session = self.ctx.clone();
+
+        Heartbeat::new(interval)
+            .add(move |tick| {
+                let s = ctx_lease.lease_mgr.stats();
+                tracing::debug!(
+                    tick,
+                    leases = s.leases,
+                    qid_paths = s.qid_paths,
+                    read = s.read_leases,
+                    write = s.write_leases,
+                    breaks_attempted = s.breaks_attempted,
+                    break_pushes_dropped = s.break_pushes_dropped,
+                    "lease heartbeat",
+                );
+            })
+            .add(move |tick| {
+                let s = ctx_watch.watch_mgr.stats();
+                tracing::debug!(
+                    tick,
+                    watches = s.watches,
+                    paths = s.watched_paths,
+                    events_dispatched = s.events_dispatched,
+                    events_dropped = s.events_dropped,
+                    events_ignored = s.events_ignored,
+                    "watch heartbeat",
+                );
+            })
+            .add(move |tick| {
+                tracing::debug!(
+                    tick,
+                    sessions_total = ctx_session.session_store.total_count(),
+                    identities = ctx_session.session_store.identity_count(),
+                    "session_store heartbeat",
+                );
+            })
+            .spawn(self.shutdown_token.clone());
     }
 }
 

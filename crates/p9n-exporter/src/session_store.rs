@@ -40,6 +40,7 @@ impl SessionStore {
     /// Save session state for potential future resumption.
     pub fn save(&self, key: [u8; 16], spiffe_id: Option<String>, flags: u32) {
         let id = spiffe_id.unwrap_or_default();
+        let id_for_log = if id.is_empty() { "<anonymous>".to_string() } else { id.clone() };
         self.store
             .entry(id)
             .or_default()
@@ -47,7 +48,12 @@ impl SessionStore {
                 flags,
                 saved_at: Instant::now(),
             });
-        tracing::debug!("session saved, flags={flags:#x}");
+        tracing::debug!(
+            spiffe = %id_for_log,
+            flags = format_args!("{:#x}", flags),
+            total = self.total_count(),
+            "session saved",
+        );
     }
 
     /// Attempt to resume a session by key and SPIFFE identity.
@@ -59,27 +65,48 @@ impl SessionStore {
         let inner = self.store.get(id)?;
         let entry = inner.remove(key)?;
         let saved = entry.1;
+        let age = saved.saved_at.elapsed();
 
         // Check TTL
-        if saved.saved_at.elapsed() > self.ttl {
-            tracing::debug!("session expired");
+        if age > self.ttl {
+            tracing::debug!(
+                spiffe = %if id.is_empty() { "<anonymous>" } else { id },
+                age_secs = age.as_secs(),
+                ttl_secs = self.ttl.as_secs(),
+                "session expired before resume",
+            );
             return None;
         }
 
-        tracing::info!("session resumed, flags={:#x}", saved.flags);
+        tracing::info!(
+            spiffe = %if id.is_empty() { "<anonymous>" } else { id },
+            flags = format_args!("{:#x}", saved.flags),
+            age_secs = age.as_secs(),
+            "session resumed from store",
+        );
         Some(saved.flags)
     }
 
+    /// Total number of saved sessions across all identities.
+    pub fn total_count(&self) -> usize {
+        self.store.iter().map(|e| e.value().len()).sum()
+    }
+
+    /// Number of distinct SPIFFE identities with saved sessions.
+    pub fn identity_count(&self) -> usize {
+        self.store.len()
+    }
+
     /// Remove expired sessions across all identities.
-    pub fn gc(&self) {
-        let before: usize = self.store.iter().map(|e| e.value().len()).sum();
+    /// Returns (before, after, purged) counts so callers can log per-tick state.
+    pub fn gc(&self) -> (usize, usize, usize) {
+        let before = self.total_count();
         for entry in self.store.iter() {
             entry.value().retain(|_, v| v.saved_at.elapsed() <= self.ttl);
         }
         self.store.retain(|_, v| !v.is_empty());
-        let after: usize = self.store.iter().map(|e| e.value().len()).sum();
-        if before != after {
-            tracing::debug!("session GC: purged {} expired session(s)", before - after);
-        }
+        let after = self.total_count();
+        let purged = before.saturating_sub(after);
+        (before, after, purged)
     }
 }

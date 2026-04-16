@@ -5,7 +5,7 @@ use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::join_err;
+use crate::util::{fid_not_open, join_err, unknown_fid};
 
 /// Handle Tcopyrange: server-side copy between two open files.
 ///
@@ -30,27 +30,26 @@ pub async fn handle<B: Backend>(
         return Err("expected Copyrange message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("copyrange: src_fid={src_fid} src_off={src_off} dst_fid={dst_fid} dst_off={dst_off} count={count}");
+    tracing::debug!(
+        tag, src_fid, dst_fid,
+        src_off, dst_off, count,
+        flags = format_args!("{:#x}", flags),
+        "Tcopyrange received",
+    );
 
-    let src_state = session
-        .fids
-        .get(src_fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown src_fid"))?;
+    let src_state = session.fids.get(src_fid).ok_or_else(|| unknown_fid(src_fid, "Tcopyrange"))?;
     let src_handle = src_state
         .handle
         .as_ref()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "src not open"))?
+        .ok_or_else(|| fid_not_open(src_fid, "Tcopyrange"))?
         .clone();
     drop(src_state);
 
-    let dst_state = session
-        .fids
-        .get(dst_fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown dst_fid"))?;
+    let dst_state = session.fids.get(dst_fid).ok_or_else(|| unknown_fid(dst_fid, "Tcopyrange"))?;
     let dst_handle = dst_state
         .handle
         .as_ref()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "dst not open"))?
+        .ok_or_else(|| fid_not_open(dst_fid, "Tcopyrange"))?
         .clone();
     drop(dst_state);
 
@@ -60,6 +59,13 @@ pub async fn handle<B: Backend>(
     })
     .await
     .map_err(join_err)??;
+
+    tracing::debug!(
+        tag, src_fid, dst_fid,
+        requested = count,
+        copied = total_copied,
+        "Tcopyrange result",
+    );
 
     Ok(Fcall {
         size: 0,

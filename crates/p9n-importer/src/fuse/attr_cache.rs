@@ -43,13 +43,13 @@ impl AttrCache {
     }
 
     pub fn put(&self, ino: u64, stat: Stat) {
-        tracing::trace!("attr_cache put: ino={ino} size={}", stat.size);
+        tracing::trace!(ino, size = stat.size, "attr_cache put");
         let mut cache = self.cache.lock();
         cache.put(ino, (stat, Instant::now()));
     }
 
     pub fn invalidate(&self, ino: u64) {
-        tracing::trace!("attr_cache invalidate: ino={ino}");
+        tracing::trace!(ino, "attr_cache invalidate");
         let mut cache = self.cache.lock();
         cache.pop(&ino);
     }

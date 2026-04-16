@@ -15,9 +15,20 @@ pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, session_store: &Se
         return Err("expected Session message".into());
     };
     let tag = fc.tag;
+    let key_prefix = format!("{:02x}{:02x}{:02x}{:02x}", key[0], key[1], key[2], key[3]);
+
+    tracing::debug!(
+        flags_requested = format_args!("{:#x}", flags),
+        key_prefix = %key_prefix,
+        "Tsession received",
+    );
 
     // Reject duplicate Tsession on same connection
     if session.get_session_key().is_some() {
+        tracing::warn!(
+            key_prefix = %key_prefix,
+            "Tsession rejected: session already established on this connection",
+        );
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
             "session already established on this connection",
@@ -26,6 +37,7 @@ pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, session_store: &Se
     }
 
     if key == [0u8; 16] {
+        tracing::warn!("Tsession rejected: zero key");
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "session key must be non-zero (derive via TLS export_keying_material)",
@@ -37,9 +49,15 @@ pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, session_store: &Se
     match session_store.resume(&key, &session.spiffe_id) {
         Some(restored) => {
             let effective = flags & restored;
+            let dropped = flags & !restored;
             session.set_session_key(key);
             tracing::info!(
-                "session resumed, requested={flags:#x}, restored={restored:#x}, effective={effective:#x}"
+                key_prefix = %key_prefix,
+                flags_requested = format_args!("{:#x}", flags),
+                flags_restored = format_args!("{:#x}", restored),
+                flags_effective = format_args!("{:#x}", effective),
+                flags_dropped = format_args!("{:#x}", dropped),
+                "Tsession resumed",
             );
             Ok(Fcall {
                 size: 0,
@@ -52,7 +70,14 @@ pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, session_store: &Se
             // New session with client-provided key
             session.set_session_key(key);
             let supported = flags & (SESSION_FIDS | SESSION_LEASES | SESSION_WATCHES);
-            tracing::info!("new session, flags={supported:#x}");
+            let unsupported = flags & !(SESSION_FIDS | SESSION_LEASES | SESSION_WATCHES);
+            tracing::info!(
+                key_prefix = %key_prefix,
+                flags_requested = format_args!("{:#x}", flags),
+                flags_supported = format_args!("{:#x}", supported),
+                flags_unsupported = format_args!("{:#x}", unsupported),
+                "Tsession new",
+            );
             Ok(Fcall {
                 size: 0,
                 msg_type: MsgType::Rsession,

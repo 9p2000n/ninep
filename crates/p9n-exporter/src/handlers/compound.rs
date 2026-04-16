@@ -37,9 +37,21 @@ pub async fn handle<B: Backend>(
     };
     let tag = fc.tag;
 
+    let op_types: Vec<&'static str> = ops.iter().map(|o| o.msg_type.name()).collect();
+    let total_payload: usize = ops.iter().map(|o| o.payload.len()).sum();
+    tracing::debug!(
+        tag,
+        n_ops = ops.len(),
+        ops = ?op_types,
+        total_payload,
+        "Tcompound received",
+    );
+
     let mut results: Vec<SubOp> = Vec::with_capacity(ops.len());
+    let mut stopped_at: Option<usize> = None;
 
     for (i, op) in ops.iter().enumerate() {
+        let mt_name = op.msg_type.name();
         // Decode the sub-operation: reconstruct a full Fcall from SubOp payload
         let sub_fc = decode_subop(op, tag)?;
 
@@ -49,13 +61,24 @@ pub async fn handle<B: Backend>(
 
         match sub_result {
             Ok(response) => {
+                tracing::trace!(
+                    sub_idx = i,
+                    sub_type = mt_name,
+                    resp_type = response.msg_type.name(),
+                    "compound sub-op ok",
+                );
                 // Encode the response back into a SubOp
                 let result_op = encode_subop(&response)?;
                 results.push(result_op);
             }
             Err(e) => {
                 // On error, encode Rlerror as the failed sub-op result and stop
-                tracing::debug!("compound sub-op {i} failed: {e}");
+                tracing::debug!(
+                    sub_idx = i,
+                    sub_type = mt_name,
+                    error = %e,
+                    "compound sub-op failed; stopping",
+                );
                 let err_fc = Fcall {
                     size: 0,
                     msg_type: MsgType::Rlerror,
@@ -65,12 +88,20 @@ pub async fn handle<B: Backend>(
                 if let Ok(err_op) = encode_subop(&err_fc) {
                     results.push(err_op);
                 }
+                stopped_at = Some(i);
                 break;
             }
         }
     }
 
-    tracing::debug!("compound: {}/{} sub-ops completed", results.len(), ops.len());
+    tracing::info!(
+        tag,
+        completed = results.len(),
+        total = ops.len(),
+        partial = stopped_at.is_some(),
+        stopped_at = stopped_at.unwrap_or(usize::MAX),
+        "Tcompound done",
+    );
 
     Ok(Fcall {
         size: 0,

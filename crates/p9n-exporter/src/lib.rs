@@ -18,5 +18,7 @@ pub mod fid_table;
 pub mod push;
 pub mod lease_manager;
 pub mod watch_manager;
+pub mod heartbeat;
+pub mod logging;
 pub mod backend;
 pub mod handlers;

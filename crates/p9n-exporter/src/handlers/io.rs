@@ -5,7 +5,7 @@ use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::join_err;
+use crate::util::{fid_not_open, join_err, unknown_fid};
 
 /// Handle Tlopen: open a file associated with a fid.
 pub async fn handle_lopen<B: Backend>(
@@ -17,12 +17,9 @@ pub async fn handle_lopen<B: Backend>(
         return Err("expected Lopen message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("lopen: fid={fid} flags={flags:#x}");
+    tracing::debug!(tag, fid, flags = format_args!("{:#x}", flags), "Tlopen received");
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tlopen"))?;
     let path = fid_state.path.clone();
     let is_dir = fid_state.is_dir;
     drop(fid_state);
@@ -42,6 +39,13 @@ pub async fn handle_lopen<B: Backend>(
     }
 
     let iounit = msize - 24;
+
+    tracing::debug!(
+        tag, fid, is_dir,
+        qid_path = qid.path,
+        iounit,
+        "Tlopen result",
+    );
 
     Ok(Fcall {
         size: 0,
@@ -67,16 +71,13 @@ pub async fn handle_read<B: Backend>(
         return Err("expected Read message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("read: fid={fid} offset={offset} count={count}");
+    tracing::trace!(tag, fid, offset, count, "Tread received");
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tread"))?;
     let handle = fid_state
         .handle
         .as_ref()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
+        .ok_or_else(|| fid_not_open(fid, "Tread"))?
         .clone();
     drop(fid_state);
 
@@ -128,16 +129,13 @@ pub async fn handle_read_fcall<B: Backend>(
         return Err("expected Read message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("read: fid={fid} offset={offset} count={count}");
+    tracing::trace!(tag, fid, offset, count, "Tread received (fcall path)");
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tread"))?;
     let handle = fid_state
         .handle
         .as_ref()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
+        .ok_or_else(|| fid_not_open(fid, "Tread"))?
         .clone();
     drop(fid_state);
 
@@ -147,6 +145,8 @@ pub async fn handle_read_fcall<B: Backend>(
     })
     .await
     .map_err(join_err)??;
+
+    tracing::trace!(tag, fid, n = data.len(), "Tread result (fcall path)");
 
     Ok(Fcall {
         size: 0,
@@ -166,16 +166,14 @@ pub async fn handle_write<B: Backend>(
         return Err("expected Write message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("write: fid={fid} offset={offset} len={}", data.len());
+    let data_len = data.len();
+    tracing::debug!(tag, fid, offset, len = data_len, "Twrite received");
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Twrite"))?;
     let handle = fid_state
         .handle
         .as_ref()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
+        .ok_or_else(|| fid_not_open(fid, "Twrite"))?
         .clone();
     let qid_path = fid_state.qid.path;
     drop(fid_state);
@@ -189,6 +187,14 @@ pub async fn handle_write<B: Backend>(
     })
     .await
     .map_err(join_err)??;
+
+    tracing::debug!(
+        tag, fid, offset,
+        requested = data_len,
+        n,
+        short = (n as usize) < data_len,
+        "Twrite result",
+    );
 
     Ok(Fcall {
         size: 0,
@@ -208,12 +214,9 @@ pub async fn handle_readlink<B: Backend>(
         return Err("expected Readlink message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("readlink: fid={fid}");
+    tracing::trace!(tag, fid, "Treadlink received");
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Treadlink"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
@@ -223,6 +226,8 @@ pub async fn handle_readlink<B: Backend>(
     })
     .await
     .map_err(join_err)??;
+
+    tracing::trace!(tag, fid, target_len = target_str.len(), "Treadlink result");
 
     Ok(Fcall {
         size: 0,
@@ -244,15 +249,13 @@ pub async fn handle_fsync<B: Backend>(
         return Err("expected Fsync message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("fsync: fid={fid}");
+    tracing::debug!(tag, fid, "Tfsync received");
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tfsync"))?;
     let handle = fid_state.handle.clone();
     drop(fid_state);
 
+    let had_handle = handle.is_some();
     if let Some(handle) = handle {
         let ctx = ctx.clone();
         tokio::task::spawn_blocking(move || {
@@ -261,6 +264,8 @@ pub async fn handle_fsync<B: Backend>(
         .await
         .map_err(join_err)??;
     }
+
+    tracing::debug!(tag, fid, had_handle, "Tfsync result");
 
     Ok(Fcall {
         size: 0,

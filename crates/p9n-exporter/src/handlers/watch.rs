@@ -9,6 +9,7 @@ use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use crate::util::unknown_fid;
 
 pub fn handle<B: Backend>(
     session: &Session<B::Handle>,
@@ -25,11 +26,15 @@ pub fn handle<B: Backend>(
                 _ => return Err("invalid Twatch payload".into()),
             };
 
+            tracing::debug!(
+                tag, fid,
+                mask = format_args!("{:#x}", mask),
+                flags = format_args!("{:#x}", flags),
+                "Twatch received",
+            );
+
             // Resolve the fid to a filesystem path
-            let fid_state = session
-                .fids
-                .get(fid)
-                .ok_or_else(|| format!("unknown fid {fid}"))?;
+            let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Twatch"))?;
             let path = fid_state.path.clone();
             drop(fid_state);
 
@@ -40,9 +45,14 @@ pub fn handle<B: Backend>(
             let watch_id = ctx.watch_mgr.add_watch(&resolved, mask, flags, watch_tx.clone())?;
             session.add_watch_id(watch_id);
 
-            tracing::debug!(
-                "Twatch fid={fid} path={} mask=0x{mask:x} -> watch_id={watch_id}",
-                resolved.display()
+            tracing::info!(
+                tag, fid,
+                path = %resolved.display(),
+                mask = format_args!("{:#x}", mask),
+                flags = format_args!("{:#x}", flags),
+                watch_id,
+                active_watches = session.watch_id_list().len(),
+                "Twatch registered",
             );
 
             Ok(Fcall {
@@ -59,10 +69,16 @@ pub fn handle<B: Backend>(
                 _ => return Err("invalid Tunwatch payload".into()),
             };
 
+            tracing::debug!(tag, watch_id, "Tunwatch received");
+
             ctx.watch_mgr.remove_watch(watch_id)?;
             session.remove_watch_id(watch_id);
 
-            tracing::debug!("Tunwatch watch_id={watch_id}");
+            tracing::info!(
+                tag, watch_id,
+                active_watches = session.watch_id_list().len(),
+                "Tunwatch removed",
+            );
 
             Ok(Fcall {
                 size: 0,

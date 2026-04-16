@@ -15,11 +15,13 @@ pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) -> Hand
     };
 
     let cancelled = session.cancel_inflight(oldtag);
-    if cancelled {
-        tracing::debug!("flush: cancelled in-flight tag {oldtag}");
-    } else {
-        tracing::debug!("flush: tag {oldtag} not found (already completed)");
-    }
+    tracing::debug!(
+        tag = fc.tag,
+        oldtag,
+        cancelled,
+        reason = if cancelled { "in-flight cancelled" } else { "already completed or unknown" },
+        "Tflush",
+    );
 
     Ok(Fcall {
         size: 0,

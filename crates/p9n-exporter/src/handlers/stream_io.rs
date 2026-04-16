@@ -9,7 +9,7 @@ use p9n_proto::types::MsgType;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use parking_lot::Mutex;
-use crate::util::join_err;
+use crate::util::{fid_not_open, join_err, unknown_fid};
 
 static NEXT_STREAM_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -26,10 +26,10 @@ pub async fn handle<B: Backend>(
             let Msg::Streamopen { fid, direction, offset, count: _ } = fc.msg else {
                 return Err("expected Streamopen".into());
             };
-            let fid_state = session.fids.get(fid)
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+            tracing::debug!(tag, fid, direction, offset, "Tstreamopen received");
+            let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tstreamopen"))?;
             let handle = fid_state.handle.as_ref()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
+                .ok_or_else(|| fid_not_open(fid, "Tstreamopen"))?
                 .clone();
             drop(fid_state);
 
@@ -41,16 +41,24 @@ pub async fn handle<B: Backend>(
                 offset: Mutex::new(offset),
             });
 
-            tracing::debug!("stream opened: id={stream_id} fid={fid} dir={direction} offset={offset}");
+            tracing::debug!(
+                tag, stream_id, fid, direction, offset,
+                active_streams = session.active_streams.len(),
+                "Tstreamopen result",
+            );
             Ok(Fcall { size: 0, msg_type: MsgType::Rstreamopen, tag, msg: Msg::Rstreamopen { stream_id } })
         }
         MsgType::Tstreamdata => {
             let Msg::Streamdata { stream_id, seq, data } = fc.msg else {
                 return Err("expected Streamdata".into());
             };
+            tracing::trace!(tag, stream_id, seq, len = data.len(), "Tstreamdata received");
 
             let stream = session.active_streams.get(&stream_id)
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown stream"))?;
+                .ok_or_else(|| {
+                    tracing::debug!(stream_id, "Tstreamdata rejected: unknown stream");
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "unknown stream")
+                })?;
             let handle = stream.handle.clone();
             let direction = stream.direction;
             let offset = *stream.offset.lock();
@@ -69,7 +77,12 @@ pub async fn handle<B: Backend>(
                     *stream.offset.lock() += written as u64;
                 }
 
-                tracing::debug!("stream write: id={stream_id} seq={seq} len={data_len} written={written}");
+                tracing::debug!(
+                    tag, stream_id, seq, offset,
+                    requested = data_len,
+                    written,
+                    "Tstreamdata write result",
+                );
                 Ok(Fcall { size: 0, msg_type: MsgType::Rstreamdata, tag, msg: Msg::Streamdata { stream_id, seq, data: Vec::new() } })
             } else {
                 // Read direction: respond with file data.
@@ -86,7 +99,12 @@ pub async fn handle<B: Backend>(
                     *stream.offset.lock() += read_len as u64;
                 }
 
-                tracing::debug!("stream read: id={stream_id} seq={seq} len={read_len}");
+                tracing::debug!(
+                    tag, stream_id, seq, offset,
+                    chunk,
+                    read_len,
+                    "Tstreamdata read result",
+                );
                 Ok(Fcall { size: 0, msg_type: MsgType::Rstreamdata, tag, msg: Msg::Streamdata { stream_id, seq, data: read_data } })
             }
         }
@@ -94,21 +112,29 @@ pub async fn handle<B: Backend>(
             let Msg::Streamclose { stream_id } = fc.msg else {
                 return Err("expected Streamclose".into());
             };
+            tracing::debug!(tag, stream_id, "Tstreamclose received");
 
-            if let Some((_, stream)) = session.active_streams.remove(&stream_id) {
+            let removed = if let Some((_, stream)) = session.active_streams.remove(&stream_id) {
                 // Fsync on close for write streams to ensure durability.
                 if stream.direction == STREAM_WRITE {
                     let handle = stream.handle;
                     let ctx = ctx.clone();
                     match tokio::task::spawn_blocking(move || ctx.backend.fsync(&handle)).await {
                         Ok(Ok(())) => {}
-                        Ok(Err(e)) => tracing::warn!("stream {stream_id} fsync failed on close: {e}"),
-                        Err(e) => tracing::warn!("stream {stream_id} fsync task panicked: {e}"),
+                        Ok(Err(e)) => tracing::warn!(stream_id, error = %e, "Tstreamclose: fsync failed"),
+                        Err(e) => tracing::warn!(stream_id, error = %e, "Tstreamclose: fsync task panicked"),
                     }
                 }
-            }
+                true
+            } else {
+                false
+            };
 
-            tracing::debug!("stream closed: id={stream_id}");
+            tracing::debug!(
+                tag, stream_id, removed,
+                active_streams = session.active_streams.len(),
+                "Tstreamclose result",
+            );
             Ok(Fcall { size: 0, msg_type: MsgType::Rstreamclose, tag, msg: Msg::Empty })
         }
         _ => Err("unexpected stream message".into()),

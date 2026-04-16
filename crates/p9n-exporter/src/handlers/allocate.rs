@@ -5,7 +5,7 @@ use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::join_err;
+use crate::util::{fid_not_open, join_err, unknown_fid};
 
 /// Handle Tallocate: preallocate file space via fallocate.
 pub async fn handle<B: Backend>(
@@ -23,16 +23,18 @@ pub async fn handle<B: Backend>(
         return Err("expected Allocate message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("allocate: fid={fid} mode={mode} offset={offset} length={length}");
+    tracing::debug!(
+        tag, fid,
+        mode = format_args!("{:#x}", mode),
+        offset, length,
+        "Tallocate received",
+    );
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tallocate"))?;
     let handle = fid_state
         .handle
         .as_ref()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "fid not open"))?
+        .ok_or_else(|| fid_not_open(fid, "Tallocate"))?
         .clone();
     drop(fid_state);
 
@@ -42,6 +44,8 @@ pub async fn handle<B: Backend>(
     })
     .await
     .map_err(join_err)??;
+
+    tracing::debug!(tag, fid, offset, length, "Tallocate result");
 
     Ok(Fcall {
         size: 0,

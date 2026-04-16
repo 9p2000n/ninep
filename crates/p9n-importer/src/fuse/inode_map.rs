@@ -42,13 +42,13 @@ impl InodeMap {
             let old_fid = old
                 .map(|(prev_fid, _)| prev_fid)
                 .filter(|&prev| prev != fid);
-            tracing::trace!("inode_map update: ino={} fid={fid} old_fid={old_fid:?}", *ino);
+            tracing::trace!(ino = *ino, fid, ?old_fid, qid_path = qid.path, "inode_map update");
             return InsertResult { ino: *ino, old_fid };
         }
         let ino = self.next_ino.fetch_add(1, Ordering::Relaxed);
         self.ino_to_fid.insert(ino, (fid, qid.clone()));
         self.qid_to_ino.insert(qid.path, ino);
-        tracing::trace!("inode_map insert: ino={ino} fid={fid} qid_path={}", qid.path);
+        tracing::trace!(ino, fid, qid_path = qid.path, "inode_map insert");
         InsertResult { ino, old_fid: None }
     }
 

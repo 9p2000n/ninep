@@ -10,10 +10,50 @@ use p9n_proto::types::*;
 use p9n_proto::wire::Qid;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
+
+/// Counters shared between the manager and the OS-watcher callback.
+/// Mutation (record_*) is kept separate from observation (`snapshot()`) so
+/// log sites never call `fetch_add` directly.
+#[derive(Default)]
+struct WatchCounters {
+    events_dispatched: AtomicU64,
+    events_dropped: AtomicU64,
+    events_ignored: AtomicU64,
+}
+
+impl WatchCounters {
+    fn record_dispatched(&self) {
+        self.events_dispatched.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_dropped(&self) {
+        self.events_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_ignored(&self) {
+        self.events_ignored.fetch_add(1, Ordering::Relaxed);
+    }
+    /// Snapshot `(dispatched, dropped, ignored)` for periodic logging.
+    fn snapshot(&self) -> (u64, u64, u64) {
+        (
+            self.events_dispatched.load(Ordering::Relaxed),
+            self.events_dropped.load(Ordering::Relaxed),
+            self.events_ignored.load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// Snapshot of watch manager state for periodic logging.
+#[derive(Debug, Clone, Copy)]
+pub struct WatchStats {
+    pub watches: usize,
+    pub watched_paths: usize,
+    pub events_dispatched: u64,
+    pub events_dropped: u64,
+    pub events_ignored: u64,
+}
 
 /// A watch event ready to be sent as Rnotify to a client.
 #[derive(Debug, Clone)]
@@ -44,17 +84,22 @@ pub struct WatchManager {
     next_id: AtomicU32,
     /// The underlying OS watcher (locked only for watch/unwatch calls).
     watcher: Mutex<RecommendedWatcher>,
+    /// Counters shared with the dispatch path.
+    counters: Arc<WatchCounters>,
 }
 
 impl WatchManager {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let path_watches: Arc<DashMap<PathBuf, Vec<WatchRegistration>>> =
             Arc::new(DashMap::new());
+        let counters = Arc::new(WatchCounters::default());
 
         let pw_clone = path_watches.clone();
+        let cnt_clone = counters.clone();
         let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            if let Ok(event) = res {
-                dispatch_event(&pw_clone, &event);
+            match res {
+                Ok(event) => dispatch_event(&pw_clone, &cnt_clone, &event),
+                Err(e) => tracing::warn!(error = %e, "notify watcher reported error"),
             }
         })?;
 
@@ -63,7 +108,21 @@ impl WatchManager {
             id_to_path: DashMap::new(),
             next_id: AtomicU32::new(1),
             watcher: Mutex::new(watcher),
+            counters,
         })
+    }
+
+    /// Snapshot the current state of the watch manager (for periodic logging).
+    pub fn stats(&self) -> WatchStats {
+        let watches: usize = self.path_watches.iter().map(|e| e.value().len()).sum();
+        let (events_dispatched, events_dropped, events_ignored) = self.counters.snapshot();
+        WatchStats {
+            watches,
+            watched_paths: self.path_watches.len(),
+            events_dispatched,
+            events_dropped,
+            events_ignored,
+        }
     }
 
     /// Register a watch on a path for a connection. Returns the watch_id.
@@ -100,6 +159,13 @@ impl WatchManager {
             // Only lock the OS watcher for the actual watch syscall
             let mut watcher = self.watcher.lock();
             if let Err(e) = watcher.watch(&canonical, mode) {
+                tracing::warn!(
+                    watch_id,
+                    path = %canonical.display(),
+                    recursive,
+                    error = %e,
+                    "OS watch syscall failed; rolling back registration",
+                );
                 // Cleanup on failure
                 if let Some(mut regs) = self.path_watches.get_mut(&canonical) {
                     regs.retain(|r| r.watch_id != watch_id);
@@ -113,7 +179,15 @@ impl WatchManager {
             }
         }
 
-        tracing::debug!("watch {watch_id} added on {}", canonical.display());
+        tracing::info!(
+            watch_id,
+            path = %canonical.display(),
+            mask = format_args!("{:#x}", mask),
+            flags = format_args!("{:#x}", flags),
+            new_path = is_new_path,
+            total_paths = self.path_watches.len(),
+            "watch added",
+        );
         Ok(watch_id)
     }
 
@@ -124,7 +198,10 @@ impl WatchManager {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let path = match self.id_to_path.remove(&watch_id) {
             Some((_, p)) => p,
-            None => return Ok(()),
+            None => {
+                tracing::trace!(watch_id, "watch remove: not found (already removed)");
+                return Ok(());
+            }
         };
 
         let should_unwatch = if let Some(mut regs) = self.path_watches.get_mut(&path) {
@@ -140,7 +217,13 @@ impl WatchManager {
             let _ = watcher.unwatch(&path);
         }
 
-        tracing::debug!("watch {watch_id} removed");
+        tracing::info!(
+            watch_id,
+            path = %path.display(),
+            os_unwatched = should_unwatch,
+            total_paths = self.path_watches.len(),
+            "watch removed",
+        );
         Ok(())
     }
 
@@ -156,8 +239,12 @@ impl WatchManager {
             }
         }
 
+        let n = to_remove.len();
         for watch_id in to_remove {
             let _ = self.remove_watch(watch_id);
+        }
+        if n > 0 {
+            tracing::debug!(removed = n, "watch remove_all_for_sender (connection cleanup)");
         }
     }
 }
@@ -204,9 +291,14 @@ fn qid_for_path(path: &Path) -> Qid {
 
 /// Dispatch a notify event to all registered watchers.
 /// Uses DashMap read access — does NOT block add_watch/remove_watch on other shards.
-fn dispatch_event(path_watches: &DashMap<PathBuf, Vec<WatchRegistration>>, event: &Event) {
+fn dispatch_event(
+    path_watches: &DashMap<PathBuf, Vec<WatchRegistration>>,
+    counters: &WatchCounters,
+    event: &Event,
+) {
     let event_mask = map_event_kind(&event.kind);
     if event_mask == 0 {
+        counters.record_ignored();
         return;
     }
 
@@ -229,20 +321,59 @@ fn dispatch_event(path_watches: &DashMap<PathBuf, Vec<WatchRegistration>>, event
 
                 for reg in regs.value() {
                     if reg.mask & event_mask != 0 {
-                        tracing::trace!(
-                            "watch event: wid={} mask={event_mask:#x} name={name}",
-                            reg.watch_id,
-                        );
                         let watch_event = WatchEvent {
                             watch_id: reg.watch_id,
                             event_mask,
                             name: name.clone(),
                             qid: qid.clone(),
                         };
-                        let _ = reg.tx.try_send(watch_event);
+                        match reg.tx.try_send(watch_event) {
+                            Ok(()) => {
+                                counters.record_dispatched();
+                                tracing::trace!(
+                                    wid = reg.watch_id,
+                                    mask = format_args!("{:#x}", event_mask),
+                                    name = %name,
+                                    "watch event dispatched",
+                                );
+                            }
+                            Err(e) => {
+                                counters.record_dropped();
+                                tracing::warn!(
+                                    wid = reg.watch_id,
+                                    mask = format_args!("{:#x}", event_mask),
+                                    name = %name,
+                                    error = %e,
+                                    "watch event dropped (channel full or closed)",
+                                );
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counters_default_and_snapshot() {
+        let c = WatchCounters::default();
+        assert_eq!(c.snapshot(), (0, 0, 0));
+    }
+
+    #[test]
+    fn counters_record_each_type_independently() {
+        let c = WatchCounters::default();
+        c.record_dispatched();
+        c.record_dispatched();
+        c.record_dropped();
+        c.record_ignored();
+        c.record_ignored();
+        c.record_ignored();
+        assert_eq!(c.snapshot(), (2, 1, 3));
     }
 }

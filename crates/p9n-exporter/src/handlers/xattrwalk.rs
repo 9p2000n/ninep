@@ -13,7 +13,7 @@ use p9n_proto::types::MsgType;
 use p9n_proto::wire::Qid;
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::util::join_err;
+use crate::util::{join_err, unknown_fid};
 
 /// Handle Txattrwalk: create a fid representing an xattr value.
 /// If name is empty, returns the total size of all xattr names (for listxattr).
@@ -26,10 +26,15 @@ pub async fn handle_xattrwalk<B: Backend>(
         return Err("expected Xattrwalk".into());
     };
     let tag = fc.tag;
-    tracing::trace!("xattrwalk: fid={fid} newfid={newfid} name={name}");
+    let list_mode = name.is_empty();
+    tracing::debug!(
+        tag, fid, newfid,
+        name = %name,
+        list_mode,
+        "Txattrwalk received",
+    );
 
-    let fid_state = session.fids.get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Txattrwalk"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
@@ -53,6 +58,14 @@ pub async fn handle_xattrwalk<B: Backend>(
         is_dir: false,
     });
 
+    tracing::debug!(
+        tag, fid, newfid,
+        name = %name,
+        list_mode,
+        size = xattr_size,
+        "Txattrwalk result",
+    );
+
     Ok(Fcall {
         size: 0, msg_type: MsgType::Rxattrwalk, tag,
         msg: Msg::Rxattrwalk { size: xattr_size },
@@ -64,18 +77,23 @@ pub fn handle_xattrcreate<H: Send + Sync + 'static>(
     session: &Session<H>,
     fc: Fcall,
 ) -> HandlerResult {
-    let Msg::Xattrcreate { fid, name, attr_size: _, flags: _ } = fc.msg else {
+    let Msg::Xattrcreate { fid, name, attr_size, flags } = fc.msg else {
         return Err("expected Xattrcreate".into());
     };
     let tag = fc.tag;
+    tracing::debug!(
+        tag, fid,
+        name = %name,
+        attr_size,
+        flags = format_args!("{:#x}", flags),
+        "Txattrcreate received",
+    );
 
     // Verify fid exists
-    let _ = session.fids.get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let _ = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Txattrcreate"))?;
 
     // The actual xattr write happens via subsequent Twrite + Tclunk.
     // For now, return success (the fid is already set up).
-    tracing::debug!("xattrcreate: fid={fid} name={name}");
 
     Ok(Fcall {
         size: 0, msg_type: MsgType::Rxattrcreate, tag,

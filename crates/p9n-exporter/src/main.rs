@@ -110,7 +110,7 @@ fn init() {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls CryptoProvider");
-    tracing_subscriber::fmt::init();
+    p9n_exporter::logging::init();
 }
 
 // ── Authentication ──

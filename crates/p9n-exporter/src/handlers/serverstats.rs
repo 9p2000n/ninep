@@ -10,10 +10,11 @@ use p9n_proto::wire::ServerStat;
 use std::sync::Arc;
 
 pub fn handle<B: Backend>(session: &Session<B::Handle>, _ctx: &Arc<SharedCtx<B>>, fc: Fcall) -> HandlerResult {
-    let Msg::ServerstatsReq { mask: _ } = fc.msg else {
+    let Msg::ServerstatsReq { mask } = fc.msg else {
         return Err("expected ServerstatsReq".into());
     };
     let tag = fc.tag;
+    tracing::trace!(tag, mask = format_args!("{:#x}", mask), "Tserverstats received");
 
     let uptime = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -28,6 +29,8 @@ pub fn handle<B: Backend>(session: &Session<B::Handle>, _ctx: &Arc<SharedCtx<B>>
         ServerStat { name: "active_caps".into(), stat_type: 0, value: session.active_caps.len() as u64 },
         ServerStat { name: "server_spiffe_id".into(), stat_type: 1, value: 0 }, // type 1 = string indicator
     ];
+
+    tracing::trace!(tag, n_stats = stats.len(), "Tserverstats result");
 
     Ok(Fcall { size: 0, msg_type: MsgType::Rserverstats, tag, msg: Msg::Rserverstats { stats } })
 }

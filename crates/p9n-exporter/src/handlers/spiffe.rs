@@ -25,53 +25,94 @@ pub fn handle_fetchbundle<B: Backend>(
         return Err("expected Fetchbundle message".into());
     };
     let tag = fc.tag;
+    tracing::debug!(
+        tag,
+        trust_domain = %trust_domain,
+        format,
+        "Tfetchbundle received",
+    );
 
     match format {
         BUNDLE_X509_CAS => {
             // Return PEM-encoded CA certificates
             match ctx.trust_store.to_pem(&trust_domain) {
-                Some(pem) => Ok(Fcall {
-                    size: 0,
-                    msg_type: MsgType::Rfetchbundle,
-                    tag,
-                    msg: Msg::Rfetchbundle {
-                        trust_domain,
+                Some(pem) => {
+                    tracing::debug!(
+                        tag,
+                        trust_domain = %trust_domain,
                         format,
-                        bundle: pem,
-                    },
-                }),
-                None => Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("no trust bundle for domain: {trust_domain}"),
-                )
-                .into()),
+                        bundle_len = pem.len(),
+                        "Tfetchbundle result (X509 PEM)",
+                    );
+                    Ok(Fcall {
+                        size: 0,
+                        msg_type: MsgType::Rfetchbundle,
+                        tag,
+                        msg: Msg::Rfetchbundle {
+                            trust_domain,
+                            format,
+                            bundle: pem,
+                        },
+                    })
+                }
+                None => {
+                    tracing::warn!(
+                        tag,
+                        trust_domain = %trust_domain,
+                        "Tfetchbundle: no trust bundle for domain",
+                    );
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("no trust bundle for domain: {trust_domain}"),
+                    )
+                    .into())
+                }
             }
         }
         BUNDLE_JWT_KEYS => {
             // Return JSON-encoded JWK Set
             match ctx.trust_store.to_jwk_json(&trust_domain) {
-                Some(json) => Ok(Fcall {
-                    size: 0,
-                    msg_type: MsgType::Rfetchbundle,
-                    tag,
-                    msg: Msg::Rfetchbundle {
-                        trust_domain,
+                Some(json) => {
+                    tracing::debug!(
+                        tag,
+                        trust_domain = %trust_domain,
                         format,
-                        bundle: json,
-                    },
-                }),
-                None => Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("no JWT keys for domain: {trust_domain}"),
-                )
-                .into()),
+                        bundle_len = json.len(),
+                        "Tfetchbundle result (JWK)",
+                    );
+                    Ok(Fcall {
+                        size: 0,
+                        msg_type: MsgType::Rfetchbundle,
+                        tag,
+                        msg: Msg::Rfetchbundle {
+                            trust_domain,
+                            format,
+                            bundle: json,
+                        },
+                    })
+                }
+                None => {
+                    tracing::warn!(
+                        tag,
+                        trust_domain = %trust_domain,
+                        "Tfetchbundle: no JWT keys for domain",
+                    );
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("no JWT keys for domain: {trust_domain}"),
+                    )
+                    .into())
+                }
             }
         }
-        _ => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("unknown bundle format: {format}"),
-        )
-        .into()),
+        _ => {
+            tracing::warn!(tag, format, "Tfetchbundle rejected: unknown bundle format");
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unknown bundle format: {format}"),
+            )
+            .into())
+        }
     }
 }
 
@@ -90,6 +131,13 @@ pub fn handle_spiffeverify<B: Backend>(
         return Err("expected Spiffeverify message".into());
     };
     let tag = fc.tag;
+    tracing::debug!(
+        tag,
+        svid_type,
+        spiffe_id = %spiffe_id,
+        svid_len = svid.len(),
+        "Tspiffeverify received",
+    );
 
     match svid_type {
         SVID_X509 => {
@@ -255,11 +303,14 @@ pub fn handle_spiffeverify<B: Backend>(
                 }),
             }
         }
-        _ => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("unknown SVID type: {svid_type}"),
-        )
-        .into()),
+        _ => {
+            tracing::warn!(tag, svid_type, "Tspiffeverify rejected: unknown SVID type");
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unknown SVID type: {svid_type}"),
+            )
+            .into())
+        }
     }
 }
 
@@ -280,13 +331,22 @@ pub fn handle_startls_spiffe<B: Backend>(
         return Err("expected StartlsSpiffe message".into());
     };
     let tag = fc.tag;
+    tracing::debug!(
+        tag,
+        declared_spiffe_id = %spiffe_id,
+        trust_domain = %trust_domain,
+        "TstartlsSpiffe received",
+    );
 
     // Verify the declared SPIFFE ID matches what we extracted from TLS
     match &session.spiffe_id {
         Some(tls_id) => {
             if *tls_id != spiffe_id {
                 tracing::warn!(
-                    "SPIFFE ID mismatch: TLS={tls_id}, declared={spiffe_id}"
+                    tag,
+                    tls_id = %tls_id,
+                    declared = %spiffe_id,
+                    "TstartlsSpiffe rejected: SPIFFE ID mismatch",
                 );
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -296,7 +356,7 @@ pub fn handle_startls_spiffe<B: Backend>(
             }
         }
         None => {
-            tracing::warn!("no SPIFFE ID in TLS certificate");
+            tracing::warn!(tag, "TstartlsSpiffe rejected: no SPIFFE ID in TLS certificate");
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "no SPIFFE ID in peer TLS certificate",
@@ -308,7 +368,11 @@ pub fn handle_startls_spiffe<B: Backend>(
     session.set_spiffe_verified(true);
 
     tracing::info!(
-        "SPIFFE identity verified: {spiffe_id} (domain: {trust_domain})"
+        tag,
+        spiffe_id = %spiffe_id,
+        trust_domain = %trust_domain,
+        server_spiffe_id = %ctx.server_spiffe_id,
+        "SPIFFE identity verified",
     );
 
     // Respond with our own identity

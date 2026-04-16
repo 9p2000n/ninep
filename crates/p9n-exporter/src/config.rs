@@ -13,6 +13,11 @@ pub struct ExporterConfig {
     pub session_ttl: Duration,
     /// Session store GC interval (default: 60s).
     pub session_gc_interval: Duration,
+    /// Background heartbeat interval for subsystem stats logging (default: 30s).
+    /// A single tokio task ticks at this interval and emits a log line for the
+    /// session store, lease manager, and watch manager — even when idle. Set
+    /// log filter to `p9n_exporter=debug` to see them.
+    pub heartbeat_interval: Duration,
     /// Watch event channel capacity per connection (default: 256).
     pub watch_channel_capacity: usize,
     /// Maximum lease duration in seconds (default: 300).
@@ -45,6 +50,7 @@ impl Default for ExporterConfig {
             max_msize: 4 * 1024 * 1024,
             session_ttl: Duration::from_secs(300),
             session_gc_interval: Duration::from_secs(60),
+            heartbeat_interval: Duration::from_secs(30),
             watch_channel_capacity: 256,
             max_lease_duration: 300,
             max_cap_token_ttl: 86400,

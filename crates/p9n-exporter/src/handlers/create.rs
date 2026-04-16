@@ -6,7 +6,7 @@ use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::join_err;
+use crate::util::{join_err, unknown_fid};
 
 /// Handle Tlcreate: create and open a new file.
 pub async fn handle_lcreate<B: Backend>(
@@ -25,12 +25,15 @@ pub async fn handle_lcreate<B: Backend>(
         return Err("expected Lcreate message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("lcreate: fid={fid} name={name} flags={flags:#x} mode={mode:#o}");
+    tracing::debug!(
+        tag, fid,
+        name = %name,
+        flags = format_args!("{:#x}", flags),
+        mode = format_args!("{:#o}", mode),
+        "Tlcreate received",
+    );
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tlcreate"))?;
     let dir_path = fid_state.path.clone();
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
@@ -44,6 +47,7 @@ pub async fn handle_lcreate<B: Backend>(
     let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
 
     let ctx_clone = ctx.clone();
+    let name_for_log = name.clone();
     let (owned_handle, qid, resolved_path) = tokio::task::spawn_blocking(move || {
         let result = ctx_clone.backend.lcreate(&dir_path, &name, flags, mode)?;
         if uid != 0 || gid != 0 {
@@ -65,6 +69,15 @@ pub async fn handle_lcreate<B: Backend>(
             handle: Some(Arc::new(owned_handle)),
             is_dir: false,
         },
+    );
+
+    tracing::debug!(
+        tag, fid,
+        name = %name_for_log,
+        qid_path = qid.path,
+        iounit,
+        uid, gid,
+        "Tlcreate result",
     );
 
     Ok(Fcall {
@@ -91,12 +104,14 @@ pub async fn handle_symlink<B: Backend>(
         return Err("expected Symlink message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("symlink: fid={fid} name={name} target={symtgt}");
+    tracing::debug!(
+        tag, fid,
+        name = %name,
+        target = %symtgt,
+        "Tsymlink received",
+    );
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tsymlink"))?;
     let dir_path = fid_state.path.clone();
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
@@ -108,6 +123,7 @@ pub async fn handle_symlink<B: Backend>(
     let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
 
     let ctx_clone = ctx.clone();
+    let name_for_log = name.clone();
     let (qid, _resolved_path) = tokio::task::spawn_blocking(move || {
         let (qid, resolved_path) = ctx_clone.backend.symlink(&dir_path, &name, &symtgt)?;
         if uid != 0 || gid != 0 {
@@ -117,6 +133,14 @@ pub async fn handle_symlink<B: Backend>(
     })
     .await
     .map_err(join_err)??;
+
+    tracing::debug!(
+        tag, fid,
+        name = %name_for_log,
+        qid_path = qid.path,
+        uid, gid,
+        "Tsymlink result",
+    );
 
     Ok(Fcall {
         size: 0,
@@ -136,12 +160,9 @@ pub async fn handle_link<B: Backend>(
         return Err("expected Link message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("link: dfid={dfid} fid={fid} name={name}");
+    tracing::debug!(tag, dfid, fid, name = %name, "Tlink received");
 
-    let dfid_state = session
-        .fids
-        .get(dfid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown dfid"))?;
+    let dfid_state = session.fids.get(dfid).ok_or_else(|| unknown_fid(dfid, "Tlink"))?;
     let dir_path = dfid_state.path.clone();
     let dir_qid_path = dfid_state.qid.path;
     drop(dfid_state);
@@ -149,19 +170,19 @@ pub async fn handle_link<B: Backend>(
     // Break leases on the parent directory (its contents are changing).
     ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tlink"))?;
     let target_path = fid_state.path.clone();
     drop(fid_state);
 
     let ctx = ctx.clone();
+    let name_for_log = name.clone();
     tokio::task::spawn_blocking(move || {
         ctx.backend.link(&target_path, &dir_path, &name)
     })
     .await
     .map_err(join_err)??;
+
+    tracing::debug!(tag, dfid, fid, name = %name_for_log, "Tlink result");
 
     Ok(Fcall {
         size: 0,

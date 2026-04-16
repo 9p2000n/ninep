@@ -9,4 +9,5 @@ pub mod rdma_rpc;
 pub mod rpc_client;
 pub mod push_receiver;
 pub mod shutdown;
+pub mod logging;
 pub mod fuse;

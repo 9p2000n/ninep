@@ -7,14 +7,19 @@ pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) -> Hand
     let Msg::Clunk { fid } = fc.msg else {
         return Err("expected Clunk message".into());
     };
-    tracing::trace!("clunk: fid={fid}");
-
-    session.fids.remove(fid);
+    let tag = fc.tag;
+    let removed = session.fids.remove(fid).is_some();
+    tracing::debug!(
+        tag, fid,
+        removed,
+        fids_total = session.fids.len(),
+        "Tclunk",
+    );
 
     Ok(Fcall {
         size: 0,
         msg_type: MsgType::Rclunk,
-        tag: fc.tag,
+        tag,
         msg: Msg::Empty,
     })
 }

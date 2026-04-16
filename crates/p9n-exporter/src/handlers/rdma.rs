@@ -12,6 +12,7 @@ use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
+use crate::util::unknown_fid;
 
 /// Handle Trdmatoken: register client's RDMA buffer for a fid.
 ///
@@ -34,29 +35,26 @@ pub fn handle<H: Send + Sync + 'static>(
     else {
         return Err("expected Rdmatoken message".into());
     };
+    let tag = fc.tag;
+    tracing::debug!(
+        tag, fid,
+        direction,
+        rkey,
+        addr = format_args!("{:#x}", addr),
+        length,
+        "Trdmatoken received",
+    );
 
     // Validate direction: 0 = READ, 1 = WRITE.
     if direction > 1 {
+        tracing::debug!(tag, fid, direction, "Trdmatoken rejected: invalid direction");
         return Err(format!("invalid RDMA direction: {direction}").into());
     }
 
     // Validate fid exists.
     if !session.fids.contains(fid) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("fid {fid} not found"),
-        )
-        .into());
+        return Err(unknown_fid(fid, "Trdmatoken").into());
     }
-
-    tracing::debug!(
-        fid,
-        direction,
-        rkey,
-        addr = format!("{addr:#x}"),
-        length,
-        "RDMA token registered"
-    );
 
     // Store the client's RDMA token for this fid.
     session.rdma_tokens.insert(
@@ -69,6 +67,16 @@ pub fn handle<H: Send + Sync + 'static>(
         },
     );
 
+    tracing::info!(
+        tag, fid,
+        direction,
+        rkey,
+        addr = format_args!("{:#x}", addr),
+        length,
+        active_tokens = session.rdma_tokens.len(),
+        "Trdmatoken registered",
+    );
+
     // Respond with server's RDMA info. For now, we return zeros since
     // the server uses its own MrPool internally and doesn't expose its
     // buffer addresses to the client. The client only needs to know that
@@ -79,7 +87,7 @@ pub fn handle<H: Send + Sync + 'static>(
     Ok(Fcall {
         size: 0,
         msg_type: MsgType::Rrdmatoken,
-        tag: fc.tag,
+        tag,
         msg: Msg::Rrdmatoken {
             rkey: 0,
             addr: 0,

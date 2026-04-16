@@ -20,7 +20,7 @@ pub fn handle<B: Backend>(
 ) -> HandlerResult {
     let Msg::Attach {
         fid,
-        afid: _,
+        afid,
         uname,
         aname,
     } = fc.msg
@@ -28,23 +28,45 @@ pub fn handle<B: Backend>(
         return Err("expected Attach message".into());
     };
 
+    let fid_in_use = session.fids.contains(fid);
+    tracing::debug!(
+        fid,
+        afid,
+        uname = %uname,
+        aname = %aname,
+        fid_in_use,
+        "Tattach received",
+    );
+
     // Resolve the root directory based on SPIFFE identity
     let user_root = ctx.access.resolve_root(session.spiffe_id.as_deref());
 
     // If aname is non-empty, use it as a sub-path within the user's root
     let attach_root = if aname.is_empty() {
+        tracing::debug!(user_root = %user_root.display(), "Tattach using user root (aname empty)");
         user_root.clone()
     } else {
         let sub = user_root.join(&aname);
         // Verify the sub-path doesn't escape the user's root via backend resolve
         let canonical = sub.canonicalize().unwrap_or(sub.clone());
         if !canonical.starts_with(&user_root) {
+            tracing::warn!(
+                user_root = %user_root.display(),
+                attempted = %sub.display(),
+                canonical = %canonical.display(),
+                "Tattach rejected: aname escapes user root",
+            );
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "aname escapes user root",
             )
             .into());
         }
+        tracing::debug!(
+            user_root = %user_root.display(),
+            attach_root = %canonical.display(),
+            "Tattach resolved aname within user root",
+        );
         canonical
     };
 
@@ -62,9 +84,14 @@ pub fn handle<B: Backend>(
     );
 
     tracing::info!(
-        "attach fid={fid} uname={uname} aname={aname} spiffe={} root={}",
-        session.spiffe_id.as_deref().unwrap_or("anonymous"),
-        attach_root.display()
+        fid,
+        uname = %uname,
+        aname = %aname,
+        root = %attach_root.display(),
+        qid_path = qid.path,
+        qid_version = qid.version,
+        fids_total = session.fids.len(),
+        "Tattach completed",
     );
 
     Ok(Fcall {

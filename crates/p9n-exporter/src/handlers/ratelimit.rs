@@ -16,6 +16,13 @@ pub fn handle<B: Backend>(session: &Session<B::Handle>, ctx: &Arc<SharedCtx<B>>,
         return Err("expected Ratelimit".into());
     };
     let tag = fc.tag;
+    tracing::debug!(
+        tag, fid,
+        requested_iops = iops,
+        requested_bps = bps,
+        enable_rate_limit = ctx.config.enable_rate_limit,
+        "Tratelimit received",
+    );
 
     // Cap to server-configured maximums.
     let effective_iops = if iops > 0 { iops.min(ctx.config.max_iops) } else { 0 };
@@ -23,16 +30,24 @@ pub fn handle<B: Backend>(session: &Session<B::Handle>, ctx: &Arc<SharedCtx<B>>,
 
     if ctx.config.enable_rate_limit && (effective_iops > 0 || effective_bps > 0) {
         session.rate_limits.insert(fid, RateLimiter::new(effective_iops, effective_bps));
-        tracing::debug!(
-            "rate limit set: fid={fid} iops={effective_iops} bps={effective_bps}"
+        tracing::info!(
+            tag, fid,
+            iops = effective_iops,
+            bps = effective_bps,
+            requested_iops = iops,
+            requested_bps = bps,
+            "Tratelimit set",
         );
     } else if ctx.config.enable_rate_limit && iops == 0 && bps == 0 {
         // iops=0 bps=0 means remove the limit.
-        session.rate_limits.remove(&fid);
-        tracing::debug!("rate limit removed: fid={fid}");
+        let removed = session.rate_limits.remove(&fid).is_some();
+        tracing::info!(tag, fid, removed, "Tratelimit removed");
     } else {
         tracing::debug!(
-            "rate limit acknowledged (not enforced): fid={fid} iops={iops} bps={bps}"
+            tag, fid,
+            requested_iops = iops,
+            requested_bps = bps,
+            "Tratelimit acknowledged (not enforced)",
         );
     }
 

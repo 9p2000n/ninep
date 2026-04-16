@@ -19,6 +19,7 @@ pub struct TcpRpcClient<W: AsyncWrite + Unpin + Send + 'static> {
     writer: Arc<Mutex<WriteHalf<W>>>,
     tags: TagAllocator,
     inflight: Arc<DashMap<u16, oneshot::Sender<Fcall>>>,
+    conn_id: u64,
 }
 
 impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
@@ -26,29 +27,41 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
     ///
     /// Spawns a background reader that demuxes by tag.
     /// Push messages (tag=NO_TAG) are sent to `push_tx`.
-    pub fn new(stream: W, push_tx: mpsc::Sender<Fcall>) -> Self {
+    pub fn new(stream: W, push_tx: mpsc::Sender<Fcall>, conn_id: u64) -> Self {
         let (reader, writer) = tokio::io::split(stream);
         let inflight: Arc<DashMap<u16, oneshot::Sender<Fcall>>> = Arc::new(DashMap::new());
+        tracing::debug!(conn_id, "TcpRpcClient starting background reader");
 
         // Background reader: demux by tag
         let inflight2 = inflight.clone();
         let push_tx2 = push_tx;
         tokio::spawn(async move {
+            tracing::trace!(conn_id, "TcpRpcClient reader started");
             let mut reader = reader;
             loop {
                 match framing::read_message(&mut reader).await {
                     Ok(fc) => {
+                        let mt_name = fc.msg_type.name();
                         if fc.tag == NO_TAG {
-                            tracing::trace!("tcp push received: type={}", fc.msg_type.name());
+                            tracing::trace!(conn_id, msg_type = mt_name, "tcp push received");
                             let _ = push_tx2.send(fc).await;
                         } else if let Some((_, tx)) = inflight2.remove(&fc.tag) {
-                            tracing::trace!("tcp response dispatched: tag={} type={}", fc.tag, fc.msg_type.name());
+                            tracing::trace!(
+                                conn_id, tag = fc.tag, msg_type = mt_name,
+                                "tcp response dispatched",
+                            );
                             let _ = tx.send(fc);
                         } else {
-                            tracing::warn!("tcp: response for unknown tag {}", fc.tag);
+                            tracing::warn!(
+                                conn_id, tag = fc.tag, msg_type = mt_name,
+                                "tcp response for unknown tag",
+                            );
                         }
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        tracing::debug!(conn_id, error = %e, "tcp reader exited");
+                        break;
+                    }
                 }
             }
         });
@@ -57,7 +70,13 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
             writer: Arc::new(Mutex::new(writer)),
             tags: TagAllocator::new(),
             inflight,
+            conn_id,
         }
+    }
+
+    /// The monotonic connection id attached to this client.
+    pub fn conn_id(&self) -> u64 {
+        self.conn_id
     }
 
     /// Check whether the TCP connection is likely alive.
@@ -96,7 +115,9 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
             msg,
         };
 
-        tracing::trace!("tcp rpc send: tag={tag} type={}", msg_type.name());
+        let mt_name = msg_type.name();
+        let conn_id = self.conn_id;
+        tracing::trace!(conn_id, tag, msg_type = mt_name, "tcp rpc send");
 
         let (tx, rx) = oneshot::channel();
         self.inflight.insert(tag, tx);
@@ -106,6 +127,7 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
             let mut writer = self.writer.lock().await;
             if let Err(e) = framing::write_message(&mut *writer, &fc).await {
                 self.inflight.remove(&tag);
+                tracing::debug!(conn_id, tag, msg_type = mt_name, error = %e, "tcp rpc send failed");
                 return Err(RpcError::Transport(e.into()));
             }
         }
@@ -115,18 +137,19 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
             .await
             .map_err(|_| {
                 self.inflight.remove(&tag);
-                tracing::debug!("tcp rpc timeout: tag={tag} type={}", msg_type.name());
+                tracing::warn!(conn_id, tag, msg_type = mt_name, timeout_secs = 30, "tcp rpc timeout");
                 RpcError::from("TCP RPC timeout (30s)")
             })?
             .map_err(|_| {
-                tracing::debug!("tcp rpc channel closed: tag={tag} type={}", msg_type.name());
+                tracing::debug!(conn_id, tag, msg_type = mt_name, "tcp rpc channel closed (connection lost)");
                 RpcError::from("TCP RPC channel closed (connection lost)")
             })?;
 
         tracing::trace!(
-            "tcp rpc recv: tag={tag} type={} resp={}",
-            msg_type.name(),
-            response.msg_type.name(),
+            conn_id, tag,
+            msg_type = mt_name,
+            resp = response.msg_type.name(),
+            "tcp rpc recv",
         );
 
         drop(guard);

@@ -7,7 +7,7 @@ use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::join_err;
+use crate::util::{join_err, unknown_fid};
 
 pub async fn handle<B: Backend>(
     session: &Session<B::Handle>,
@@ -31,17 +31,19 @@ async fn handle_xattrget<B: Backend>(
         return Err("expected Xattrget".into());
     };
     let tag = fc.tag;
-    tracing::trace!("xattrget: fid={fid} name={name}");
+    tracing::trace!(tag, fid, name = %name, "Txattrget received");
 
-    let fid_state = session.fids.get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Txattrget"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
     let ctx = ctx.clone();
+    let name_for_log = name.clone();
     let data = tokio::task::spawn_blocking(move || {
         ctx.backend.xattr_get(&path, &name)
     }).await.map_err(join_err)??;
+
+    tracing::trace!(tag, fid, name = %name_for_log, n = data.len(), "Txattrget result");
 
     Ok(Fcall {
         size: 0,
@@ -60,17 +62,26 @@ async fn handle_xattrset<B: Backend>(
         return Err("expected Xattrset".into());
     };
     let tag = fc.tag;
-    tracing::trace!("xattrset: fid={fid} name={name} len={}", data.len());
+    let data_len = data.len();
+    tracing::debug!(
+        tag, fid,
+        name = %name,
+        len = data_len,
+        flags = format_args!("{:#x}", flags),
+        "Txattrset received",
+    );
 
-    let fid_state = session.fids.get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Txattrset"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
     let ctx = ctx.clone();
+    let name_for_log = name.clone();
     tokio::task::spawn_blocking(move || {
         ctx.backend.xattr_set(&path, &name, &data, flags)
     }).await.map_err(join_err)??;
+
+    tracing::debug!(tag, fid, name = %name_for_log, len = data_len, "Txattrset result");
 
     Ok(Fcall {
         size: 0,
@@ -89,10 +100,9 @@ async fn handle_xattrlist<B: Backend>(
         return Err("expected Xattrlist".into());
     };
     let tag = fc.tag;
-    tracing::trace!("xattrlist: fid={fid} cookie={cookie} count={count}");
+    tracing::trace!(tag, fid, cookie, count, "Txattrlist received");
 
-    let fid_state = session.fids.get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Txattrlist"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
@@ -108,6 +118,7 @@ async fn handle_xattrlist<B: Backend>(
         .map(|s| String::from_utf8_lossy(s).into_owned())
         .collect();
 
+    let total = all_names.len();
     // Apply pagination: skip entries before cookie, limit to count
     let start = cookie as usize;
     let names: Vec<String> = all_names.into_iter()
@@ -117,6 +128,15 @@ async fn handle_xattrlist<B: Backend>(
 
     // Next cookie = start + returned count (0 if no more)
     let next_cookie = if names.is_empty() { 0 } else { (start + names.len()) as u64 };
+
+    tracing::trace!(
+        tag, fid,
+        cookie,
+        returned = names.len(),
+        next_cookie,
+        total,
+        "Txattrlist result",
+    );
 
     Ok(Fcall {
         size: 0,

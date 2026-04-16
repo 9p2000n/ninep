@@ -10,6 +10,13 @@ pub fn handle_caps<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) ->
         return Err("expected Caps message".into());
     };
 
+    tracing::debug!(
+        n_requested = client_caps.len(),
+        requested = ?client_caps,
+        transport = ?session.transport_kind,
+        "Tcaps received",
+    );
+
     // Build server capability set
     let mut server_caps = caps::CapSet::new();
     for cap in &[
@@ -44,7 +51,15 @@ pub fn handle_caps<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) ->
     session.set_caps(negotiated.clone());
 
     let result_caps: Vec<String> = negotiated.caps().to_vec();
-    tracing::debug!("negotiated {} capabilities", result_caps.len());
+    let dropped: Vec<&String> = client_caps.iter().filter(|c| !result_caps.contains(c)).collect();
+    tracing::info!(
+        n_requested = client_caps.len(),
+        n_server = server_caps.caps().len(),
+        n_negotiated = result_caps.len(),
+        negotiated = ?result_caps,
+        dropped = ?dropped,
+        "Tcaps negotiated",
+    );
 
     Ok(Fcall {
         size: 0,
@@ -62,13 +77,20 @@ pub fn handle_authneg<H: Send + Sync + 'static>(_session: &Session<H>, fc: Fcall
 
     // Server supports mTLS and SPIFFE-X.509 (both provided by the QUIC TLS handshake)
     let supported = [AUTH_MTLS, AUTH_SPIFFE_X509];
+    let matched = mechs.iter().any(|m| supported.contains(&m.as_str()));
     let selected = mechs
         .iter()
         .find(|m| supported.contains(&m.as_str()))
         .cloned()
         .unwrap_or_else(|| AUTH_MTLS.to_string());
 
-    tracing::debug!("auth mechanism selected: {selected}");
+    tracing::info!(
+        offered = ?mechs,
+        supported = ?supported,
+        selected = %selected,
+        fallback = !matched,
+        "Tauthneg negotiated",
+    );
 
     Ok(Fcall {
         size: 0,

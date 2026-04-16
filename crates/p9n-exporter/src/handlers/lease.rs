@@ -7,6 +7,7 @@ use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use crate::util::unknown_fid;
 
 static NEXT_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -23,10 +24,11 @@ pub fn handle<H: Send + Sync + 'static>(
             let Msg::Lease { fid, lease_type, duration } = fc.msg else {
                 return Err("expected Lease".into());
             };
+            tracing::debug!(tag, fid, lease_type, requested_duration = duration, "Tlease received");
+
             // Verify fid exists and get qid_path for the global lease registry
             let qid_path = {
-                let fid_state = session.fids.get(fid)
-                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+                let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tlease"))?;
                 fid_state.qid.path
             };
 
@@ -34,6 +36,12 @@ pub fn handle<H: Send + Sync + 'static>(
             match lease_mgr.try_grant(qid_path, lease_type, session.conn_id) {
                 GrantResult::Granted => {}
                 GrantResult::Conflict => {
+                    tracing::warn!(
+                        fid,
+                        qid_path,
+                        lease_type,
+                        "Tlease conflict: existing incompatible lease on this qid",
+                    );
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::WouldBlock,
                         "lease conflict",
@@ -43,6 +51,7 @@ pub fn handle<H: Send + Sync + 'static>(
 
             let lease_id = NEXT_LEASE_ID.fetch_add(1, Ordering::Relaxed);
             let effective_duration = duration.min(max_lease_duration);
+            let clamped = effective_duration < duration;
             let expiry = Instant::now() + Duration::from_secs(effective_duration as u64);
 
             // Store lease in session (per-connection state)
@@ -57,7 +66,17 @@ pub fn handle<H: Send + Sync + 'static>(
                 push_tx.clone(),
             );
 
-            tracing::debug!("lease granted: id={lease_id} fid={fid} type={lease_type} dur={effective_duration}s");
+            tracing::info!(
+                lease_id,
+                fid,
+                qid_path,
+                lease_type,
+                duration = effective_duration,
+                requested_duration = duration,
+                clamped,
+                active_leases = session.active_leases.len(),
+                "Tlease granted",
+            );
 
             Ok(Fcall {
                 size: 0, msg_type: MsgType::Rlease, tag,
@@ -73,11 +92,20 @@ pub fn handle<H: Send + Sync + 'static>(
             let effective_duration = duration.min(max_lease_duration);
             match session.active_leases.get_mut(&lease_id) {
                 Some(mut entry) => {
+                    let prev_duration = entry.3;
                     entry.2 = Instant::now() + Duration::from_secs(effective_duration as u64);
                     entry.3 = effective_duration;
-                    tracing::debug!("lease renewed: id={lease_id} dur={effective_duration}s");
+                    tracing::debug!(
+                        lease_id,
+                        fid = entry.0,
+                        prev_duration,
+                        new_duration = effective_duration,
+                        requested_duration = duration,
+                        "Tleaserenew updated",
+                    );
                 }
                 None => {
+                    tracing::debug!(lease_id, "Tleaserenew rejected: lease not found");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         format!("lease {lease_id} not found"),
@@ -96,9 +124,14 @@ pub fn handle<H: Send + Sync + 'static>(
             };
 
             // Remove from session and global lease manager
-            session.active_leases.remove(&lease_id);
+            let was_present = session.active_leases.remove(&lease_id).is_some();
             lease_mgr.acknowledge(lease_id);
-            tracing::debug!("lease ack: id={lease_id}");
+            tracing::debug!(
+                lease_id,
+                was_present,
+                active_leases = session.active_leases.len(),
+                "Tleaseack",
+            );
 
             Ok(Fcall {
                 size: 0, msg_type: MsgType::Rleaseack, tag,

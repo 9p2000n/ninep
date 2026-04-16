@@ -52,6 +52,10 @@ struct Args {
     #[arg(long, default_value = "")]
     aname: String,
 
+    /// Maximum OS threads for blocking I/O (default: 64)
+    #[arg(long, default_value = "64")]
+    blocking_threads: usize,
+
     /// SPIRE Agent socket path for SPIFFE Workload API
     /// (e.g., /run/spire/agent.sock). When set, --cert/--key/--ca are not required.
     #[cfg(feature = "workload-api")]
@@ -59,11 +63,19 @@ struct Args {
     spiffe_agent_socket: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init();
     let args = Args::parse();
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .max_blocking_threads(args.blocking_threads)
+        .build()?;
+
+    rt.block_on(async_main(args))
+}
+
+async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let auth = load_auth(&args).await?;
     let identity = auth.identity.clone();
     let trust_store = auth.trust_store.clone();
@@ -81,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Build the reconnecting RPC client. The push_tx is shared: on reconnect
     // a clone is passed to the new QuicRpcClient/TcpRpcClient, so the push
     // receiver task keeps working across reconnections without restarting.
+    let initial_conn_id = importer.rpc.conn_id();
     let rpc = Arc::new(RpcClient::new(
         importer.rpc.clone(),
         transport,
@@ -90,6 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         importer.push_tx.clone(),
         identity,
         trust_store,
+        initial_conn_id,
     ));
 
     let (fs, shutdown_handle) = P9Filesystem::new(rpc, importer);
@@ -107,7 +121,7 @@ fn init() {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls CryptoProvider");
-    tracing_subscriber::fmt::init();
+    p9n_importer::logging::init();
 }
 
 // ── Authentication ──
@@ -158,15 +172,18 @@ async fn mount(
     let mut mount_options = MountOptions::default();
     mount_options.fs_name("9p");
 
-    tracing::info!("mounting at {path}");
+    let euid = unsafe { libc::geteuid() };
+    let privileged = euid == 0;
+    tracing::info!(path, euid, privileged, "FUSE mounting");
 
     let session = Session::new(mount_options);
     // root can mount directly via /dev/fuse; non-root needs fusermount3
-    let handle = if unsafe { libc::geteuid() } == 0 {
+    let handle = if privileged {
         session.mount(fs, path).await?
     } else {
         session.mount_with_unprivileged(fs, path).await?
     };
+    tracing::info!(path, "FUSE mount succeeded");
     Ok(handle)
 }
 

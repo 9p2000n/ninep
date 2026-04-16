@@ -21,6 +21,9 @@ pub struct QuicRpcClient {
     inflight: Arc<DashMap<u16, oneshot::Sender<Fcall>>>,
     /// Push messages (tag=0xFFFF) forwarded to this channel.
     push_tx: mpsc::Sender<Fcall>,
+    /// Monotonic connection id — attached to every log emitted by this client
+    /// so requests from before/after a reconnect can be distinguished.
+    conn_id: u64,
 }
 
 impl QuicRpcClient {
@@ -28,22 +31,28 @@ impl QuicRpcClient {
     ///
     /// Spawns a background task that reads datagrams and dispatches by tag.
     /// Push messages (tag=NO_TAG) are sent to `push_tx`.
-    pub fn new(conn: quinn::Connection, push_tx: mpsc::Sender<Fcall>) -> Self {
+    pub fn new(conn: quinn::Connection, push_tx: mpsc::Sender<Fcall>, conn_id: u64) -> Self {
         let inflight: Arc<DashMap<u16, oneshot::Sender<Fcall>>> = Arc::new(DashMap::new());
+        tracing::debug!(conn_id, "QuicRpcClient starting background tasks");
 
         // Background: read datagrams and dispatch by tag
         let conn2 = conn.clone();
         let inflight2 = inflight.clone();
         let push_tx2 = push_tx.clone();
         tokio::spawn(async move {
+            tracing::trace!(conn_id, "QuicRpcClient datagram reader started");
             loop {
                 match conn2.read_datagram().await {
                     Ok(data) => {
-                        if let Ok(fc) = framing::decode(&data) {
-                            dispatch_response(&inflight2, &push_tx2, fc).await;
+                        match framing::decode(&data) {
+                            Ok(fc) => dispatch_response(&inflight2, &push_tx2, fc, conn_id).await,
+                            Err(e) => tracing::debug!(conn_id, error = %e, "datagram decode failed"),
                         }
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        tracing::debug!(conn_id, error = %e, "datagram reader exited");
+                        break;
+                    }
                 }
             }
         });
@@ -55,22 +64,36 @@ impl QuicRpcClient {
         let push_tx3 = push_tx.clone();
         let stream_limit = Arc::new(Semaphore::new(64));
         tokio::spawn(async move {
+            tracing::trace!(conn_id, "QuicRpcClient uni-stream acceptor started");
             loop {
                 match conn3.accept_uni().await {
                     Ok(mut recv) => {
                         let tx = push_tx3.clone();
                         let permit = match stream_limit.clone().acquire_owned().await {
                             Ok(p) => p,
-                            Err(_) => break, // semaphore closed
+                            Err(_) => {
+                                tracing::debug!(conn_id, "uni-stream acceptor exiting (semaphore closed)");
+                                break;
+                            }
                         };
                         tokio::spawn(async move {
+                            let mut n = 0usize;
                             while let Ok(fc) = framing::read_message(&mut recv).await {
+                                n += 1;
+                                tracing::trace!(
+                                    conn_id, msg_type = fc.msg_type.name(), tag = fc.tag,
+                                    "uni-stream push received",
+                                );
                                 let _ = tx.send(fc).await;
                             }
+                            tracing::trace!(conn_id, pushes = n, "uni-stream closed");
                             drop(permit);
                         });
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        tracing::debug!(conn_id, error = %e, "uni-stream acceptor exited");
+                        break;
+                    }
                 }
             }
         });
@@ -80,7 +103,13 @@ impl QuicRpcClient {
             tags: TagAllocator::new(),
             inflight,
             push_tx,
+            conn_id,
         }
+    }
+
+    /// The monotonic connection id attached to this client.
+    pub fn conn_id(&self) -> u64 {
+        self.conn_id
     }
 
     /// Send a request and wait for the matching response.
@@ -102,7 +131,9 @@ impl QuicRpcClient {
             msg,
         };
 
-        tracing::trace!("rpc send: tag={tag} type={}", msg_type.name());
+        let mt_name = msg_type.name();
+        let conn_id = self.conn_id;
+        tracing::trace!(conn_id, tag, msg_type = mt_name, "rpc send");
 
         // Register inflight before sending (avoid race with response)
         let (tx, rx) = oneshot::channel();
@@ -111,6 +142,7 @@ impl QuicRpcClient {
         // Send via appropriate channel
         if let Err(e) = self.send_request(&fc).await {
             self.inflight.remove(&tag);
+            tracing::debug!(conn_id, tag, msg_type = mt_name, error = %e, "rpc send failed");
             return Err(RpcError::Transport(e.into()));
         }
 
@@ -119,18 +151,19 @@ impl QuicRpcClient {
             .await
             .map_err(|_| {
                 self.inflight.remove(&tag);
-                tracing::debug!("rpc timeout: tag={tag} type={}", msg_type.name());
+                tracing::warn!(conn_id, tag, msg_type = mt_name, timeout_secs = 30, "rpc timeout");
                 RpcError::from("RPC timeout (30s)")
             })?
             .map_err(|_| {
-                tracing::debug!("rpc channel closed: tag={tag} type={}", msg_type.name());
+                tracing::debug!(conn_id, tag, msg_type = mt_name, "rpc channel closed (connection lost)");
                 RpcError::from("RPC channel closed (connection lost)")
             })?;
 
         tracing::trace!(
-            "rpc recv: tag={tag} type={} resp={}",
-            msg_type.name(),
-            response.msg_type.name(),
+            conn_id, tag,
+            msg_type = mt_name,
+            resp = response.msg_type.name(),
+            "rpc recv",
         );
 
         // Tag is freed when guard drops (here, at end of scope)
@@ -150,18 +183,28 @@ impl QuicRpcClient {
         fc: &Fcall,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let class = classify(fc.msg_type);
+        let conn_id = self.conn_id;
         match class {
             MessageClass::Metadata => {
                 // Try datagram, fall back to stream if too large
                 if !datagram::send_datagram(&self.conn, fc).await? {
-                    tracing::trace!("routing: tag={} type={} datagram→stream (too large)", fc.tag, fc.msg_type.name());
+                    tracing::trace!(
+                        conn_id, tag = fc.tag, msg_type = fc.msg_type.name(),
+                        "routing: datagram→stream (too large)",
+                    );
                     self.send_on_stream(fc).await?;
                 } else {
-                    tracing::trace!("routing: tag={} type={} via datagram", fc.tag, fc.msg_type.name());
+                    tracing::trace!(
+                        conn_id, tag = fc.tag, msg_type = fc.msg_type.name(),
+                        "routing: datagram",
+                    );
                 }
             }
             MessageClass::Data | MessageClass::Push => {
-                tracing::trace!("routing: tag={} type={} via stream", fc.tag, fc.msg_type.name());
+                tracing::trace!(
+                    conn_id, tag = fc.tag, msg_type = fc.msg_type.name(),
+                    "routing: stream",
+                );
                 self.send_on_stream(fc).await?;
             }
         }
@@ -180,9 +223,11 @@ impl QuicRpcClient {
         // Spawn a task to read the response and dispatch it
         let inflight = self.inflight.clone();
         let push_tx = self.push_tx.clone();
+        let conn_id = self.conn_id;
         tokio::spawn(async move {
-            if let Ok(response) = framing::read_message(&mut recv).await {
-                dispatch_response(&inflight, &push_tx, response).await;
+            match framing::read_message(&mut recv).await {
+                Ok(response) => dispatch_response(&inflight, &push_tx, response, conn_id).await,
+                Err(e) => tracing::debug!(conn_id, error = %e, "stream response read failed"),
             }
         });
 
@@ -214,14 +259,16 @@ async fn dispatch_response(
     inflight: &DashMap<u16, oneshot::Sender<Fcall>>,
     push_tx: &mpsc::Sender<Fcall>,
     fc: Fcall,
+    conn_id: u64,
 ) {
+    let mt_name = fc.msg_type.name();
     if fc.tag == NO_TAG {
-        tracing::trace!("push received: type={}", fc.msg_type.name());
+        tracing::trace!(conn_id, msg_type = mt_name, "push received");
         let _ = push_tx.send(fc).await;
     } else if let Some((_, tx)) = inflight.remove(&fc.tag) {
-        tracing::trace!("response dispatched: tag={} type={}", fc.tag, fc.msg_type.name());
+        tracing::trace!(conn_id, tag = fc.tag, msg_type = mt_name, "response dispatched");
         let _ = tx.send(fc);
     } else {
-        tracing::warn!("response for unknown tag {}", fc.tag);
+        tracing::warn!(conn_id, tag = fc.tag, msg_type = mt_name, "response for unknown tag");
     }
 }

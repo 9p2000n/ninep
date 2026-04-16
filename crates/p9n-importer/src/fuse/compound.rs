@@ -57,13 +57,14 @@ pub async fn send_compound(
     rpc: &RpcClient,
     ops: Vec<SubOp>,
 ) -> Result<Vec<SubOp>, RpcError> {
-    tracing::trace!("compound send: {} sub-op(s)", ops.len());
+    let nops = ops.len();
+    tracing::trace!(nops, "compound send");
     let resp = rpc
         .call(MsgType::Tcompound, Msg::Compound { ops })
         .await?;
     match resp.msg {
         Msg::Rcompound { results } => {
-            tracing::trace!("compound recv: {} result(s)", results.len());
+            tracing::trace!(nops, nresults = results.len(), "compound recv");
             Ok(results)
         }
         _ => Err(RpcError::from("expected Rcompound response")),

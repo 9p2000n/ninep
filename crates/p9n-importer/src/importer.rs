@@ -8,7 +8,19 @@ use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::*;
 use p9n_proto::wire::Qid;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
+use tracing::Instrument;
+
+/// Monotonic connection id — bumped on every successful (re)connect so that
+/// logs from before/after a reconnect can be distinguished by `conn_id`.
+static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Allocate a new connection id. Exposed so the reconnect wrapper uses the
+/// same counter as the initial connect path.
+pub fn next_conn_id() -> u64 {
+    NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Unified RPC handle that delegates to QUIC, TCP+TLS, or RDMA transport.
 pub enum RpcHandle {
@@ -53,6 +65,16 @@ impl RpcHandle {
         }
     }
 
+    /// The monotonic conn_id of the underlying transport client.
+    pub fn conn_id(&self) -> u64 {
+        match self {
+            Self::Quic(rpc) => rpc.conn_id(),
+            Self::Tcp(rpc) => rpc.conn_id(),
+            #[cfg(feature = "rdma")]
+            Self::Rdma(rpc) => rpc.conn_id(),
+        }
+    }
+
     /// Register an RDMA token for a fid (no-op for QUIC/TCP).
     ///
     /// When using RDMA transport, this allocates a buffer and tells the
@@ -61,7 +83,7 @@ impl RpcHandle {
         #[cfg(feature = "rdma")]
         if let Self::Rdma(rpc) = self {
             if let Err(e) = rpc.register_rdma_token(fid, direction).await {
-                tracing::debug!("RDMA token registration failed for fid={fid}: {e}");
+                tracing::debug!(fid, direction, error = %e, "RDMA token registration failed");
             }
         }
         let _ = (fid, direction); // suppress unused warnings for non-rdma builds
@@ -136,12 +158,14 @@ impl Importer {
         addr: &str,
         hostname: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let conn_id = next_conn_id();
         let server_addr: std::net::SocketAddr = addr.parse()?;
+        tracing::info!(conn_id, %addr, hostname, "connecting via QUIC");
         let conn = p9n_transport::quic::connect::connect(endpoint, server_addr, hostname).await?;
-        tracing::info!("connected to {addr}");
+        tracing::info!(conn_id, %addr, hostname, transport = "quic", "connected");
 
         let (push_tx, push_rx) = mpsc::channel(64);
-        let rpc = Arc::new(QuicRpcClient::new(conn.clone(), push_tx.clone()));
+        let rpc = Arc::new(QuicRpcClient::new(conn.clone(), push_tx.clone(), conn_id));
 
         let opts = ConnectOpts {
             addr: addr.to_string(),
@@ -149,33 +173,31 @@ impl Importer {
             ..Default::default()
         };
 
-        // Version negotiation
-        tracing::debug!("handshake: negotiating version");
-        let msize = negotiate_version(&*rpc, &opts).await?;
-
-        // Capability negotiation (request CAP_QUIC_MULTI on QUIC)
-        tracing::debug!("handshake: negotiating caps");
-        let negotiated_caps = negotiate_caps(&*rpc, true).await?;
-
-        // If the server agreed to multistream, bind a persistent push
-        // stream. Failure is not fatal — the server falls back to
-        // ephemeral per-push uni-streams.
-        if negotiated_caps.has(CAP_QUIC_MULTI) {
-            let _ = bind_push_stream(&*rpc).await;
-        }
-
-        // Attach
-        tracing::debug!("handshake: attaching");
         let root_fid = 0u32;
-        let root_qid = do_attach(&*rpc, root_fid, &opts).await?;
-
-        // Session
-        let session_key = if negotiated_caps.has(CAP_SESSION) {
-            let key = derive_session_key(&conn)?;
-            establish_session(&*rpc, key).await?
-        } else {
-            None
-        };
+        let (msize, negotiated_caps, root_qid, session_key) = async {
+            let msize = negotiate_version(&*rpc, &opts).await?;
+            let caps = negotiate_caps(&*rpc, true).await?;
+            if caps.has(CAP_QUIC_MULTI) {
+                let _ = bind_push_stream(&*rpc).await;
+            }
+            let root_qid = do_attach(&*rpc, root_fid, &opts).await?;
+            let session_key = if caps.has(CAP_SESSION) {
+                let key = derive_session_key(&conn)?;
+                establish_session(&*rpc, key).await?
+            } else {
+                tracing::debug!("skipping Tsession (CAP_SESSION not negotiated)");
+                None
+            };
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((msize, caps, root_qid, session_key))
+        }
+        .instrument(tracing::info_span!(
+            "handshake",
+            conn_id,
+            transport = "quic",
+            addr = %addr,
+            hostname,
+        ))
+        .await?;
 
         Ok(Self {
             rpc: Arc::new(RpcHandle::Quic(rpc)),
@@ -196,15 +218,17 @@ impl Importer {
         hostname: &str,
         auth: p9n_auth::SpiffeAuth,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let conn_id = next_conn_id();
         let tls_config = p9n_auth::spiffe::tls_config::client_config(
             &auth.identity,
             &auth.trust_store,
         )?;
         let server_addr: std::net::SocketAddr = addr.parse()?;
+        tracing::info!(conn_id, %addr, hostname, "connecting via TCP+TLS");
         let stream = p9n_transport::tcp::config::client_connect(
             server_addr, hostname, tls_config,
         ).await?;
-        tracing::info!("TCP+TLS connected to {addr}");
+        tracing::info!(conn_id, %addr, hostname, transport = "tcp", "connected");
 
         // Derive session key from TLS connection BEFORE splitting the stream
         let session_key_bytes = {
@@ -217,7 +241,7 @@ impl Importer {
         };
 
         let (push_tx, push_rx) = mpsc::channel(64);
-        let rpc = Arc::new(TcpRpcClient::new(stream, push_tx.clone()));
+        let rpc = Arc::new(TcpRpcClient::new(stream, push_tx.clone(), conn_id));
 
         let opts = ConnectOpts {
             addr: addr.to_string(),
@@ -225,18 +249,27 @@ impl Importer {
             ..Default::default()
         };
 
-        let msize = negotiate_version(&*rpc, &opts).await?;
-
-        let negotiated_caps = negotiate_caps(&*rpc, false).await?;
-
         let root_fid = 0u32;
-        let root_qid = do_attach(&*rpc, root_fid, &opts).await?;
-
-        let session_key = if negotiated_caps.has(CAP_SESSION) {
-            establish_session(&*rpc, session_key_bytes).await?
-        } else {
-            None
-        };
+        let (msize, negotiated_caps, root_qid, session_key) = async {
+            let msize = negotiate_version(&*rpc, &opts).await?;
+            let caps = negotiate_caps(&*rpc, false).await?;
+            let root_qid = do_attach(&*rpc, root_fid, &opts).await?;
+            let session_key = if caps.has(CAP_SESSION) {
+                establish_session(&*rpc, session_key_bytes).await?
+            } else {
+                tracing::debug!("skipping Tsession (CAP_SESSION not negotiated)");
+                None
+            };
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((msize, caps, root_qid, session_key))
+        }
+        .instrument(tracing::info_span!(
+            "handshake",
+            conn_id,
+            transport = "tcp",
+            addr = %addr,
+            hostname,
+        ))
+        .await?;
 
         Ok(Self {
             rpc: Arc::new(RpcHandle::Tcp(rpc)),
@@ -259,6 +292,7 @@ impl Importer {
         auth: p9n_auth::SpiffeAuth,
         device_name: Option<&str>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let conn_id = next_conn_id();
         let tls_config = p9n_auth::spiffe::tls_config::client_config(
             &auth.identity,
             &auth.trust_store,
@@ -267,15 +301,17 @@ impl Importer {
         let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
         let server_name = rustls::pki_types::ServerName::try_from(hostname.to_string())?;
 
+        tracing::info!(conn_id, %addr, hostname, device = ?device_name, "connecting via RDMA");
+
         let (rdma_conn, session_key_bytes) =
             p9n_transport::rdma::config::client_connect(
                 server_addr, &tls_connector, server_name, device_name,
             )
             .await?;
-        tracing::info!("RDMA connected to {addr}");
+        tracing::info!(conn_id, %addr, hostname, transport = "rdma", "connected");
 
         let (push_tx, push_rx) = mpsc::channel(64);
-        let rpc = Arc::new(RdmaRpcClient::new(rdma_conn, push_tx.clone()));
+        let rpc = Arc::new(RdmaRpcClient::new(rdma_conn, push_tx.clone(), conn_id));
 
         let opts = ConnectOpts {
             addr: addr.to_string(),
@@ -283,16 +319,27 @@ impl Importer {
             ..Default::default()
         };
 
-        let msize = negotiate_version(&*rpc, &opts).await?;
-        let negotiated_caps = negotiate_caps(&*rpc, false).await?;
         let root_fid = 0u32;
-        let root_qid = do_attach(&*rpc, root_fid, &opts).await?;
-
-        let session_key = if negotiated_caps.has(CAP_SESSION) {
-            establish_session(&*rpc, session_key_bytes).await?
-        } else {
-            None
-        };
+        let (msize, negotiated_caps, root_qid, session_key) = async {
+            let msize = negotiate_version(&*rpc, &opts).await?;
+            let caps = negotiate_caps(&*rpc, false).await?;
+            let root_qid = do_attach(&*rpc, root_fid, &opts).await?;
+            let session_key = if caps.has(CAP_SESSION) {
+                establish_session(&*rpc, session_key_bytes).await?
+            } else {
+                tracing::debug!("skipping Tsession (CAP_SESSION not negotiated)");
+                None
+            };
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((msize, caps, root_qid, session_key))
+        }
+        .instrument(tracing::info_span!(
+            "handshake",
+            conn_id,
+            transport = "rdma",
+            addr = %addr,
+            hostname,
+        ))
+        .await?;
 
         Ok(Self {
             rpc: Arc::new(RpcHandle::Rdma(rpc)),
@@ -314,6 +361,7 @@ impl Importer {
 pub struct ReconnectResult {
     pub rpc: Arc<RpcHandle>,
     pub session_key: Option<[u8; 16]>,
+    pub conn_id: u64,
 }
 
 /// Re-establish a QUIC connection using an existing endpoint.
@@ -327,11 +375,13 @@ pub async fn reconnect_quic(
     hostname: &str,
     push_tx: mpsc::Sender<Fcall>,
 ) -> Result<ReconnectResult, Box<dyn std::error::Error + Send + Sync>> {
+    let conn_id = next_conn_id();
     let server_addr: std::net::SocketAddr = addr.parse()?;
+    tracing::info!(conn_id, %addr, hostname, "reconnecting via QUIC");
     let conn = p9n_transport::quic::connect::connect(endpoint, server_addr, hostname).await?;
-    tracing::info!("reconnected to {addr}");
+    tracing::info!(conn_id, %addr, hostname, transport = "quic", "reconnected");
 
-    let rpc = Arc::new(QuicRpcClient::new(conn.clone(), push_tx));
+    let rpc = Arc::new(QuicRpcClient::new(conn.clone(), push_tx, conn_id));
 
     let opts = ConnectOpts {
         addr: addr.to_string(),
@@ -339,21 +389,30 @@ pub async fn reconnect_quic(
         ..Default::default()
     };
 
-    negotiate_version(&*rpc, &opts).await?;
-    let negotiated_caps = negotiate_caps(&*rpc, true).await?;
-    if negotiated_caps.has(CAP_QUIC_MULTI) {
-        let _ = bind_push_stream(&*rpc).await;
-    }
-    do_attach(&*rpc, 0, &opts).await?;
-
-    let session_key = {
+    let session_key = async {
+        negotiate_version(&*rpc, &opts).await?;
+        let caps = negotiate_caps(&*rpc, true).await?;
+        if caps.has(CAP_QUIC_MULTI) {
+            let _ = bind_push_stream(&*rpc).await;
+        }
+        do_attach(&*rpc, 0, &opts).await?;
         let key = derive_session_key(&conn)?;
-        establish_session(&*rpc, key).await?
-    };
+        establish_session(&*rpc, key).await
+    }
+    .instrument(tracing::info_span!(
+        "handshake",
+        conn_id,
+        transport = "quic",
+        addr = %addr,
+        hostname,
+        reconnect = true,
+    ))
+    .await?;
 
     Ok(ReconnectResult {
         rpc: Arc::new(RpcHandle::Quic(rpc)),
         session_key,
+        conn_id,
     })
 }
 
@@ -367,10 +426,12 @@ pub async fn reconnect_tcp(
     trust_store: &p9n_auth::spiffe::trust_bundle::TrustBundleStore,
     push_tx: mpsc::Sender<Fcall>,
 ) -> Result<ReconnectResult, Box<dyn std::error::Error + Send + Sync>> {
+    let conn_id = next_conn_id();
     let tls_config = p9n_auth::spiffe::tls_config::client_config(identity, trust_store)?;
     let server_addr: std::net::SocketAddr = addr.parse()?;
+    tracing::info!(conn_id, %addr, hostname, "reconnecting via TCP+TLS");
     let stream = p9n_transport::tcp::config::client_connect(server_addr, hostname, tls_config).await?;
-    tracing::info!("TCP+TLS reconnected to {addr}");
+    tracing::info!(conn_id, %addr, hostname, transport = "tcp", "reconnected");
 
     let session_key_bytes = {
         let (_, tls_conn) = stream.get_ref();
@@ -381,7 +442,7 @@ pub async fn reconnect_tcp(
         key
     };
 
-    let rpc = Arc::new(TcpRpcClient::new(stream, push_tx));
+    let rpc = Arc::new(TcpRpcClient::new(stream, push_tx, conn_id));
 
     let opts = ConnectOpts {
         addr: addr.to_string(),
@@ -389,15 +450,26 @@ pub async fn reconnect_tcp(
         ..Default::default()
     };
 
-    negotiate_version(&*rpc, &opts).await?;
-    negotiate_caps(&*rpc, false).await?;
-    do_attach(&*rpc, 0, &opts).await?;
-
-    let session_key = establish_session(&*rpc, session_key_bytes).await?;
+    let session_key = async {
+        negotiate_version(&*rpc, &opts).await?;
+        negotiate_caps(&*rpc, false).await?;
+        do_attach(&*rpc, 0, &opts).await?;
+        establish_session(&*rpc, session_key_bytes).await
+    }
+    .instrument(tracing::info_span!(
+        "handshake",
+        conn_id,
+        transport = "tcp",
+        addr = %addr,
+        hostname,
+        reconnect = true,
+    ))
+    .await?;
 
     Ok(ReconnectResult {
         rpc: Arc::new(RpcHandle::Tcp(rpc)),
         session_key,
+        conn_id,
     })
 }
 
@@ -411,19 +483,22 @@ pub async fn reconnect_rdma(
     push_tx: mpsc::Sender<Fcall>,
     device_name: Option<&str>,
 ) -> Result<ReconnectResult, Box<dyn std::error::Error + Send + Sync>> {
+    let conn_id = next_conn_id();
     let tls_config = p9n_auth::spiffe::tls_config::client_config(identity, trust_store)?;
     let server_addr: std::net::SocketAddr = addr.parse()?;
     let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
     let server_name = rustls::pki_types::ServerName::try_from(hostname.to_string())?;
+
+    tracing::info!(conn_id, %addr, hostname, device = ?device_name, "reconnecting via RDMA");
 
     let (rdma_conn, session_key_bytes) =
         p9n_transport::rdma::config::client_connect(
             server_addr, &tls_connector, server_name, device_name,
         )
         .await?;
-    tracing::info!("RDMA reconnected to {addr}");
+    tracing::info!(conn_id, %addr, hostname, transport = "rdma", "reconnected");
 
-    let rpc = Arc::new(RdmaRpcClient::new(rdma_conn, push_tx));
+    let rpc = Arc::new(RdmaRpcClient::new(rdma_conn, push_tx, conn_id));
 
     let opts = ConnectOpts {
         addr: addr.to_string(),
@@ -431,15 +506,26 @@ pub async fn reconnect_rdma(
         ..Default::default()
     };
 
-    negotiate_version(&*rpc, &opts).await?;
-    negotiate_caps(&*rpc, false).await?;
-    do_attach(&*rpc, 0, &opts).await?;
-
-    let session_key = establish_session(&*rpc, session_key_bytes).await?;
+    let session_key = async {
+        negotiate_version(&*rpc, &opts).await?;
+        negotiate_caps(&*rpc, false).await?;
+        do_attach(&*rpc, 0, &opts).await?;
+        establish_session(&*rpc, session_key_bytes).await
+    }
+    .instrument(tracing::info_span!(
+        "handshake",
+        conn_id,
+        transport = "rdma",
+        addr = %addr,
+        hostname,
+        reconnect = true,
+    ))
+    .await?;
 
     Ok(ReconnectResult {
         rpc: Arc::new(RpcHandle::Rdma(rpc)),
         session_key,
+        conn_id,
     })
 }
 
@@ -487,15 +573,24 @@ impl RpcCaller for RdmaRpcClient {
     }
 }
 
+// Handshake helpers. Each log event inherits `conn_id` / `transport` / `addr`
+// / `hostname` from the surrounding `handshake` span — see the .instrument()
+// wrappers at the call sites in connect_* / reconnect_*.
+
 /// Negotiate protocol version. Returns msize. Fails if server does not support 9P2000.N.
 async fn negotiate_version(
     rpc: &impl RpcCaller,
     _opts: &ConnectOpts,
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
-    tracing::trace!("sending Tversion");
+    let requested_msize = 65536u32;
+    tracing::debug!(
+        requested_msize,
+        requested_version = VERSION_9P2000_N,
+        "handshake: sending Tversion",
+    );
     let ver_resp = rpc
         .call(MsgType::Tversion, Msg::Version {
-            msize: 65536,
+            msize: requested_msize,
             version: VERSION_9P2000_N.to_string(),
         })
         .await?;
@@ -503,9 +598,19 @@ async fn negotiate_version(
     match &ver_resp.msg {
         Msg::Version { msize, version } => {
             if version == VERSION_9P2000_N {
-                tracing::info!("negotiated 9P2000.N, msize={msize}");
+                tracing::info!(
+                    msize,
+                    clamped = *msize < requested_msize,
+                    version = %version,
+                    "handshake: version negotiated",
+                );
                 Ok(*msize)
             } else {
+                tracing::error!(
+                    got = %version,
+                    want = VERSION_9P2000_N,
+                    "handshake: server does not support 9P2000.N",
+                );
                 Err(format!("server does not support 9P2000.N (got {version})").into())
             }
         }
@@ -518,7 +623,6 @@ async fn negotiate_caps(
     rpc: &impl RpcCaller,
     want_quic_multi: bool,
 ) -> Result<CapSet, Box<dyn std::error::Error + Send + Sync>> {
-    tracing::trace!("sending Tcaps");
     let mut caps = CapSet::new();
     caps.add(CAP_COMPOUND);
     caps.add(CAP_WATCH);
@@ -529,21 +633,39 @@ async fn negotiate_caps(
         caps.add(CAP_QUIC_MULTI);
     }
 
+    let requested: Vec<String> = caps.caps().to_vec();
+    tracing::debug!(
+        n_requested = requested.len(),
+        requested = ?requested,
+        "handshake: sending Tcaps",
+    );
+
     let caps_resp = rpc
         .call(MsgType::Tcaps, Msg::Caps {
-            caps: caps.caps().to_vec(),
+            caps: requested.clone(),
         })
         .await?;
 
     match caps_resp.msg {
         Msg::Caps { caps: server_caps } => {
+            let dropped: Vec<&String> = requested.iter().filter(|c| !server_caps.contains(c)).collect();
+            tracing::info!(
+                n_requested = requested.len(),
+                n_granted = server_caps.len(),
+                granted = ?server_caps,
+                dropped = ?dropped,
+                "handshake: caps negotiated",
+            );
             let mut result = CapSet::new();
             for c in server_caps {
                 result.add(&c);
             }
             Ok(result)
         }
-        _ => Ok(CapSet::new()),
+        _ => {
+            tracing::warn!("handshake: unexpected Tcaps response; assuming empty cap set");
+            Ok(CapSet::new())
+        }
     }
 }
 
@@ -552,7 +674,7 @@ async fn negotiate_caps(
 /// fatal: the server may still use the legacy ephemeral push path. See
 /// docs/QUICSTREAM.md.
 async fn bind_push_stream(rpc: &impl RpcCaller) -> Option<u64> {
-    tracing::trace!("sending Tquicstream(push)");
+    tracing::debug!("handshake: sending Tquicstream(push)");
     let resp = match rpc
         .call(
             MsgType::Tquicstream,
@@ -562,21 +684,21 @@ async fn bind_push_stream(rpc: &impl RpcCaller) -> Option<u64> {
     {
         Ok(r) => r,
         Err(e) => {
-            tracing::info!("Tquicstream bind failed, falling back to ephemeral push: {e}");
+            tracing::info!(error = %e, "Tquicstream bind failed, falling back to ephemeral push");
             return None;
         }
     };
     match resp.msg {
         Msg::Rquicstream { stream_id } => {
-            tracing::info!("Tquicstream bound: alias={stream_id}");
+            tracing::info!(alias = stream_id, "Tquicstream bound");
             Some(stream_id)
         }
         Msg::Lerror { ecode } => {
-            tracing::info!("Tquicstream rejected (ecode={ecode}), using ephemeral push");
+            tracing::info!(ecode, "Tquicstream rejected; using ephemeral push");
             None
         }
         _ => {
-            tracing::debug!("Tquicstream: unexpected response");
+            tracing::warn!("Tquicstream: unexpected response");
             None
         }
     }
@@ -588,7 +710,12 @@ async fn do_attach(
     root_fid: u32,
     opts: &ConnectOpts,
 ) -> Result<Qid, Box<dyn std::error::Error + Send + Sync>> {
-    tracing::trace!("sending Tattach fid={root_fid} uname={} aname={}", opts.uname, opts.aname);
+    tracing::debug!(
+        root_fid,
+        uname = %opts.uname,
+        aname = %opts.aname,
+        "handshake: sending Tattach",
+    );
     let attach_resp = rpc
         .call(MsgType::Tattach, Msg::Attach {
             fid: root_fid,
@@ -600,7 +727,13 @@ async fn do_attach(
 
     match attach_resp.msg {
         Msg::Rattach { qid } => {
-            tracing::info!("attached, root qid={:?}", qid);
+            tracing::info!(
+                root_fid,
+                qid_path = qid.path,
+                qid_version = qid.version,
+                qid_type = qid.qtype,
+                "handshake: attached",
+            );
             Ok(qid)
         }
         _ => Err("unexpected attach response".into()),
@@ -612,21 +745,47 @@ async fn establish_session(
     rpc: &impl RpcCaller,
     key: [u8; 16],
 ) -> Result<Option<[u8; 16]>, Box<dyn std::error::Error + Send + Sync>> {
-    tracing::trace!("sending Tsession");
+    let key_prefix = hex_prefix(&key);
+    let requested_flags = SESSION_FIDS | SESSION_WATCHES;
+    tracing::debug!(
+        key_prefix = %key_prefix,
+        requested_flags = format_args!("{:#x}", requested_flags),
+        "handshake: sending Tsession",
+    );
     let session_resp = rpc
         .call(MsgType::Tsession, Msg::Session {
             key,
-            flags: SESSION_FIDS | SESSION_WATCHES,
+            flags: requested_flags,
         })
         .await?;
 
     match session_resp.msg {
         Msg::Rsession { flags } => {
-            tracing::info!("session established, flags={flags:#x}");
+            tracing::info!(
+                key_prefix = %key_prefix,
+                requested_flags = format_args!("{:#x}", requested_flags),
+                effective_flags = format_args!("{:#x}", flags),
+                dropped_flags = format_args!("{:#x}", requested_flags & !flags),
+                "handshake: session established",
+            );
             Ok(Some(key))
         }
-        _ => Ok(None),
+        _ => {
+            tracing::warn!("handshake: unexpected Tsession response");
+            Ok(None)
+        }
     }
+}
+
+/// 8-char hex prefix of a byte slice, for opaque-identifier logging.
+fn hex_prefix(bytes: &[u8]) -> String {
+    let n = bytes.len().min(4);
+    let mut s = String::with_capacity(n * 2);
+    for b in &bytes[..n] {
+        use std::fmt::Write;
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
 }
 
 /// Derive a 128-bit session key from the QUIC/TLS connection's keying material.

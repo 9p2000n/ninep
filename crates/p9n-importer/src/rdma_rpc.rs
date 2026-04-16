@@ -34,11 +34,12 @@ pub struct RdmaRpcClient {
     /// Per-fid RDMA buffer assignments: fid → leased slot.
     /// The slot's rkey/addr are registered with the server via Trdmatoken.
     fid_buffers: DashMap<u32, LeasedSlot>,
+    conn_id: u64,
 }
 
 impl RdmaRpcClient {
     /// Create a new RDMA RPC client from an established RDMA connection.
-    pub fn new(conn: RdmaConnection, _push_tx: mpsc::Sender<Fcall>) -> Self {
+    pub fn new(conn: RdmaConnection, _push_tx: mpsc::Sender<Fcall>, conn_id: u64) -> Self {
         let transport = Arc::new(RdmaTransport::new(conn));
 
         // Create a dedicated data pool for per-fid RDMA buffers.
@@ -46,12 +47,26 @@ impl RdmaRpcClient {
             .create_data_pool(DATA_SLOT_SIZE, DATA_POOL_COUNT)
             .ok();
 
+        tracing::debug!(
+            conn_id,
+            data_pool_ok = data_pool.is_some(),
+            slot_size = DATA_SLOT_SIZE,
+            slot_count = DATA_POOL_COUNT,
+            "RdmaRpcClient initialized",
+        );
+
         Self {
             transport,
             tags: TagAllocator::new(),
             data_pool,
             fid_buffers: DashMap::new(),
+            conn_id,
         }
+    }
+
+    /// The monotonic connection id attached to this client.
+    pub fn conn_id(&self) -> u64 {
+        self.conn_id
     }
 
     /// Send a request and wait for the matching response.
@@ -96,16 +111,20 @@ impl RdmaRpcClient {
         let tag = guard.tag();
 
         let fc = Fcall { size: 0, msg_type, tag, msg };
-        tracing::trace!("rdma rpc send: tag={tag} type={}", msg_type.name());
+        let mt_name = msg_type.name();
+        let conn_id = self.conn_id;
+        tracing::trace!(conn_id, tag, msg_type = mt_name, "rdma rpc send");
 
         let response = self.transport.rpc(&fc).await.map_err(|e| {
-            tracing::debug!("rdma rpc error: tag={tag} type={}: {e}", msg_type.name());
+            tracing::debug!(conn_id, tag, msg_type = mt_name, error = %e, "rdma rpc failed");
             RpcError::Transport(e.into())
         })?;
 
         tracing::trace!(
-            "rdma rpc recv: tag={tag} type={} resp={}",
-            msg_type.name(), response.msg_type.name(),
+            conn_id, tag,
+            msg_type = mt_name,
+            resp = response.msg_type.name(),
+            "rdma rpc recv",
         );
         drop(guard);
 
@@ -130,7 +149,10 @@ impl RdmaRpcClient {
             _ => unreachable!(),
         };
 
-        tracing::trace!("rdma read: fid={fid} offset={offset} count={count} (RDMA path)");
+        tracing::debug!(
+            conn_id = self.conn_id, fid, offset, count,
+            "rdma read (RDMA Write path)",
+        );
 
         // Send standard Tread.
         let resp = self.call_inner(MsgType::Tread, msg).await?;
@@ -174,7 +196,11 @@ impl RdmaRpcClient {
             _ => unreachable!(),
         };
 
-        tracing::trace!("rdma write: fid={fid} offset={offset} len={} (RDMA path)", data.len());
+        tracing::debug!(
+            conn_id = self.conn_id, fid, offset,
+            len = data.len(),
+            "rdma write (RDMA Read path)",
+        );
 
         // Copy data into the RDMA buffer so the server can RDMA Read it.
         if let Some(mut buf_ref) = self.fid_buffers.get_mut(&fid) {
@@ -211,7 +237,11 @@ impl RdmaRpcClient {
         let addr = slot.addr();
         let length = slot.len() as u32;
 
-        tracing::debug!(fid, direction, rkey, addr = format!("{addr:#x}"), length, "registering RDMA token");
+        tracing::debug!(
+            conn_id = self.conn_id, fid, direction, rkey,
+            addr = format_args!("{:#x}", addr), length,
+            "registering RDMA token",
+        );
 
         let leased = slot.leak();
 
@@ -228,11 +258,17 @@ impl RdmaRpcClient {
             Msg::Rrdmatoken { .. } => {
                 // Token accepted. Store the buffer mapping.
                 self.fid_buffers.insert(fid, leased);
+                tracing::info!(
+                    conn_id = self.conn_id, fid, direction,
+                    active_tokens = self.fid_buffers.len(),
+                    "RDMA token registered",
+                );
                 Ok(())
             }
             _ => {
                 // Token rejected. Return the slot.
                 leased.return_to_pool();
+                tracing::warn!(conn_id = self.conn_id, fid, "RDMA token registration rejected");
                 Err(RpcError::from("unexpected Rrdmatoken response"))
             }
         }
@@ -242,6 +278,11 @@ impl RdmaRpcClient {
     pub fn deregister_rdma_token(&self, fid: u32) {
         if let Some((_, leased)) = self.fid_buffers.remove(&fid) {
             leased.return_to_pool();
+            tracing::debug!(
+                conn_id = self.conn_id, fid,
+                active_tokens = self.fid_buffers.len(),
+                "RDMA token deregistered",
+            );
         }
     }
 

@@ -5,7 +5,7 @@ use crate::shared::SharedCtx;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::join_err;
+use crate::util::{join_err, unknown_fid};
 
 /// Handle Tunlinkat: remove a file or directory.
 pub async fn handle_unlinkat<B: Backend>(
@@ -22,12 +22,17 @@ pub async fn handle_unlinkat<B: Backend>(
         return Err("expected Unlinkat message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("unlinkat: dirfid={dirfid} name={name} flags={flags:#x}");
+    // AT_REMOVEDIR = 0x200
+    let is_dir = flags & 0x200 != 0;
+    tracing::debug!(
+        tag, dirfid,
+        name = %name,
+        flags = format_args!("{:#x}", flags),
+        is_dir,
+        "Tunlinkat received",
+    );
 
-    let fid_state = session
-        .fids
-        .get(dirfid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(dirfid).ok_or_else(|| unknown_fid(dirfid, "Tunlinkat"))?;
     let target = fid_state.path.join(&name);
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
@@ -35,16 +40,16 @@ pub async fn handle_unlinkat<B: Backend>(
     // Break leases on the parent directory (its listing is changing).
     ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
-    // AT_REMOVEDIR = 0x200
-    let is_dir = flags & 0x200 != 0;
-
     let ctx = ctx.clone();
+    let name_for_log = name.clone();
     tokio::task::spawn_blocking(move || {
         let resolved = ctx.backend.resolve(&target)?;
         ctx.backend.unlink(&resolved, is_dir)
     })
     .await
     .map_err(join_err)??;
+
+    tracing::debug!(tag, dirfid, name = %name_for_log, is_dir, "Tunlinkat result");
 
     Ok(Fcall {
         size: 0,
@@ -66,12 +71,9 @@ pub async fn handle_remove<B: Backend>(
         return Err("expected Remove message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("remove: fid={fid}");
+    tracing::debug!(tag, fid, "Tremove received");
 
-    let fid_state = session
-        .fids
-        .get(fid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid"))?;
+    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tremove"))?;
     let path = fid_state.path.clone();
     let is_dir = fid_state.is_dir;
     let qid_path = fid_state.qid.path;
@@ -90,6 +92,12 @@ pub async fn handle_remove<B: Backend>(
 
     // Clunk the fid after removal (per 9P spec)
     session.fids.remove(fid);
+
+    tracing::debug!(
+        tag, fid, qid_path, is_dir,
+        fids_total = session.fids.len(),
+        "Tremove result",
+    );
 
     Ok(Fcall {
         size: 0,
@@ -115,20 +123,19 @@ pub async fn handle_renameat<B: Backend>(
         return Err("expected Renameat message".into());
     };
     let tag = fc.tag;
-    tracing::trace!("renameat: olddirfid={olddirfid} oldname={oldname} newdirfid={newdirfid} newname={newname}");
+    tracing::debug!(
+        tag, olddirfid, newdirfid,
+        oldname = %oldname,
+        newname = %newname,
+        "Trenameat received",
+    );
 
-    let old_dir = session
-        .fids
-        .get(olddirfid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown olddirfid"))?;
+    let old_dir = session.fids.get(olddirfid).ok_or_else(|| unknown_fid(olddirfid, "Trenameat"))?;
     let old_path = old_dir.path.join(&oldname);
     let old_dir_qid = old_dir.qid.path;
     drop(old_dir);
 
-    let new_dir = session
-        .fids
-        .get(newdirfid)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown newdirfid"))?;
+    let new_dir = session.fids.get(newdirfid).ok_or_else(|| unknown_fid(newdirfid, "Trenameat"))?;
     let new_path = new_dir.path.join(&newname);
     let new_dir_qid = new_dir.qid.path;
     drop(new_dir);
@@ -139,7 +146,10 @@ pub async fn handle_renameat<B: Backend>(
         ctx.lease_mgr.break_for_write(new_dir_qid, session.conn_id);
     }
 
+    let cross_dir = new_dir_qid != old_dir_qid;
     let ctx = ctx.clone();
+    let oldname_for_log = oldname.clone();
+    let newname_for_log = newname.clone();
     tokio::task::spawn_blocking(move || {
         let resolved_old = ctx.backend.resolve(&old_path)?;
         let resolved_new = ctx.backend.resolve(&new_path)?;
@@ -147,6 +157,14 @@ pub async fn handle_renameat<B: Backend>(
     })
     .await
     .map_err(join_err)??;
+
+    tracing::debug!(
+        tag, olddirfid, newdirfid,
+        oldname = %oldname_for_log,
+        newname = %newname_for_log,
+        cross_dir,
+        "Trenameat result",
+    );
 
     Ok(Fcall {
         size: 0,
