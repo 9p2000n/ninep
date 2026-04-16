@@ -41,17 +41,18 @@ pub async fn handle_lcreate<B: Backend>(
     let msize = session.get_msize();
     let spiffe_id = session.spiffe_id.clone();
 
+    let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
+
     let ctx_clone = ctx.clone();
     let (owned_handle, qid, resolved_path) = tokio::task::spawn_blocking(move || {
-        ctx_clone.backend.lcreate(&dir_path, &name, flags, mode)
+        let result = ctx_clone.backend.lcreate(&dir_path, &name, flags, mode)?;
+        if uid != 0 || gid != 0 {
+            ctx_clone.backend.chown(&result.2, uid, gid)?;
+        }
+        Ok::<_, std::io::Error>(result)
     })
     .await
     .map_err(join_err)??;
-
-    let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
-    if uid != 0 || gid != 0 {
-        ctx.backend.chown(&resolved_path, uid, gid)?;
-    }
 
     let iounit = msize - 24;
 
@@ -104,18 +105,18 @@ pub async fn handle_symlink<B: Backend>(
     ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
     let spiffe_id = session.spiffe_id.clone();
+    let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
 
     let ctx_clone = ctx.clone();
-    let (qid, resolved_path) = tokio::task::spawn_blocking(move || {
-        ctx_clone.backend.symlink(&dir_path, &name, &symtgt)
+    let (qid, _resolved_path) = tokio::task::spawn_blocking(move || {
+        let (qid, resolved_path) = ctx_clone.backend.symlink(&dir_path, &name, &symtgt)?;
+        if uid != 0 || gid != 0 {
+            ctx_clone.backend.chown(&resolved_path, uid, gid)?;
+        }
+        Ok::<_, std::io::Error>((qid, resolved_path))
     })
     .await
     .map_err(join_err)??;
-
-    let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
-    if uid != 0 || gid != 0 {
-        ctx.backend.chown(&resolved_path, uid, gid)?;
-    }
 
     Ok(Fcall {
         size: 0,

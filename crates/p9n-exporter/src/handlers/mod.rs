@@ -331,7 +331,7 @@ pub async fn dispatch<B: Backend>(
             xattr::handle(session, ctx, fc).await
         }
         MsgType::Txattrwalk => xattrwalk::handle_xattrwalk(session, ctx, fc).await,
-        MsgType::Txattrcreate => xattrwalk::handle_xattrcreate(session, fc).await,
+        MsgType::Txattrcreate => xattrwalk::handle_xattrcreate(session, fc),
 
         // ── Compression negotiation ──
         MsgType::Tcompress => compress::handle(session, fc),

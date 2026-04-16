@@ -35,12 +35,12 @@ pub async fn handle_unlinkat<B: Backend>(
     // Break leases on the parent directory (its listing is changing).
     ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
-    let resolved = ctx.backend.resolve(&target)?;
     // AT_REMOVEDIR = 0x200
     let is_dir = flags & 0x200 != 0;
 
     let ctx = ctx.clone();
     tokio::task::spawn_blocking(move || {
+        let resolved = ctx.backend.resolve(&target)?;
         ctx.backend.unlink(&resolved, is_dir)
     })
     .await
@@ -80,10 +80,9 @@ pub async fn handle_remove<B: Backend>(
     // Break leases on the file being removed.
     ctx.lease_mgr.break_for_write(qid_path, session.conn_id);
 
-    let resolved = ctx.backend.resolve(&path)?;
-
     let ctx = ctx.clone();
     tokio::task::spawn_blocking(move || {
+        let resolved = ctx.backend.resolve(&path)?;
         ctx.backend.unlink(&resolved, is_dir)
     })
     .await
@@ -140,11 +139,10 @@ pub async fn handle_renameat<B: Backend>(
         ctx.lease_mgr.break_for_write(new_dir_qid, session.conn_id);
     }
 
-    let resolved_old = ctx.backend.resolve(&old_path)?;
-    let resolved_new = ctx.backend.resolve(&new_path)?;
-
     let ctx = ctx.clone();
     tokio::task::spawn_blocking(move || {
+        let resolved_old = ctx.backend.resolve(&old_path)?;
+        let resolved_new = ctx.backend.resolve(&new_path)?;
         ctx.backend.rename(&resolved_old, &resolved_new)
     })
     .await

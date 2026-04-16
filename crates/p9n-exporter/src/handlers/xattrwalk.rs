@@ -60,7 +60,7 @@ pub async fn handle_xattrwalk<B: Backend>(
 }
 
 /// Handle Txattrcreate: prepare a fid for writing an xattr value.
-pub async fn handle_xattrcreate<H: Send + Sync + 'static>(
+pub fn handle_xattrcreate<H: Send + Sync + 'static>(
     session: &Session<H>,
     fc: Fcall,
 ) -> HandlerResult {

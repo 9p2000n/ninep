@@ -155,36 +155,54 @@ impl SvidSource {
                 let interval = std::time::Duration::from_secs(interval_secs);
 
                 Some(tokio::spawn(async move {
-                    let mut last_cert_modified = std::fs::metadata(&cert_path)
-                        .and_then(|m| m.modified())
-                        .ok();
-                    let mut last_ca_modified = std::fs::metadata(&ca_path)
-                        .and_then(|m| m.modified())
-                        .ok();
+                    // All filesystem operations are offloaded to the blocking
+                    // pool to avoid stalling the tokio runtime on slow storage.
+                    let mut last_cert_modified = {
+                        let p = cert_path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            std::fs::metadata(&p).and_then(|m| m.modified()).ok()
+                        }).await.ok().flatten()
+                    };
+                    let mut last_ca_modified = {
+                        let p = ca_path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            std::fs::metadata(&p).and_then(|m| m.modified()).ok()
+                        }).await.ok().flatten()
+                    };
 
                     loop {
                         tokio::time::sleep(interval).await;
 
                         // Check SVID cert rotation
-                        let current_cert_modified = std::fs::metadata(&cert_path)
-                            .and_then(|m| m.modified())
-                            .ok();
+                        let current_cert_modified = {
+                            let p = cert_path.clone();
+                            tokio::task::spawn_blocking(move || {
+                                std::fs::metadata(&p).and_then(|m| m.modified()).ok()
+                            }).await.ok().flatten()
+                        };
 
                         if current_cert_modified != last_cert_modified {
                             tracing::info!("SVID certificate file changed, reloading...");
-                            match x509_svid::load_svid(
-                                cert_path.to_str().unwrap_or(""),
-                                key_path.to_str().unwrap_or(""),
-                            ) {
-                                Ok(new_identity) => {
+                            let cp = cert_path.clone();
+                            let kp = key_path.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                x509_svid::load_svid(
+                                    cp.to_str().unwrap_or(""),
+                                    kp.to_str().unwrap_or(""),
+                                )
+                            }).await {
+                                Ok(Ok(new_identity)) => {
                                     tracing::info!(
                                         "SVID rotated: {}",
                                         new_identity.spiffe_id
                                     );
                                     let _ = tx.send(Arc::new(new_identity));
                                 }
-                                Err(e) => {
+                                Ok(Err(e)) => {
                                     tracing::warn!("SVID reload failed: {e}");
+                                }
+                                Err(e) => {
+                                    tracing::warn!("SVID reload task panicked: {e}");
                                 }
                             }
                             last_cert_modified = current_cert_modified;
@@ -192,23 +210,31 @@ impl SvidSource {
 
                         // Check CA bundle rotation
                         if let Some(ref store) = trust_store {
-                            let current_ca_modified = std::fs::metadata(&ca_path)
-                                .and_then(|m| m.modified())
-                                .ok();
+                            let current_ca_modified = {
+                                let p = ca_path.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    std::fs::metadata(&p).and_then(|m| m.modified()).ok()
+                                }).await.ok().flatten()
+                            };
 
                             if current_ca_modified != last_ca_modified {
                                 tracing::info!("CA bundle file changed, reloading...");
-                                match store.load_pem_file(
-                                    &trust_domain,
-                                    ca_path.to_str().unwrap_or(""),
-                                ) {
-                                    Ok(()) => {
+                                let s = store.clone();
+                                let td = trust_domain.clone();
+                                let p = ca_path.clone();
+                                match tokio::task::spawn_blocking(move || {
+                                    s.load_pem_file(&td, p.to_str().unwrap_or(""))
+                                }).await {
+                                    Ok(Ok(())) => {
                                         tracing::info!(
                                             "CA bundle reloaded for domain: {trust_domain}"
                                         );
                                     }
-                                    Err(e) => {
+                                    Ok(Err(e)) => {
                                         tracing::warn!("CA bundle reload failed: {e}");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("CA bundle reload task panicked: {e}");
                                     }
                                 }
                                 last_ca_modified = current_ca_modified;

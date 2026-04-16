@@ -37,11 +37,11 @@ pub async fn handle<B: Backend>(
     ctx.lease_mgr.break_for_write(dfid_qid_path, session.conn_id);
 
     let new_path = new_dir.join(&name);
-    let resolved_old = ctx.backend.resolve(&old_path)?;
-    let resolved_new = ctx.backend.resolve(&new_path)?;
 
     let ctx = ctx.clone();
     tokio::task::spawn_blocking(move || {
+        let resolved_old = ctx.backend.resolve(&old_path)?;
+        let resolved_new = ctx.backend.resolve(&new_path)?;
         ctx.backend.rename(&resolved_old, &resolved_new)
     }).await.map_err(join_err)??;
 

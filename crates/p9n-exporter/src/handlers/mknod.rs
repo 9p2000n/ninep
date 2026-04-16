@@ -30,16 +30,16 @@ pub async fn handle<B: Backend>(
     ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
     let spiffe_id = session.spiffe_id.clone();
+    let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
 
     let ctx_clone = ctx.clone();
-    let (qid, resolved_path) = tokio::task::spawn_blocking(move || {
-        ctx_clone.backend.mknod(&parent_path, &name, mode, major, minor)
+    let (qid, _resolved_path) = tokio::task::spawn_blocking(move || {
+        let (qid, resolved_path) = ctx_clone.backend.mknod(&parent_path, &name, mode, major, minor)?;
+        if uid != 0 || gid != 0 {
+            ctx_clone.backend.chown(&resolved_path, uid, gid)?;
+        }
+        Ok::<_, std::io::Error>((qid, resolved_path))
     }).await.map_err(join_err)??;
-
-    let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
-    if uid != 0 || gid != 0 {
-        ctx.backend.chown(&resolved_path, uid, gid)?;
-    }
 
     Ok(Fcall { size: 0, msg_type: MsgType::Rmknod, tag, msg: Msg::Rmknod { qid } })
 }

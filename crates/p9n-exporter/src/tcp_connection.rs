@@ -68,7 +68,21 @@ impl<B: Backend> TcpConnectionHandler<B> {
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Collect push messages into a buffer so that write operations
+        // happen outside select!, guaranteeing cancel-safety — a
+        // cancelled select! branch can never interrupt a half-written
+        // TCP frame.
+        let mut pending_pushes: Vec<Fcall> = Vec::new();
+
         loop {
+            // Drain any buffered push messages before waiting for
+            // the next event. Writes happen here, outside select!.
+            for fc in pending_pushes.drain(..) {
+                if let Err(e) = self.pusher.send_push(fc).await {
+                    tracing::debug!("tcp push error: {e}");
+                }
+            }
+
             tokio::select! {
                 // Read next request from TCP stream
                 result = framing::read_message(&mut self.reader) => {
@@ -102,17 +116,13 @@ impl<B: Backend> TcpConnectionHandler<B> {
                         }
                     }
                 }
-                // Send watch notifications on the same TCP stream
+                // Buffer watch notifications for cancel-safe sending
                 Some(event) = self.watch_rx.recv() => {
-                    if let Err(e) = self.pusher.send_push(push::notify_fcall(event)).await {
-                        tracing::debug!("tcp push error: {e}");
-                    }
+                    pending_pushes.push(push::notify_fcall(event));
                 }
-                // Send lease break / other push messages on the same TCP stream
+                // Buffer lease break / other push messages
                 Some(fc) = self.push_rx.recv() => {
-                    if let Err(e) = self.pusher.send_push(fc).await {
-                        tracing::debug!("tcp push error: {e}");
-                    }
+                    pending_pushes.push(fc);
                 }
             }
         }
