@@ -5,11 +5,12 @@
 
 use super::SpiffeIdentity;
 use crate::error::AuthError;
+use parking_lot::RwLock;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::ResolvesServerCert;
 use rustls::sign::CertifiedKey;
 use std::fmt;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::sync::watch;
 
 /// A certificate resolver that hot-swaps when SVIDs rotate.
@@ -29,7 +30,7 @@ impl SpiffeCertResolver {
     /// Manually update the certificate.
     pub fn update(&self, identity: &SpiffeIdentity) -> Result<(), AuthError> {
         let key = build_certified_key(identity)?;
-        let mut guard = self.current.write().unwrap();
+        let mut guard = self.current.write();
         *guard = Arc::new(key);
         tracing::info!("TLS certificate updated for {}", identity.spiffe_id);
         Ok(())
@@ -46,7 +47,7 @@ impl SpiffeCertResolver {
                 let identity = rx.borrow().clone();
                 match build_certified_key(&identity) {
                     Ok(key) => {
-                        let mut guard = current.write().unwrap();
+                        let mut guard = current.write();
                         *guard = Arc::new(key);
                         tracing::info!("TLS cert hot-reloaded for {}", identity.spiffe_id);
                     }
@@ -68,7 +69,7 @@ impl fmt::Debug for SpiffeCertResolver {
 
 impl ResolvesServerCert for SpiffeCertResolver {
     fn resolve(&self, _client_hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        let guard = self.current.read().unwrap();
+        let guard = self.current.read();
         Some(Arc::clone(&guard))
     }
 }

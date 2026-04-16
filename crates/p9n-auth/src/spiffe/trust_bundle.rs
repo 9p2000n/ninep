@@ -1,11 +1,13 @@
 //! Trust bundle store: PEM CA chains and JWK Sets keyed by trust domain.
 //!
 //! Thread-safe via `Arc<RwLock<>>` — cloning shares the underlying store.
+//! Uses `parking_lot::RwLock` so a panicking writer does not poison the lock.
 
 use crate::error::AuthError;
 use super::jwt_svid::JwkSet;
+use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::fs;
 
 /// Per-domain trust bundle: X.509 CA certs and optional JWT JWK Set.
@@ -48,7 +50,7 @@ impl TrustBundleStore {
                 "no CA certs in {path}"
             )));
         }
-        let mut bundles = self.inner.write().unwrap();
+        let mut bundles = self.inner.write();
         let bundle = bundles.entry(trust_domain.to_string()).or_default();
         bundle.x509_cas = certs;
         Ok(())
@@ -56,39 +58,39 @@ impl TrustBundleStore {
 
     /// Add DER-encoded CA certs for a trust domain.
     pub fn add(&self, trust_domain: &str, certs: Vec<Vec<u8>>) {
-        let mut bundles = self.inner.write().unwrap();
+        let mut bundles = self.inner.write();
         let bundle = bundles.entry(trust_domain.to_string()).or_default();
         bundle.x509_cas = certs;
     }
 
     /// Get the X.509 CA certs for a trust domain (owned clone).
     pub fn get(&self, trust_domain: &str) -> Option<Vec<Vec<u8>>> {
-        let bundles = self.inner.read().unwrap();
+        let bundles = self.inner.read();
         bundles.get(trust_domain).map(|b| b.x509_cas.clone())
     }
 
     /// Check if a trust domain is known.
     pub fn has(&self, trust_domain: &str) -> bool {
-        let bundles = self.inner.read().unwrap();
+        let bundles = self.inner.read();
         bundles.contains_key(trust_domain)
     }
 
     /// Get all trust domains.
     pub fn domains(&self) -> Vec<String> {
-        let bundles = self.inner.read().unwrap();
+        let bundles = self.inner.read();
         bundles.keys().cloned().collect()
     }
 
     /// Set the JWT JWK Set for a trust domain.
     pub fn set_jwt_keys(&self, trust_domain: &str, jwk_set: JwkSet) {
-        let mut bundles = self.inner.write().unwrap();
+        let mut bundles = self.inner.write();
         let bundle = bundles.entry(trust_domain.to_string()).or_default();
         bundle.jwt_keys = Some(jwk_set);
     }
 
     /// Get the JWT JWK Set for a trust domain (owned clone).
     pub fn get_jwt_keys(&self, trust_domain: &str) -> Option<JwkSet> {
-        let bundles = self.inner.read().unwrap();
+        let bundles = self.inner.read();
         bundles.get(trust_domain)?.jwt_keys.clone()
     }
 
@@ -100,7 +102,7 @@ impl TrustBundleStore {
 
     /// Serialize all CAs for a trust domain as PEM.
     pub fn to_pem(&self, trust_domain: &str) -> Option<Vec<u8>> {
-        let bundles = self.inner.read().unwrap();
+        let bundles = self.inner.read();
         let bundle = bundles.get(trust_domain)?;
         let mut pem = Vec::new();
         for cert_der in &bundle.x509_cas {

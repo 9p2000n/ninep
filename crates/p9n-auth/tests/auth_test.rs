@@ -269,3 +269,52 @@ fn test_extract_trust_domain() {
     assert!(extract_trust_domain("https://example.com").is_err());
     assert!(extract_trust_domain("not-a-uri").is_err());
 }
+
+// ── TrustBundleStore lock hardening ──
+//
+// After the switch to parking_lot, a panic that unwinds while a writer
+// holds the lock must not prevent subsequent readers/writers from
+// acquiring it. std::sync::RwLock would poison the lock and panic
+// every subsequent caller.
+
+#[test]
+fn test_trust_store_survives_writer_panic() {
+    use p9n_auth::spiffe::trust_bundle::TrustBundleStore;
+
+    let store = std::sync::Arc::new(TrustBundleStore::new());
+    store.add("example.com", vec![vec![0u8; 4]]);
+
+    // Spawn a thread that panics *after* mutating the store.
+    let s = store.clone();
+    let handle = std::thread::spawn(move || {
+        s.add("poison.test", vec![vec![1u8; 4]]);
+        panic!("simulated writer panic");
+    });
+    assert!(handle.join().is_err(), "writer thread should have panicked");
+
+    // The lock must still be usable from this thread.
+    assert!(store.has("example.com"));
+    assert!(store.has("poison.test"));
+    store.add("after.panic", vec![vec![2u8; 4]]);
+    assert!(store.has("after.panic"));
+}
+
+#[test]
+fn test_trust_store_concurrent_readers_writers() {
+    use p9n_auth::spiffe::trust_bundle::TrustBundleStore;
+
+    let store = std::sync::Arc::new(TrustBundleStore::new());
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let s = store.clone();
+        handles.push(std::thread::spawn(move || {
+            for j in 0..50 {
+                let td = format!("dom{i}.{j}.test");
+                s.add(&td, vec![vec![i as u8; 4]]);
+                assert!(s.has(&td));
+            }
+        }));
+    }
+    for h in handles { h.join().unwrap(); }
+    assert_eq!(store.domains().len(), 8 * 50);
+}

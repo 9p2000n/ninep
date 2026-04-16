@@ -75,7 +75,8 @@ impl<B: Backend> Exporter<B> {
         let server_spiffe_id = auth.identity.spiffe_id.clone();
         let server_trust_domain = auth.identity.trust_domain.clone();
         let trust_store = auth.trust_store.clone();
-        let cap_signing_key = generate_hmac_key();
+        let cap_signing_key = generate_hmac_key()
+            .map_err(|e| format!("HMAC key generation failed: {e}"))?;
 
         let ctx = Arc::new(SharedCtx {
             backend,
@@ -362,20 +363,22 @@ async fn rdma_accept(
     Ok((rdma_conn, spiffe_id, addr))
 }
 
-/// Generate a 256-bit HMAC key from system entropy.
-fn generate_hmac_key() -> [u8; 32] {
+/// Generate a 256-bit HMAC signing key from the OS CSPRNG.
+fn generate_hmac_key() -> Result<[u8; 32], getrandom::Error> {
     let mut key = [0u8; 32];
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let nanos = now.as_nanos();
-    key[..16].copy_from_slice(&nanos.to_le_bytes());
-    let addr = &key as *const _ as u64;
-    key[16..24].copy_from_slice(&addr.to_le_bytes());
-    let pid = std::process::id();
-    key[24..28].copy_from_slice(&pid.to_le_bytes());
-    for i in 0..32 {
-        key[i] = key[i].wrapping_mul(31).wrapping_add(key[(i + 7) % 32]);
+    getrandom::getrandom(&mut key)?;
+    Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hmac_key_is_random_and_nonzero() {
+        let k1 = generate_hmac_key().expect("csprng available");
+        let k2 = generate_hmac_key().expect("csprng available");
+        assert_ne!(k1, [0u8; 32], "key must not be all zeros");
+        assert_ne!(k1, k2, "successive keys must differ (CSPRNG, not deterministic)");
     }
-    key
 }
