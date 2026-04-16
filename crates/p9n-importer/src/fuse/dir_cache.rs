@@ -1,19 +1,17 @@
-//! Directory entry cache.
+//! Directory entry cache for FUSE readdir.
+//!
+//! Cached entries are the full listing from offset 0. A non-zero readdir
+//! offset serves from the same cached vec by skipping entries whose index
+//! is less than or equal to the requested offset.
 
+use fuse3::raw::prelude::DirectoryEntry;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-#[derive(Clone)]
-pub struct CachedDirEntry {
-    pub ino: u64,
-    pub name: String,
-    pub dtype: u32,
-}
-
 pub struct DirCache {
-    cache: Mutex<LruCache<u64, (Vec<CachedDirEntry>, Instant)>>,
+    cache: Mutex<LruCache<u64, (Vec<DirectoryEntry>, Instant)>>,
     ttl: Duration,
 }
 
@@ -25,24 +23,33 @@ impl DirCache {
         }
     }
 
-    pub fn get(&self, ino: u64) -> Option<Vec<CachedDirEntry>> {
-        let mut cache = self.cache.lock().unwrap();
-        if let Some((entries, time)) = cache.get(&ino) {
-            if time.elapsed() < self.ttl {
-                return Some(entries.clone());
-            }
+    /// Look up cached entries for `ino`. Returns entries whose 1-based
+    /// index is strictly greater than `offset` (the offset a FUSE readdir
+    /// call has already consumed).
+    pub fn get(&self, ino: u64, offset: i64) -> Option<Vec<DirectoryEntry>> {
+        let mut cache = self.cache.lock().ok()?;
+        let (entries, time) = cache.get(&ino)?;
+        if time.elapsed() >= self.ttl {
             cache.pop(&ino);
+            return None;
         }
-        None
+        if offset == 0 {
+            return Some(entries.clone());
+        }
+        Some(entries.iter().filter(|e| e.offset > offset).cloned().collect())
     }
 
-    pub fn put(&self, ino: u64, entries: Vec<CachedDirEntry>) {
-        let mut cache = self.cache.lock().unwrap();
-        cache.put(ino, (entries, Instant::now()));
+    /// Store the full entry list for `ino`. Call only with the entries
+    /// starting from offset 0 — partial listings are not cached.
+    pub fn put(&self, ino: u64, entries: Vec<DirectoryEntry>) {
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.put(ino, (entries, Instant::now()));
+        }
     }
 
     pub fn invalidate(&self, ino: u64) {
-        let mut cache = self.cache.lock().unwrap();
-        cache.pop(&ino);
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.pop(&ino);
+        }
     }
 }

@@ -287,6 +287,95 @@ mod lease_map_tests {
     }
 }
 
+// ═══════════════════ DirCache ═══════════════════
+
+mod dir_cache_tests {
+    use fuse3::raw::prelude::{DirectoryEntry, FileType};
+    use p9n_importer::fuse::dir_cache::DirCache;
+    use std::ffi::OsString;
+    use std::time::Duration;
+
+    fn entry(ino: u64, name: &str, offset: i64) -> DirectoryEntry {
+        DirectoryEntry {
+            inode: ino,
+            kind: FileType::RegularFile,
+            name: OsString::from(name),
+            offset,
+        }
+    }
+
+    fn three_entries() -> Vec<DirectoryEntry> {
+        vec![
+            entry(10, "a", 1),
+            entry(11, "b", 2),
+            entry(12, "c", 3),
+        ]
+    }
+
+    #[test]
+    fn test_put_and_get_offset_zero_returns_full_list() {
+        let cache = DirCache::new(8, Duration::from_secs(10));
+        cache.put(1, three_entries());
+        let hit = cache.get(1, 0).expect("hit");
+        assert_eq!(hit.len(), 3);
+        assert_eq!(hit[0].inode, 10);
+        assert_eq!(hit[2].inode, 12);
+    }
+
+    #[test]
+    fn test_get_skips_consumed_entries() {
+        let cache = DirCache::new(8, Duration::from_secs(10));
+        cache.put(1, three_entries());
+        let tail = cache.get(1, 2).expect("hit");
+        assert_eq!(tail.len(), 1, "only offset>2 remains");
+        assert_eq!(tail[0].offset, 3);
+        assert_eq!(tail[0].inode, 12);
+    }
+
+    #[test]
+    fn test_get_beyond_end_returns_empty() {
+        let cache = DirCache::new(8, Duration::from_secs(10));
+        cache.put(1, three_entries());
+        let tail = cache.get(1, 99).expect("still a hit");
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn test_miss_on_unknown_ino() {
+        let cache = DirCache::new(8, Duration::from_secs(10));
+        cache.put(1, three_entries());
+        assert!(cache.get(2, 0).is_none());
+    }
+
+    #[test]
+    fn test_invalidate_drops_entries() {
+        let cache = DirCache::new(8, Duration::from_secs(10));
+        cache.put(1, three_entries());
+        cache.invalidate(1);
+        assert!(cache.get(1, 0).is_none());
+    }
+
+    #[test]
+    fn test_ttl_expiry_evicts() {
+        let cache = DirCache::new(8, Duration::from_millis(40));
+        cache.put(1, three_entries());
+        assert!(cache.get(1, 0).is_some());
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(cache.get(1, 0).is_none());
+    }
+
+    #[test]
+    fn test_lru_eviction() {
+        let cache = DirCache::new(2, Duration::from_secs(10));
+        cache.put(1, three_entries());
+        cache.put(2, three_entries());
+        cache.put(3, three_entries()); // evicts ino=1
+        assert!(cache.get(1, 0).is_none());
+        assert!(cache.get(2, 0).is_some());
+        assert!(cache.get(3, 0).is_some());
+    }
+}
+
 // ═══════════════════ RpcError ═══════════════════
 
 mod rpc_error_tests {

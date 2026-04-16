@@ -7,6 +7,7 @@ use fuse3::{Errno, Inode, Result as FuseResult, Timestamp};
 
 use crate::error::RpcError;
 use crate::fuse::attr_cache::AttrCache;
+use crate::fuse::dir_cache::DirCache;
 use crate::fuse::fid_pool::{FidGuard, FidPool};
 use crate::fuse::inode_map::InodeMap;
 use crate::fuse::lease_map::LeaseMap;
@@ -28,6 +29,7 @@ pub struct P9Filesystem {
     inodes: Arc<InodeMap>,
     fids: FidPool,
     attrs: Arc<AttrCache>,
+    dirs: Arc<DirCache>,
     leases: Arc<LeaseMap>,
     /// Whether the server supports Tcompound (reduces round-trips).
     use_compound: bool,
@@ -49,6 +51,7 @@ impl P9Filesystem {
         let inodes = Arc::new(InodeMap::new());
         inodes.set_root(importer.root_fid, importer.root_qid.clone());
         let attrs = Arc::new(AttrCache::new(4096, Duration::from_secs(1)));
+        let dirs = Arc::new(DirCache::new(1024, Duration::from_secs(1)));
         let leases = Arc::new(LeaseMap::new());
 
         let push_handle = crate::push_receiver::spawn_push_handler(
@@ -69,6 +72,7 @@ impl P9Filesystem {
             inodes,
             fids: FidPool::new(),
             attrs,
+            dirs,
             leases,
             use_compound,
             _push_handle: push_handle,
@@ -397,6 +401,7 @@ impl Filesystem for P9Filesystem {
             _ => return Err(Errno::from(libc::EIO)),
         };
 
+        self.dirs.invalidate(parent);
         // Lookup the new node to get full attrs
         self.lookup(req, parent, name).await
     }
@@ -419,6 +424,7 @@ impl Filesystem for P9Filesystem {
             .await
             .map_err(rpc_err)?;
 
+        self.dirs.invalidate(parent);
         // Lookup the new directory to get full attrs and assign inode
         self.lookup(req, parent, name).await
     }
@@ -436,6 +442,7 @@ impl Filesystem for P9Filesystem {
             })
             .await
             .map_err(rpc_err)?;
+        self.dirs.invalidate(parent);
         Ok(())
     }
 
@@ -452,6 +459,7 @@ impl Filesystem for P9Filesystem {
             })
             .await
             .map_err(rpc_err)?;
+        self.dirs.invalidate(parent);
         Ok(())
     }
 
@@ -473,6 +481,7 @@ impl Filesystem for P9Filesystem {
             .await
             .map_err(rpc_err)?;
 
+        self.dirs.invalidate(parent);
         self.lookup(req, parent, name).await
     }
 
@@ -499,6 +508,10 @@ impl Filesystem for P9Filesystem {
             })
             .await
             .map_err(rpc_err)?;
+        self.dirs.invalidate(parent);
+        if new_parent != parent {
+            self.dirs.invalidate(new_parent);
+        }
         Ok(())
     }
 
@@ -519,6 +532,7 @@ impl Filesystem for P9Filesystem {
             .await
             .map_err(rpc_err)?;
 
+        self.dirs.invalidate(new_parent);
         self.lookup(req, new_parent, new_name).await
     }
 
@@ -673,6 +687,7 @@ impl Filesystem for P9Filesystem {
         let stat = getattr(&self.rpc, open_fid).await.map_err(rpc_err)?;
         let attr = stat_to_attr(result.ino, &stat);
         self.attrs.put(result.ino, stat);
+        self.dirs.invalidate(parent);
 
         Ok(ReplyCreated {
             ttl: TTL,
@@ -697,6 +712,13 @@ impl Filesystem for P9Filesystem {
         &'a self, _req: Request, parent: Inode, _fh: u64, offset: i64,
     ) -> FuseResult<ReplyDirectory<Self::DirEntryStream<'a>>> {
         tracing::trace!("fuse readdir: parent={parent} offset={offset}");
+        if let Some(cached) = self.dirs.get(parent, offset) {
+            let entries: Vec<FuseResult<DirectoryEntry>> = cached.into_iter().map(Ok).collect();
+            return Ok(ReplyDirectory {
+                entries: futures_util::stream::iter(entries),
+            });
+        }
+
         let fid = self.inodes.get_fid(parent).ok_or(Errno::from(libc::ENOENT))?;
         let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
 
@@ -723,8 +745,14 @@ impl Filesystem for P9Filesystem {
 
         match resp.msg {
             Msg::Rreaddir { data } => {
+                let parsed = parse_readdir_entries(&data, offset);
+                // Only cache a full listing (offset==0); partial listings
+                // from resumed reads would serve stale prefixes on next hit.
+                if offset == 0 {
+                    self.dirs.put(parent, parsed.clone());
+                }
                 let entries: Vec<FuseResult<DirectoryEntry>> =
-                    parse_readdir_entries(&data, offset).into_iter().map(Ok).collect();
+                    parsed.into_iter().map(Ok).collect();
                 Ok(ReplyDirectory {
                     entries: futures_util::stream::iter(entries),
                 })
