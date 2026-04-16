@@ -1,5 +1,6 @@
 use crate::access;
 use crate::backend::Backend;
+use crate::push::BindTx;
 use crate::session::Session;
 use crate::shared::SharedCtx;
 use crate::watch_manager::WatchEvent;
@@ -155,6 +156,7 @@ pub async fn dispatch<B: Backend>(
     ctx: &Arc<SharedCtx<B>>,
     watch_tx: &mpsc::Sender<WatchEvent>,
     push_tx: &PushTx,
+    bind_tx: Option<&BindTx>,
     fc: Fcall,
 ) -> HandlerResult {
     let sid = session.spiffe_id.as_deref();
@@ -316,7 +318,7 @@ pub async fn dispatch<B: Backend>(
         MsgType::Tlease | MsgType::Tleaserenew | MsgType::Tleaseack => {
             lease::handle(session, &ctx.lease_mgr, push_tx, ctx.config.max_lease_duration, fc)
         }
-        MsgType::Tcompound => compound::handle(session, ctx, watch_tx, push_tx, fc).await,
+        MsgType::Tcompound => compound::handle(session, ctx, watch_tx, push_tx, bind_tx, fc).await,
         MsgType::Tcopyrange => {
             check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ | access::PERM_WRITE)?;
             copy_range::handle(session, ctx, fc).await
@@ -366,7 +368,7 @@ pub async fn dispatch<B: Backend>(
         MsgType::Tratelimit => ratelimit::handle(session, ctx, fc),
 
         // ── Transport ──
-        MsgType::Tquicstream => quicstream::handle(session, fc),
+        MsgType::Tquicstream => quicstream::handle(session, bind_tx, fc).await,
         MsgType::Trdmatoken => rdma::handle(session, ctx, fc),
 
         _ => stubs::handle(fc),

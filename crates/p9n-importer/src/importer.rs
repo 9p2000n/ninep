@@ -161,9 +161,16 @@ impl Importer {
         tracing::debug!("handshake: negotiating version");
         let msize = negotiate_version(&*rpc, &opts).await?;
 
-        // Capability negotiation
+        // Capability negotiation (request CAP_QUIC_MULTI on QUIC)
         tracing::debug!("handshake: negotiating caps");
-        let negotiated_caps = negotiate_caps(&*rpc).await?;
+        let negotiated_caps = negotiate_caps(&*rpc, true).await?;
+
+        // If the server agreed to multistream, bind a persistent push
+        // stream. Failure is not fatal — the server falls back to
+        // ephemeral per-push uni-streams.
+        if negotiated_caps.has(CAP_QUIC_MULTI) {
+            let _ = bind_push_stream(&*rpc).await;
+        }
 
         // Attach
         tracing::debug!("handshake: attaching");
@@ -228,7 +235,7 @@ impl Importer {
 
         let msize = negotiate_version(&*rpc, &opts).await?;
 
-        let negotiated_caps = negotiate_caps(&*rpc).await?;
+        let negotiated_caps = negotiate_caps(&*rpc, false).await?;
 
         let root_fid = 0u32;
         let root_qid = do_attach(&*rpc, root_fid, &opts).await?;
@@ -285,7 +292,7 @@ impl Importer {
         };
 
         let msize = negotiate_version(&*rpc, &opts).await?;
-        let negotiated_caps = negotiate_caps(&*rpc).await?;
+        let negotiated_caps = negotiate_caps(&*rpc, false).await?;
         let root_fid = 0u32;
         let root_qid = do_attach(&*rpc, root_fid, &opts).await?;
 
@@ -348,7 +355,10 @@ pub async fn reconnect_quic(
     };
 
     negotiate_version(&*rpc, &opts).await?;
-    negotiate_caps(&*rpc).await?;
+    let negotiated_caps = negotiate_caps(&*rpc, true).await?;
+    if negotiated_caps.has(CAP_QUIC_MULTI) {
+        let _ = bind_push_stream(&*rpc).await;
+    }
     do_attach(&*rpc, 0, &opts).await?;
 
     let session_key = {
@@ -395,7 +405,7 @@ pub async fn reconnect_tcp(
     };
 
     negotiate_version(&*rpc, &opts).await?;
-    negotiate_caps(&*rpc).await?;
+    negotiate_caps(&*rpc, false).await?;
     do_attach(&*rpc, 0, &opts).await?;
 
     let session_key = establish_session(&*rpc, session_key_bytes).await?;
@@ -437,7 +447,7 @@ pub async fn reconnect_rdma(
     };
 
     negotiate_version(&*rpc, &opts).await?;
-    negotiate_caps(&*rpc).await?;
+    negotiate_caps(&*rpc, false).await?;
     do_attach(&*rpc, 0, &opts).await?;
 
     let session_key = establish_session(&*rpc, session_key_bytes).await?;
@@ -521,6 +531,7 @@ async fn negotiate_version(
 /// Negotiate capabilities (9P2000.N only).
 async fn negotiate_caps(
     rpc: &impl RpcCaller,
+    want_quic_multi: bool,
 ) -> Result<CapSet, Box<dyn std::error::Error + Send + Sync>> {
     tracing::trace!("sending Tcaps");
     let mut caps = CapSet::new();
@@ -529,6 +540,9 @@ async fn negotiate_caps(
     caps.add(CAP_XATTR2);
     caps.add(CAP_SESSION);
     caps.add(CAP_HEALTH);
+    if want_quic_multi {
+        caps.add(CAP_QUIC_MULTI);
+    }
 
     let caps_resp = rpc
         .call(MsgType::Tcaps, Msg::Caps {
@@ -545,6 +559,41 @@ async fn negotiate_caps(
             Ok(result)
         }
         _ => Ok(CapSet::new()),
+    }
+}
+
+/// Send Tquicstream(stream_type=2) to bind a persistent push stream.
+/// Called only after CAP_QUIC_MULTI has been negotiated. Failure is not
+/// fatal: the server may still use the legacy ephemeral push path. See
+/// docs/QUICSTREAM.md.
+async fn bind_push_stream(rpc: &impl RpcCaller) -> Option<u64> {
+    tracing::trace!("sending Tquicstream(push)");
+    let resp = match rpc
+        .call(
+            MsgType::Tquicstream,
+            Msg::Quicstream { stream_type: 2, stream_id: 0 },
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::info!("Tquicstream bind failed, falling back to ephemeral push: {e}");
+            return None;
+        }
+    };
+    match resp.msg {
+        Msg::Rquicstream { stream_id } => {
+            tracing::info!("Tquicstream bound: alias={stream_id}");
+            Some(stream_id)
+        }
+        Msg::Lerror { ecode } => {
+            tracing::info!("Tquicstream rejected (ecode={ecode}), using ephemeral push");
+            None
+        }
+        _ => {
+            tracing::debug!("Tquicstream: unexpected response");
+            None
+        }
     }
 }
 

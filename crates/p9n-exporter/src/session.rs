@@ -9,6 +9,25 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+/// Which transport accepted this connection. Determines whether transport-
+/// specific features (Tquicstream, Trdmatoken) are applicable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportKind {
+    Quic,
+    Tcp,
+    Rdma,
+}
+
+/// A successful Tquicstream binding. Only one per session is allowed in P0.
+/// See docs/QUICSTREAM.md for the full design.
+#[derive(Debug, Clone, Copy)]
+pub struct QuicBinding {
+    /// Server-assigned alias (derived from the quinn `StreamId`).
+    pub alias: u64,
+    /// 0=control, 1=data, 2=push, 3=bulk. P0 only accepts 2.
+    pub stream_type: u8,
+}
+
 /// Active capability token granted via Tcapgrant/Tcapuse.
 #[derive(Debug, Clone)]
 pub struct CapToken {
@@ -120,6 +139,7 @@ pub struct Session<H: Send + Sync + 'static = OwnedFd> {
     pub spiffe_id: Option<String>,
     pub session_key: Mutex<Option<[u8; 16]>>,
     pub conn_id: u64,
+    pub transport_kind: TransportKind,
     pub fids: FidTable<H>,
     pub watch_ids: Mutex<HashSet<u32>>,
     authenticated: AtomicBool,
@@ -137,6 +157,10 @@ pub struct Session<H: Send + Sync + 'static = OwnedFd> {
     /// When present, Tread/Twrite use one-sided RDMA Read/Write instead
     /// of copying data through the message payload.
     pub rdma_tokens: DashMap<u32, RdmaToken>,
+    /// Persistent QUIC push stream binding set via Tquicstream(push).
+    /// At most one binding per session — a rebind attempt while `Some`
+    /// must return EBUSY. See docs/QUICSTREAM.md.
+    pub quic_push_binding: Mutex<Option<QuicBinding>>,
 }
 
 /// An RDMA token registered by the client for a specific fid.
@@ -158,7 +182,7 @@ pub struct RdmaToken {
 }
 
 impl<H: Send + Sync + 'static> Session<H> {
-    pub fn new(conn_id: u64) -> Self {
+    pub fn new(conn_id: u64, transport_kind: TransportKind) -> Self {
         Self {
             version: Mutex::new(None),
             msize: AtomicU32::new(8192),
@@ -166,6 +190,7 @@ impl<H: Send + Sync + 'static> Session<H> {
             spiffe_id: None,
             session_key: Mutex::new(None),
             conn_id,
+            transport_kind,
             fids: FidTable::new(),
             watch_ids: Mutex::new(HashSet::new()),
             authenticated: AtomicBool::new(true),
@@ -176,6 +201,7 @@ impl<H: Send + Sync + 'static> Session<H> {
             rate_limits: DashMap::new(),
             inflight: DashMap::new(),
             rdma_tokens: DashMap::new(),
+            quic_push_binding: Mutex::new(None),
         }
     }
 
@@ -189,6 +215,7 @@ impl<H: Send + Sync + 'static> Session<H> {
         self.active_streams.clear();
         self.rate_limits.clear();
         self.rdma_tokens.clear();
+        *self.quic_push_binding.lock().unwrap() = None;
         self.spiffe_verified.store(false, Ordering::Relaxed);
         // Cancel all in-flight requests
         for entry in self.inflight.iter() {

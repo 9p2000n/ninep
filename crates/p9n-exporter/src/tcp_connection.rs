@@ -51,7 +51,7 @@ impl<B: Backend> TcpConnectionHandler<B> {
         let pusher = TcpPushSender::new(writer.clone());
 
         let conn_id = lease_manager::next_conn_id();
-        let mut session = Session::new(conn_id);
+        let mut session = Session::new(conn_id, crate::session::TransportKind::Tcp);
         session.spiffe_id = spiffe_id;
 
         Self {
@@ -78,7 +78,7 @@ impl<B: Backend> TcpConnectionHandler<B> {
                             let msg_type = request.msg_type;
                             tracing::trace!("tcp req: tag={tag} type={}", msg_type.name());
                             let result = handlers::dispatch(
-                                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, request,
+                                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, None, request,
                             ).await;
                             let response = match result {
                                 Ok(r) => r,

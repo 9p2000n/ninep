@@ -53,7 +53,7 @@ impl<B: Backend> RdmaConnectionHandler<B> {
         let pusher = RdmaPushSender::new(transport.clone());
 
         let conn_id = lease_manager::next_conn_id();
-        let mut session = Session::new(conn_id);
+        let mut session = Session::new(conn_id, crate::session::TransportKind::Rdma);
         session.spiffe_id = spiffe_id;
 
         Self {
@@ -89,7 +89,7 @@ impl<B: Backend> RdmaConnectionHandler<B> {
                                 _ => {
                                     handlers::dispatch(
                                         &self.session, &self.ctx,
-                                        &self.watch_tx, &self.push_tx, request,
+                                        &self.watch_tx, &self.push_tx, None, request,
                                     ).await
                                 }
                             };
@@ -153,13 +153,13 @@ impl<B: Backend> RdmaConnectionHandler<B> {
         let Some(token) = token else {
             // No RDMA token — use standard handler.
             return handlers::dispatch(
-                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, fc,
+                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, None, fc,
             ).await;
         };
         if token.direction != 0 {
             // Token is for WRITE direction, not READ — use standard handler.
             return handlers::dispatch(
-                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, fc,
+                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, None, fc,
             ).await;
         }
 
@@ -215,12 +215,12 @@ impl<B: Backend> RdmaConnectionHandler<B> {
         let token = self.session.rdma_tokens.get(&fid).map(|t| t.clone());
         let Some(token) = token else {
             return handlers::dispatch(
-                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, fc,
+                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, None, fc,
             ).await;
         };
         if token.direction != 1 {
             return handlers::dispatch(
-                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, fc,
+                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, None, fc,
             ).await;
         }
 

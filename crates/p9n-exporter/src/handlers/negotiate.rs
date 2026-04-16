@@ -1,5 +1,5 @@
 use crate::handlers::HandlerResult;
-use crate::session::Session;
+use crate::session::{Session, TransportKind};
 use p9n_proto::caps;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::*;
@@ -25,6 +25,12 @@ pub fn handle_caps<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) ->
         CAP_QUIC,
     ] {
         server_caps.add(cap);
+    }
+    // Advertise CAP_QUIC_MULTI only on QUIC transports. TCP and RDMA
+    // connections never support Tquicstream, so offering the capability
+    // would set up a round-trip that can only fail.
+    if session.transport_kind == TransportKind::Quic {
+        server_caps.add(CAP_QUIC_MULTI);
     }
 
     // Build client capability set

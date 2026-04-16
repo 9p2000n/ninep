@@ -1178,3 +1178,268 @@ async fn test_read_vs_write_conflict() {
     }).await;
     assert!(r2.is_err(), "READ vs other's WRITE should conflict");
 }
+
+// ═══════════════════ Tquicstream (P0: push binding) ═══════════════════
+
+/// Like `rpc()` but does NOT translate `Rlerror` into a Rust error, so
+/// tests can assert on the returned errno directly.
+async fn rpc_raw(
+    conn: &quinn::Connection,
+    msg_type: MsgType,
+    tag: u16,
+    msg: Msg,
+) -> Fcall {
+    let fc = Fcall { size: 0, msg_type, tag, msg };
+    let mut buf = Buf::new(256);
+    codec::marshal(&mut buf, &fc).unwrap();
+    let wire = buf.into_vec();
+
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    send.write_all(&wire).await.unwrap();
+    send.finish().unwrap();
+
+    let mut size_buf = [0u8; 4];
+    recv.read_exact(&mut size_buf).await.unwrap();
+    let size = u32::from_le_bytes(size_buf) as usize;
+    let mut msg_buf = vec![0u8; size];
+    msg_buf[..4].copy_from_slice(&size_buf);
+    recv.read_exact(&mut msg_buf[4..]).await.unwrap();
+
+    let mut rbuf = Buf::from_bytes(msg_buf);
+    codec::unmarshal(&mut rbuf).unwrap()
+}
+
+/// Run Tversion + Tcaps(with CAP_QUIC_MULTI) on a fresh connection and
+/// return the negotiated cap list. Convenience for quicstream tests that
+/// need the cap to be in the session's negotiated set before sending
+/// Tquicstream.
+async fn negotiate_for_quicstream(
+    conn: &quinn::Connection,
+) -> Vec<String> {
+    let _ = rpc(conn, MsgType::Tversion, 0, Msg::Version {
+        msize: 65536, version: VERSION_9P2000_N.into(),
+    }).await.unwrap();
+    let r = rpc(conn, MsgType::Tcaps, 1, Msg::Caps {
+        caps: vec![CAP_QUIC_MULTI.to_string()],
+    }).await.unwrap();
+    match r.msg {
+        Msg::Caps { caps } => caps,
+        other => panic!("expected Rcaps, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_quicstream_cap_negotiated_on_quic() {
+    let dir = tempfile::tempdir().unwrap();
+    let (addr, certs) = start_exporter(dir.path().to_str().unwrap()).await;
+    let conn = connect(addr, &certs).await;
+
+    let caps = negotiate_for_quicstream(&conn).await;
+    assert!(
+        caps.iter().any(|c| c == CAP_QUIC_MULTI),
+        "QUIC transport should advertise CAP_QUIC_MULTI, got {caps:?}",
+    );
+}
+
+#[tokio::test]
+async fn test_quicstream_bind_push_happy_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let (addr, certs) = start_exporter(dir.path().to_str().unwrap()).await;
+    let conn = connect(addr, &certs).await;
+    negotiate_for_quicstream(&conn).await;
+
+    let r = rpc(&conn, MsgType::Tquicstream, 2, Msg::Quicstream {
+        stream_type: 2, stream_id: 0,
+    }).await.expect("Tquicstream(push) should succeed");
+
+    match r.msg {
+        Msg::Rquicstream { stream_id } => {
+            assert_ne!(stream_id, 0, "alias should be a real quinn stream id");
+        }
+        other => panic!("expected Rquicstream, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_quicstream_ebusy_on_rebind() {
+    let dir = tempfile::tempdir().unwrap();
+    let (addr, certs) = start_exporter(dir.path().to_str().unwrap()).await;
+    let conn = connect(addr, &certs).await;
+    negotiate_for_quicstream(&conn).await;
+
+    // First bind should succeed.
+    let _ = rpc(&conn, MsgType::Tquicstream, 2, Msg::Quicstream {
+        stream_type: 2, stream_id: 0,
+    }).await.unwrap();
+
+    // Second bind must return EBUSY.
+    let r = rpc_raw(&conn, MsgType::Tquicstream, 3, Msg::Quicstream {
+        stream_type: 2, stream_id: 0,
+    }).await;
+    match r.msg {
+        Msg::Lerror { ecode } => {
+            assert_eq!(ecode, libc::EBUSY as u32, "rebind should return EBUSY");
+        }
+        other => panic!("expected Rlerror(EBUSY), got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_quicstream_eopnotsupp_wrong_type() {
+    let dir = tempfile::tempdir().unwrap();
+    let (addr, certs) = start_exporter(dir.path().to_str().unwrap()).await;
+    let conn = connect(addr, &certs).await;
+    negotiate_for_quicstream(&conn).await;
+
+    for bad_type in [0u8, 1, 3, 99] {
+        let r = rpc_raw(&conn, MsgType::Tquicstream, 10 + bad_type as u16, Msg::Quicstream {
+            stream_type: bad_type, stream_id: 0,
+        }).await;
+        match r.msg {
+            Msg::Lerror { ecode } => {
+                assert_eq!(
+                    ecode, libc::EOPNOTSUPP as u32,
+                    "stream_type={bad_type} should return EOPNOTSUPP",
+                );
+            }
+            other => panic!("expected Rlerror, got {other:?}"),
+        }
+    }
+}
+
+/// Read one complete 9P message from a quinn uni RecvStream.
+async fn read_push_frame(recv: &mut quinn::RecvStream) -> Fcall {
+    let mut size_buf = [0u8; 4];
+    recv.read_exact(&mut size_buf).await.expect("read size");
+    let size = u32::from_le_bytes(size_buf) as usize;
+    let mut msg_buf = vec![0u8; size];
+    msg_buf[..4].copy_from_slice(&size_buf);
+    recv.read_exact(&mut msg_buf[4..]).await.expect("read body");
+    let mut rbuf = Buf::from_bytes(msg_buf);
+    codec::unmarshal(&mut rbuf).expect("unmarshal push")
+}
+
+#[tokio::test]
+async fn test_quicstream_push_persistence_via_twatch() {
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let (addr, certs) = start_exporter(dir.path().to_str().unwrap()).await;
+    let conn = connect(addr, &certs).await;
+
+    // Negotiate version + caps (need WATCH and QUIC_MULTI) + attach root.
+    let _ = rpc(&conn, MsgType::Tversion, 0, Msg::Version {
+        msize: 65536, version: VERSION_9P2000_N.into(),
+    }).await.unwrap();
+    let caps = rpc(&conn, MsgType::Tcaps, 1, Msg::Caps {
+        caps: vec![CAP_WATCH.to_string(), CAP_QUIC_MULTI.to_string()],
+    }).await.unwrap();
+    match caps.msg {
+        Msg::Caps { caps } => {
+            assert!(caps.iter().any(|c| c == CAP_WATCH));
+            assert!(caps.iter().any(|c| c == CAP_QUIC_MULTI));
+        }
+        _ => panic!("expected Rcaps"),
+    }
+    let _ = rpc(&conn, MsgType::Tattach, 2, Msg::Attach {
+        fid: 0, afid: NO_FID, uname: "test".into(), aname: "".into(),
+    }).await.unwrap();
+
+    // Bind persistent push stream.
+    let r = rpc(&conn, MsgType::Tquicstream, 3, Msg::Quicstream {
+        stream_type: 2, stream_id: 0,
+    }).await.unwrap();
+    let alias = match r.msg {
+        Msg::Rquicstream { stream_id } => stream_id,
+        other => panic!("expected Rquicstream, got {other:?}"),
+    };
+    assert_ne!(alias, 0);
+
+    // Register a watch on the root (fid=0 points at the export root, i.e.
+    // the tempdir). Non-recursive is fine — we create files directly in
+    // the watched dir.
+    let r = rpc(&conn, MsgType::Twatch, 4, Msg::Watch {
+        fid: 0,
+        mask: WATCH_CREATE | WATCH_MODIFY,
+        flags: 0,
+    }).await.unwrap();
+    let watch_id = match r.msg {
+        Msg::Rwatch { watch_id } => watch_id,
+        other => panic!("expected Rwatch, got {other:?}"),
+    };
+
+    // Let inotify finish registering before we generate events. The
+    // notify crate's watcher is set up synchronously but the kernel
+    // inotify_add_watch syscall is not always immediate on busy CI.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Trigger the first fs event.
+    std::fs::File::create(dir.path().join("first.txt")).unwrap();
+
+    // Accept the push uni-stream. The server opened this stream during
+    // Tquicstream bind, but quinn typically surfaces it to the peer only
+    // after the first STREAM frame is sent — so we trigger an event
+    // first. Cap the wait at a few seconds in case inotify is lagging.
+    let mut recv = tokio::time::timeout(
+        Duration::from_secs(5),
+        conn.accept_uni(),
+    ).await.expect("accept_uni timed out").expect("accept_uni errored");
+
+    // The accepted stream must be the one Tquicstream bound to.
+    assert_eq!(
+        u64::from(recv.id()),
+        alias,
+        "push arrived on a different stream than the one Tquicstream bound",
+    );
+
+    // Read the first Rnotify.
+    let fc1 = tokio::time::timeout(
+        Duration::from_secs(2),
+        read_push_frame(&mut recv),
+    ).await.expect("first push read timed out");
+    match fc1.msg {
+        Msg::Notify { watch_id: wid, .. } => {
+            assert_eq!(wid, watch_id, "first Rnotify carries our watch_id");
+        }
+        other => panic!("expected Rnotify, got {other:?}"),
+    }
+
+    // Trigger a second event and read from the SAME recv handle. If the
+    // server opened a fresh ephemeral uni-stream for the second push,
+    // read_exact would block forever (nothing arrives on this stream),
+    // so the timeout is what proves persistence.
+    std::fs::File::create(dir.path().join("second.txt")).unwrap();
+    let fc2 = tokio::time::timeout(
+        Duration::from_secs(5),
+        read_push_frame(&mut recv),
+    ).await.expect("second push did not arrive on the persistent stream");
+    match fc2.msg {
+        Msg::Notify { watch_id: wid, .. } => {
+            assert_eq!(wid, watch_id, "second Rnotify carries our watch_id");
+        }
+        other => panic!("expected Rnotify, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_quicstream_eopnotsupp_without_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let (addr, certs) = start_exporter(dir.path().to_str().unwrap()).await;
+    let conn = connect(addr, &certs).await;
+
+    // Complete Tversion but negotiate an empty cap list — the server
+    // must NOT include CAP_QUIC_MULTI in the session's negotiated set.
+    let _ = rpc(&conn, MsgType::Tversion, 0, Msg::Version {
+        msize: 65536, version: VERSION_9P2000_N.into(),
+    }).await.unwrap();
+    let _ = rpc(&conn, MsgType::Tcaps, 1, Msg::Caps { caps: vec![] }).await.unwrap();
+
+    let r = rpc_raw(&conn, MsgType::Tquicstream, 2, Msg::Quicstream {
+        stream_type: 2, stream_id: 0,
+    }).await;
+    match r.msg {
+        Msg::Lerror { ecode } => {
+            assert_eq!(ecode, libc::EOPNOTSUPP as u32);
+        }
+        other => panic!("expected Rlerror(EOPNOTSUPP), got {other:?}"),
+    }
+}

@@ -1,7 +1,7 @@
 use crate::backend::Backend;
 use crate::handlers::{self, io::ReadResult};
 use crate::lease_manager;
-use crate::push::{self, PushSender, QuicPushSender};
+use crate::push::{self, BindResponder, PushSender, QuicPushSender};
 use crate::session::Session;
 use crate::shared::SharedCtx;
 use crate::watch_manager::WatchEvent;
@@ -20,6 +20,8 @@ pub struct QuicConnectionHandler<B: Backend> {
     watch_tx: mpsc::Sender<WatchEvent>,
     push_rx: mpsc::Receiver<Fcall>,
     push_tx: mpsc::Sender<Fcall>,
+    bind_rx: mpsc::Receiver<BindResponder>,
+    bind_tx: mpsc::Sender<BindResponder>,
     pusher: QuicPushSender,
 }
 
@@ -27,6 +29,10 @@ impl<B: Backend> QuicConnectionHandler<B> {
     pub fn new(conn: quinn::Connection, ctx: Arc<SharedCtx<B>>) -> Self {
         let (watch_tx, watch_rx) = mpsc::channel(256);
         let (push_tx, push_rx) = mpsc::channel(64);
+        // Tquicstream bind requests. The bound is 4 because we only ever
+        // expect one successful bind per connection; the extra slack covers
+        // any transient duplicates.
+        let (bind_tx, bind_rx) = mpsc::channel(4);
         let spiffe_id = extract_spiffe_id_from_conn(&conn);
 
         if let Some(ref id) = spiffe_id {
@@ -34,7 +40,7 @@ impl<B: Backend> QuicConnectionHandler<B> {
         }
 
         let conn_id = lease_manager::next_conn_id();
-        let mut session = Session::new(conn_id);
+        let mut session = Session::new(conn_id, crate::session::TransportKind::Quic);
         session.spiffe_id = spiffe_id;
         let pusher = QuicPushSender::new(conn.clone());
 
@@ -46,6 +52,8 @@ impl<B: Backend> QuicConnectionHandler<B> {
             watch_tx,
             push_rx,
             push_tx,
+            bind_rx,
+            bind_tx,
             pusher,
         }
     }
@@ -60,8 +68,9 @@ impl<B: Backend> QuicConnectionHandler<B> {
                             let session = self.session.clone();
                             let watch_tx = self.watch_tx.clone();
                             let push_tx = self.push_tx.clone();
+                            let bind_tx = self.bind_tx.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = handle_stream(ctx, session, watch_tx, push_tx, send, recv).await {
+                                if let Err(e) = handle_stream(ctx, session, watch_tx, push_tx, bind_tx, send, recv).await {
                                     tracing::warn!("stream error: {e}");
                                 }
                             });
@@ -76,15 +85,24 @@ impl<B: Backend> QuicConnectionHandler<B> {
                             let session = self.session.clone();
                             let watch_tx = self.watch_tx.clone();
                             let push_tx = self.push_tx.clone();
+                            let bind_tx = self.bind_tx.clone();
                             let conn = self.conn.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = handle_datagram(ctx, session, watch_tx, push_tx, conn, data).await {
+                                if let Err(e) = handle_datagram(ctx, session, watch_tx, push_tx, bind_tx, conn, data).await {
                                     tracing::warn!("datagram error: {e}");
                                 }
                             });
                         }
                         Err(e) => { tracing::debug!("datagram error: {e}"); break; }
                     }
+                }
+                Some(responder) = self.bind_rx.recv() => {
+                    // Tquicstream bind: open a persistent uni-stream for
+                    // push messages and reply with the assigned alias. The
+                    // await is expected to return immediately (quinn does
+                    // not block a server-initiated uni-stream opener).
+                    let result = self.pusher.bind_persistent().await;
+                    let _ = responder.send(result);
                 }
                 Some(event) = self.watch_rx.recv() => {
                     if let Err(e) = self.pusher.send_push(push::notify_fcall(event)).await {
@@ -141,6 +159,7 @@ async fn handle_stream<B: Backend>(
     session: Arc<Session<B::Handle>>,
     watch_tx: mpsc::Sender<WatchEvent>,
     push_tx: mpsc::Sender<Fcall>,
+    bind_tx: mpsc::Sender<BindResponder>,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -219,7 +238,7 @@ async fn handle_stream<B: Backend>(
 
     // ── Normal path for all other message types ──
     let result = tokio::select! {
-        r = handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, request) => r,
+        r = handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, Some(&bind_tx), request) => r,
         _ = cancel.cancelled() => {
             tracing::debug!("request tag={tag} cancelled by Tflush");
             Err("flushed".into())
@@ -257,6 +276,7 @@ async fn handle_datagram<B: Backend>(
     session: Arc<Session<B::Handle>>,
     watch_tx: mpsc::Sender<WatchEvent>,
     push_tx: mpsc::Sender<Fcall>,
+    bind_tx: mpsc::Sender<BindResponder>,
     conn: quinn::Connection,
     data: bytes::Bytes,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -270,7 +290,7 @@ async fn handle_datagram<B: Backend>(
     // Without this, a panic kills the task silently and the importer
     // waits until the 30s RPC timeout fires, hanging FUSE operations.
     let dispatch_result = tokio::spawn(async move {
-        handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, request).await
+        handlers::dispatch(&session, &ctx, &watch_tx, &push_tx, Some(&bind_tx), request).await
     })
     .await;
 

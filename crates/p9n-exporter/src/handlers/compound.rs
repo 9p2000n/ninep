@@ -5,6 +5,7 @@
 
 use crate::backend::Backend;
 use crate::handlers::{HandlerResult, PushTx};
+use crate::push::BindTx;
 use crate::session::Session;
 use crate::shared::SharedCtx;
 use crate::watch_manager::WatchEvent;
@@ -28,6 +29,7 @@ pub async fn handle<B: Backend>(
     ctx: &Arc<SharedCtx<B>>,
     watch_tx: &mpsc::Sender<WatchEvent>,
     push_tx: &PushTx,
+    bind_tx: Option<&BindTx>,
     fc: Fcall,
 ) -> HandlerResult {
     let Msg::Compound { ops } = fc.msg else {
@@ -43,7 +45,7 @@ pub async fn handle<B: Backend>(
 
         // Dispatch through normal handler pipeline
         // Box::pin to avoid infinite-sized future from recursive async dispatch
-        let sub_result = Box::pin(crate::handlers::dispatch(session, ctx, watch_tx, push_tx, sub_fc)).await;
+        let sub_result = Box::pin(crate::handlers::dispatch(session, ctx, watch_tx, push_tx, bind_tx, sub_fc)).await;
 
         match sub_result {
             Ok(response) => {
