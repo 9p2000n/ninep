@@ -25,8 +25,8 @@ struct MrPoolInner {
     mr: *mut ffi::ibv_mr,
     /// Base pointer of the allocated buffer.
     buf: *mut u8,
-    /// Total buffer size.
-    buf_len: usize,
+    /// Layout used for allocation (stored to ensure correct dealloc in Drop).
+    buf_layout: std::alloc::Layout,
     /// Size of each slot.
     slot_size: usize,
     /// Total number of slots.
@@ -86,7 +86,7 @@ impl MrPool {
                 inner: Arc::new(MrPoolInner {
                     mr,
                     buf,
-                    buf_len: total,
+                    buf_layout: layout,
                     slot_size,
                     slot_count: count,
                     free,
@@ -179,9 +179,7 @@ impl Drop for MrPoolInner {
                 ffi::ibv_dereg_mr(self.mr);
             }
             if !self.buf.is_null() {
-                let layout =
-                    std::alloc::Layout::from_size_align_unchecked(self.buf_len, 4096);
-                std::alloc::dealloc(self.buf, layout);
+                std::alloc::dealloc(self.buf, self.buf_layout);
             }
         }
     }

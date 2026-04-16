@@ -9,6 +9,14 @@ use p9n_proto::fcall::Fcall;
 use p9n_proto::types::HEADER_SIZE;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// Hard upper limit for a single 9P message (defense-in-depth).
+///
+/// The negotiated msize is typically 4-8 MB. This constant prevents
+/// a malicious peer from forcing a multi-GB allocation before the
+/// session has even negotiated an msize. Legitimate messages will
+/// never approach this limit.
+const MAX_MESSAGE_SIZE: usize = 32 * 1024 * 1024; // 32 MB
+
 /// Serialize an Fcall to wire bytes (zero-copy).
 pub fn encode(fc: &Fcall) -> Result<Vec<u8>, TransportError> {
     let mut buf = Buf::new(256);
@@ -40,6 +48,11 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(
 
     if size < HEADER_SIZE {
         return Err(TransportError::Other(format!("message too small: {size}")));
+    }
+    if size > MAX_MESSAGE_SIZE {
+        return Err(TransportError::Other(format!(
+            "message too large: {size} > {MAX_MESSAGE_SIZE}"
+        )));
     }
 
     let mut msg_buf = vec![0u8; size];

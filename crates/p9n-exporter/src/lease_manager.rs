@@ -111,7 +111,12 @@ impl LeaseManager {
                     if entry.conn_id != conn_id && entry.lease_type == types::LEASE_READ {
                         tracing::debug!("lease break: lid={lid} conn={} (write requested by conn={conn_id})", entry.conn_id);
                         let fc = crate::push::leasebreak_fcall(*lid, 0);
-                        let _ = entry.push_tx.try_send(fc);
+                        if let Err(e) = entry.push_tx.try_send(fc) {
+                            tracing::warn!(
+                                "lease break notification dropped: lid={lid} conn={}: {e}",
+                                entry.conn_id,
+                            );
+                        }
                     }
                 }
             }
@@ -164,8 +169,12 @@ impl LeaseManager {
                     entry.conn_id,
                 );
                 let fc = crate::push::leasebreak_fcall(lid, 0);
-                // Best-effort: if the receiver is full or gone, skip.
-                let _ = entry.push_tx.try_send(fc);
+                if let Err(e) = entry.push_tx.try_send(fc) {
+                    tracing::warn!(
+                        "lease break_for_write notification dropped: lid={lid} conn={}: {e}",
+                        entry.conn_id,
+                    );
+                }
             }
         }
     }

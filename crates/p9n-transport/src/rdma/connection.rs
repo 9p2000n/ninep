@@ -137,13 +137,13 @@ impl RdmaTransport {
 
     /// Check if the transport is still alive.
     pub fn is_alive(&self) -> bool {
-        self.alive.load(std::sync::atomic::Ordering::Relaxed)
+        self.alive.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Close the RDMA connection.
     pub fn close(&self) {
         self.alive
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+            .store(false, std::sync::atomic::Ordering::Release);
         self.qp.to_error();
     }
 
@@ -225,7 +225,7 @@ async fn recv_loop(
     let async_cq = AsyncCompletionQueue::new(recv_cq)?;
     let mut wc_buf = Vec::with_capacity(16);
 
-    while alive.load(std::sync::atomic::Ordering::Relaxed) {
+    while alive.load(std::sync::atomic::Ordering::Acquire) {
         async_cq.poll(&mut wc_buf).await?;
 
         for wc in &wc_buf {

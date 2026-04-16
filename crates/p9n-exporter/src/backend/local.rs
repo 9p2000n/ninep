@@ -712,19 +712,31 @@ impl Backend for LocalBackend {
             let mut remaining = count as usize;
             let mut total: usize = 0;
             while remaining > 0 {
-                let n = nix::fcntl::copy_file_range(
+                match nix::fcntl::copy_file_range(
                     src_fd,
                     Some(&mut off_in),
                     dst_fd,
                     Some(&mut off_out),
                     remaining,
-                )
-                .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
-                if n == 0 {
-                    break;
+                ) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        remaining -= n;
+                        total += n;
+                    }
+                    Err(e) => {
+                        if total > 0 {
+                            // Partial copy succeeded. Return what we have
+                            // (write(2) short-write semantics). The client
+                            // can retry for the remainder.
+                            tracing::debug!(
+                                "copy_range partial: {total} of {count} bytes before error: {e}"
+                            );
+                            break;
+                        }
+                        return Err(io::Error::from_raw_os_error(e as i32));
+                    }
                 }
-                remaining -= n;
-                total += n;
             }
             Ok(total)
         }

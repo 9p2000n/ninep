@@ -12,7 +12,7 @@ use p9n_proto::tag::TagAllocator;
 use p9n_proto::types::{MsgType, NO_TAG};
 use p9n_transport::quic::{datagram, framing};
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 
 pub struct QuicRpcClient {
     conn: quinn::Connection,
@@ -48,18 +48,26 @@ impl QuicRpcClient {
             }
         });
 
-        // Background: accept unidirectional streams (push messages)
+        // Background: accept unidirectional streams (push messages).
+        // Limit concurrent stream readers to prevent unbounded task spawning
+        // from a misbehaving server.
         let conn3 = conn.clone();
         let push_tx3 = push_tx.clone();
+        let stream_limit = Arc::new(Semaphore::new(64));
         tokio::spawn(async move {
             loop {
                 match conn3.accept_uni().await {
                     Ok(mut recv) => {
                         let tx = push_tx3.clone();
+                        let permit = match stream_limit.clone().acquire_owned().await {
+                            Ok(p) => p,
+                            Err(_) => break, // semaphore closed
+                        };
                         tokio::spawn(async move {
                             while let Ok(fc) = framing::read_message(&mut recv).await {
                                 let _ = tx.send(fc).await;
                             }
+                            drop(permit);
                         });
                     }
                     Err(_) => break,
