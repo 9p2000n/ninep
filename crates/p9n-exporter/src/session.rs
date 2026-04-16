@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::os::unix::io::OwnedFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -100,15 +100,19 @@ impl RateLimiter {
     }
 
     /// Wait until both IOPS and BPS budgets allow the operation.
+    ///
+    /// Uses `parking_lot::Mutex` (not tokio) because the critical section
+    /// is a trivial O(1) arithmetic operation that completes in nanoseconds
+    /// and the lock is never held across an `.await` point.
     pub async fn acquire(&self, ops: u32, bytes: u64) {
         if let Some(ref iops) = self.iops {
-            let wait = iops.lock().unwrap().try_consume(ops as f64);
+            let wait = iops.lock().try_consume(ops as f64);
             if let Some(d) = wait {
                 tokio::time::sleep(d).await;
             }
         }
         if let Some(ref bps) = self.bps {
-            let wait = bps.lock().unwrap().try_consume(bytes as f64);
+            let wait = bps.lock().try_consume(bytes as f64);
             if let Some(d) = wait {
                 tokio::time::sleep(d).await;
             }
@@ -207,15 +211,15 @@ impl<H: Send + Sync + 'static> Session<H> {
 
     pub fn reset(&self) {
         self.fids.clear();
-        self.watch_ids.lock().unwrap().clear();
-        *self.caps.lock().unwrap() = CapSet::new();
-        *self.session_key.lock().unwrap() = None;
+        self.watch_ids.lock().clear();
+        *self.caps.lock() = CapSet::new();
+        *self.session_key.lock() = None;
         self.active_caps.clear();
         self.active_leases.clear();
         self.active_streams.clear();
         self.rate_limits.clear();
         self.rdma_tokens.clear();
-        *self.quic_push_binding.lock().unwrap() = None;
+        *self.quic_push_binding.lock() = None;
         self.spiffe_verified.store(false, Ordering::Relaxed);
         // Cancel all in-flight requests
         for entry in self.inflight.iter() {
@@ -224,17 +228,17 @@ impl<H: Send + Sync + 'static> Session<H> {
         self.inflight.clear();
     }
 
-    pub fn get_version(&self) -> Option<String> { self.version.lock().unwrap().clone() }
-    pub fn set_version(&self, v: String) { *self.version.lock().unwrap() = Some(v); }
+    pub fn get_version(&self) -> Option<String> { self.version.lock().clone() }
+    pub fn set_version(&self, v: String) { *self.version.lock() = Some(v); }
     pub fn get_msize(&self) -> u32 { self.msize.load(Ordering::Relaxed) }
     pub fn set_msize(&self, v: u32) { self.msize.store(v, Ordering::Relaxed); }
-    pub fn set_caps(&self, c: CapSet) { *self.caps.lock().unwrap() = c; }
-    pub fn has_cap(&self, cap: &str) -> bool { self.caps.lock().unwrap().has(cap) }
-    pub fn get_session_key(&self) -> Option<[u8; 16]> { *self.session_key.lock().unwrap() }
-    pub fn set_session_key(&self, k: [u8; 16]) { *self.session_key.lock().unwrap() = Some(k); }
-    pub fn add_watch_id(&self, id: u32) { self.watch_ids.lock().unwrap().insert(id); }
-    pub fn remove_watch_id(&self, id: u32) { self.watch_ids.lock().unwrap().remove(&id); }
-    pub fn watch_id_list(&self) -> Vec<u32> { self.watch_ids.lock().unwrap().iter().copied().collect() }
+    pub fn set_caps(&self, c: CapSet) { *self.caps.lock() = c; }
+    pub fn has_cap(&self, cap: &str) -> bool { self.caps.lock().has(cap) }
+    pub fn get_session_key(&self) -> Option<[u8; 16]> { *self.session_key.lock() }
+    pub fn set_session_key(&self, k: [u8; 16]) { *self.session_key.lock() = Some(k); }
+    pub fn add_watch_id(&self, id: u32) { self.watch_ids.lock().insert(id); }
+    pub fn remove_watch_id(&self, id: u32) { self.watch_ids.lock().remove(&id); }
+    pub fn watch_id_list(&self) -> Vec<u32> { self.watch_ids.lock().iter().copied().collect() }
     pub fn is_authenticated(&self) -> bool { self.authenticated.load(Ordering::Relaxed) }
     pub fn set_authenticated(&self, v: bool) { self.authenticated.store(v, Ordering::Relaxed); }
     pub fn is_spiffe_verified(&self) -> bool { self.spiffe_verified.load(Ordering::Relaxed) }

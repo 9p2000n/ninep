@@ -8,6 +8,15 @@ use crate::error::WireError;
 
 type Result<T> = std::result::Result<T, WireError>;
 
+/// Maximum walk path components (9P2000 protocol limit: P9_MAXWELEM).
+const MAX_WELEM: usize = 16;
+/// Maximum elements in a variable-length list field. Prevents
+/// a malicious peer from forcing multi-MB pre-allocation via a
+/// u16 count field (65535 × 24-byte String ≈ 1.5 MB).
+const MAX_LIST_ELEMS: usize = 8192;
+/// Maximum compound sub-operations per message.
+const MAX_COMPOUND_OPS: usize = 256;
+
 fn msg_begin(buf: &mut Buf, t: MsgType, tag: u16) -> usize {
     let off = buf.len();
     buf.put_u32(0); // placeholder for size
@@ -722,12 +731,18 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
             let fid = buf.get_u32()?;
             let newfid = buf.get_u32()?;
             let nwnames = buf.get_u16()? as usize;
+            if nwnames > MAX_WELEM {
+                return Err(WireError::InvalidData(format!("walk: {nwnames} names exceeds limit {MAX_WELEM}")));
+            }
             let mut wnames = Vec::with_capacity(nwnames);
             for _ in 0..nwnames { wnames.push(buf.get_str()?); }
             Msg::Walk { fid, newfid, wnames }
         }
         MsgType::Rwalk => {
             let nqids = buf.get_u16()? as usize;
+            if nqids > MAX_WELEM {
+                return Err(WireError::InvalidData(format!("rwalk: {nqids} qids exceeds limit {MAX_WELEM}")));
+            }
             let mut qids = Vec::with_capacity(nqids);
             for _ in 0..nqids { qids.push(buf.get_qid()?); }
             Msg::Rwalk { qids }
@@ -928,14 +943,20 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
 
         // ── 9P2000.N extension messages ──
         MsgType::Tcaps | MsgType::Rcaps => {
-            let n = buf.get_u16()?;
-            let mut caps = Vec::with_capacity(n as usize);
+            let n = buf.get_u16()? as usize;
+            if n > MAX_LIST_ELEMS {
+                return Err(WireError::InvalidData(format!("caps: {n} entries exceeds limit")));
+            }
+            let mut caps = Vec::with_capacity(n);
             for _ in 0..n { caps.push(buf.get_str()?); }
             Msg::Caps { caps }
         }
         MsgType::Tauthneg => {
-            let n = buf.get_u16()?;
-            let mut mechs = Vec::with_capacity(n as usize);
+            let n = buf.get_u16()? as usize;
+            if n > MAX_LIST_ELEMS {
+                return Err(WireError::InvalidData(format!("authneg: {n} mechs exceeds limit")));
+            }
+            let mut mechs = Vec::with_capacity(n);
             for _ in 0..n { mechs.push(buf.get_str()?); }
             Msg::Authneg { mechs }
         }
@@ -1122,8 +1143,11 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
         }
         MsgType::Rxattrlist => {
             let cookie = buf.get_u64()?;
-            let n = buf.get_u16()?;
-            let mut names = Vec::with_capacity(n as usize);
+            let n = buf.get_u16()? as usize;
+            if n > MAX_LIST_ELEMS {
+                return Err(WireError::InvalidData(format!("xattrlist: {n} names exceeds limit")));
+            }
+            let mut names = Vec::with_capacity(n);
             for _ in 0..n { names.push(buf.get_str()?); }
             Msg::Rxattrlist { cookie, names }
         }
@@ -1149,7 +1173,9 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
             Msg::Leaseack { lease_id: buf.get_u64()? }
         }
         MsgType::Tsession => {
-            let key: [u8; 16] = buf.get_fixed(16)?.try_into().unwrap();
+            let key_vec = buf.get_fixed(16)?;
+            let key: [u8; 16] = key_vec.try_into()
+                .map_err(|_| WireError::InvalidData("session key must be 16 bytes".into()))?;
             Msg::Session { key, flags: buf.get_u32()? }
         }
         MsgType::Rsession => {
@@ -1165,8 +1191,11 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
             Msg::Topology { fid: buf.get_u32()? }
         }
         MsgType::Rtopology => {
-            let n = buf.get_u16()?;
-            let mut replicas = Vec::with_capacity(n as usize);
+            let n = buf.get_u16()? as usize;
+            if n > MAX_LIST_ELEMS {
+                return Err(WireError::InvalidData(format!("topology: {n} replicas exceeds limit")));
+            }
+            let mut replicas = Vec::with_capacity(n);
             for _ in 0..n {
                 replicas.push(Replica {
                     addr: buf.get_str()?,
@@ -1177,16 +1206,22 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
             Msg::Rtopology { replicas }
         }
         MsgType::Ttraceattr => {
-            let n = buf.get_u16()?;
-            let mut attrs = Vec::with_capacity(n as usize);
+            let n = buf.get_u16()? as usize;
+            if n > MAX_LIST_ELEMS {
+                return Err(WireError::InvalidData(format!("traceattr: {n} attrs exceeds limit")));
+            }
+            let mut attrs = Vec::with_capacity(n);
             for _ in 0..n { attrs.push((buf.get_str()?, buf.get_str()?)); }
             Msg::Traceattr { attrs }
         }
         MsgType::Rhealth => {
             let status = buf.get_u8()?;
             let load = buf.get_u32()?;
-            let n = buf.get_u16()?;
-            let mut metrics = Vec::with_capacity(n as usize);
+            let n = buf.get_u16()? as usize;
+            if n > MAX_LIST_ELEMS {
+                return Err(WireError::InvalidData(format!("health: {n} metrics exceeds limit")));
+            }
+            let mut metrics = Vec::with_capacity(n);
             for _ in 0..n {
                 metrics.push(Metric { name: buf.get_str()?, value: buf.get_u64()? });
             }
@@ -1196,8 +1231,11 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
             Msg::ServerstatsReq { mask: buf.get_u64()? }
         }
         MsgType::Rserverstats => {
-            let n = buf.get_u16()?;
-            let mut stats = Vec::with_capacity(n as usize);
+            let n = buf.get_u16()? as usize;
+            if n > MAX_LIST_ELEMS {
+                return Err(WireError::InvalidData(format!("serverstats: {n} stats exceeds limit")));
+            }
+            let mut stats = Vec::with_capacity(n);
             for _ in 0..n {
                 stats.push(ServerStat {
                     name: buf.get_str()?,
@@ -1276,8 +1314,11 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
         }
         MsgType::Rsearch => {
             let cookie = buf.get_u64()?;
-            let n = buf.get_u16()?;
-            let mut entries = Vec::with_capacity(n as usize);
+            let n = buf.get_u16()? as usize;
+            if n > MAX_LIST_ELEMS {
+                return Err(WireError::InvalidData(format!("search: {n} entries exceeds limit")));
+            }
+            let mut entries = Vec::with_capacity(n);
             for _ in 0..n {
                 entries.push(SearchEntry {
                     qid: buf.get_qid()?,
@@ -1307,10 +1348,18 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
 }
 
 fn unmarshal_subops(buf: &mut Buf) -> Result<Vec<SubOp>> {
-    let n = buf.get_u16()?;
-    let mut ops = Vec::with_capacity(n as usize);
+    let n = buf.get_u16()? as usize;
+    if n > MAX_COMPOUND_OPS {
+        return Err(WireError::InvalidData(format!("compound: {n} ops exceeds limit {MAX_COMPOUND_OPS}")));
+    }
+    let mut ops = Vec::with_capacity(n);
     for _ in 0..n {
         let opsize = buf.get_u32()? as usize;
+        if opsize < SUBOP_HDR_SZ {
+            return Err(WireError::InvalidData(format!(
+                "compound subop size {opsize} smaller than header {SUBOP_HDR_SZ}"
+            )));
+        }
         let t = buf.get_u8()?;
         let plen = opsize - SUBOP_HDR_SZ;
         let payload = if plen > 0 { buf.get_fixed(plen)? } else { vec![] };

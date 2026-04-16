@@ -435,11 +435,32 @@ impl LeasedSlot {
         self.idx
     }
 
+    /// Slot size in bytes.
+    pub fn len(&self) -> usize {
+        self.pool.slot_size
+    }
+
     /// Read data from this slot.
     pub fn as_slice(&self) -> &[u8] {
         let offset = self.idx as usize * self.pool.slot_size;
         unsafe {
             std::slice::from_raw_parts(
+                self.pool.buf.add(offset),
+                self.pool.slot_size,
+            )
+        }
+    }
+
+    /// Get a mutable slice for writing data into this slot.
+    ///
+    /// # Safety (internal)
+    /// The slot is exclusively owned by this `LeasedSlot`, so mutable
+    /// access is safe as long as no RDMA work request is in flight
+    /// referencing this buffer.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        let offset = self.idx as usize * self.pool.slot_size;
+        unsafe {
+            std::slice::from_raw_parts_mut(
                 self.pool.buf.add(offset),
                 self.pool.slot_size,
             )

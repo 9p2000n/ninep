@@ -23,17 +23,27 @@ pub fn map_io_error(e: &(dyn std::error::Error + Send + Sync + 'static)) -> u32 
         match io_err.raw_os_error() {
             Some(errno) => errno as u32,
             None => match io_err.kind() {
-                std::io::ErrorKind::NotFound => 2,          // ENOENT
-                std::io::ErrorKind::PermissionDenied => 13,  // EACCES
-                std::io::ErrorKind::AlreadyExists => 17,     // EEXIST
-                std::io::ErrorKind::InvalidInput => 22,      // EINVAL
-                std::io::ErrorKind::WouldBlock => 11,        // EAGAIN
-                std::io::ErrorKind::TimedOut => 110,          // ETIMEDOUT
-                _ => 5,                                       // EIO
+                std::io::ErrorKind::NotFound => libc::ENOENT as u32,
+                std::io::ErrorKind::PermissionDenied => libc::EACCES as u32,
+                std::io::ErrorKind::AlreadyExists => libc::EEXIST as u32,
+                std::io::ErrorKind::InvalidInput => libc::EINVAL as u32,
+                std::io::ErrorKind::WouldBlock => libc::EAGAIN as u32,
+                std::io::ErrorKind::TimedOut => libc::ETIMEDOUT as u32,
+                std::io::ErrorKind::BrokenPipe => libc::EPIPE as u32,
+                std::io::ErrorKind::ConnectionRefused => libc::ECONNREFUSED as u32,
+                std::io::ErrorKind::ConnectionReset => libc::ECONNRESET as u32,
+                std::io::ErrorKind::ConnectionAborted => libc::ECONNABORTED as u32,
+                std::io::ErrorKind::AddrInUse => libc::EADDRINUSE as u32,
+                std::io::ErrorKind::AddrNotAvailable => libc::EADDRNOTAVAIL as u32,
+                std::io::ErrorKind::Interrupted => libc::EINTR as u32,
+                std::io::ErrorKind::Unsupported => libc::ENOSYS as u32,
+                std::io::ErrorKind::OutOfMemory => libc::ENOMEM as u32,
+                std::io::ErrorKind::InvalidData => libc::EILSEQ as u32,
+                _ => libc::EIO as u32,
             },
         }
     } else {
-        5 // EIO
+        libc::EIO as u32
     }
 }
 

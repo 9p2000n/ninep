@@ -49,7 +49,7 @@ pub async fn handle<H: Send + Sync + 'static>(
         return Ok(lerror(tag, libc::EINVAL as u32));
     }
     // 5. One binding per session; rebinding is rejected.
-    if session.quic_push_binding.lock().unwrap().is_some() {
+    if session.quic_push_binding.lock().is_some() {
         return Ok(lerror(tag, libc::EBUSY as u32));
     }
     // 6. The QUIC connection loop must have given us a bind channel. A
@@ -88,7 +88,7 @@ pub async fn handle<H: Send + Sync + 'static>(
     // clear step 4 and reach here. The first to insert wins; the second
     // must release its alias. In practice this is impossible because dispatch
     // processes messages sequentially per session, but defend against it.
-    let mut slot = session.quic_push_binding.lock().unwrap();
+    let mut slot = session.quic_push_binding.lock();
     if slot.is_some() {
         tracing::warn!("Tquicstream: racing rebind detected, dropping alias {alias}");
         return Ok(lerror(tag, libc::EBUSY as u32));

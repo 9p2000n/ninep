@@ -11,7 +11,8 @@ use p9n_proto::wire::Qid;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 /// A watch event ready to be sent as Rnotify to a client.
@@ -97,7 +98,7 @@ impl WatchManager {
                 RecursiveMode::NonRecursive
             };
             // Only lock the OS watcher for the actual watch syscall
-            let mut watcher = self.watcher.lock().unwrap();
+            let mut watcher = self.watcher.lock();
             if let Err(e) = watcher.watch(&canonical, mode) {
                 // Cleanup on failure
                 if let Some(mut regs) = self.path_watches.get_mut(&canonical) {
@@ -135,7 +136,7 @@ impl WatchManager {
 
         if should_unwatch {
             self.path_watches.remove(&path);
-            let mut watcher = self.watcher.lock().unwrap();
+            let mut watcher = self.watcher.lock();
             let _ = watcher.unwatch(&path);
         }
 

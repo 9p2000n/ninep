@@ -31,6 +31,7 @@ tokio-util = "0.7"
 libc = "0.2"
 blake3 = "1"
 getrandom = "0.2"
+parking_lot = "0.12"
 
 [dev-dependencies]
 rcgen = "0.13"

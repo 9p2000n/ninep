@@ -177,16 +177,9 @@ impl RdmaRpcClient {
         tracing::trace!("rdma write: fid={fid} offset={offset} len={} (RDMA path)", data.len());
 
         // Copy data into the RDMA buffer so the server can RDMA Read it.
-        // Note: we need to write to the buffer that the server knows about.
-        if let Some(buf_ref) = self.fid_buffers.get_mut(&fid) {
-            let slot_data = buf_ref.as_slice();
-            // We can't write to LeasedSlot directly (immutable). For now,
-            // use unsafe to write to the buffer (the slot address is known).
-            let len = data.len().min(slot_data.len());
-            unsafe {
-                let dst = buf_ref.addr() as *mut u8;
-                std::ptr::copy_nonoverlapping(data.as_ptr(), dst, len);
-            }
+        if let Some(mut buf_ref) = self.fid_buffers.get_mut(&fid) {
+            let len = data.len().min(buf_ref.len());
+            buf_ref.as_mut_slice()[..len].copy_from_slice(&data[..len]);
         }
 
         // Send Twrite with empty data — server will RDMA Read.

@@ -101,7 +101,7 @@ impl LocalBackend {
 
     pub fn make_statfs(path: &Path) -> io::Result<StatFs> {
         let svfs = nix::sys::statvfs::statvfs(path)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         Ok(StatFs {
             fs_type: 0x01021997,
             bsize: svfs.block_size() as u32,
@@ -193,7 +193,7 @@ impl Backend for LocalBackend {
                 nix::fcntl::OFlag::O_RDONLY | nix::fcntl::OFlag::O_DIRECTORY,
                 nix::sys::stat::Mode::empty(),
             )
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
             let owned = unsafe { OwnedFd::from_raw_fd(fd) };
             let meta = std::fs::metadata(path)?;
             (owned, meta)
@@ -216,7 +216,7 @@ impl Backend for LocalBackend {
                 oflags,
                 nix::sys::stat::Mode::empty(),
             )
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
             let owned = unsafe { OwnedFd::from_raw_fd(fd) };
             let meta = std::fs::symlink_metadata(path)?;
             (owned, meta)
@@ -256,7 +256,7 @@ impl Backend for LocalBackend {
     fn fsync(&self, handle: &OwnedFd) -> io::Result<()> {
         tracing::trace!("backend fsync");
         nix::unistd::fsync(handle.as_raw_fd())
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))
     }
 
     // ── Create ──
@@ -291,7 +291,7 @@ impl Backend for LocalBackend {
 
         let nix_mode = nix::sys::stat::Mode::from_bits_truncate(mode as nix::sys::stat::mode_t);
         let fd = nix::fcntl::open(resolved.as_os_str(), oflags, nix_mode)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
 
         let meta = std::fs::metadata(&resolved)?;
@@ -347,7 +347,7 @@ impl Backend for LocalBackend {
             _ => nix::sys::stat::SFlag::S_IFREG,
         };
         nix::sys::stat::mknod(&resolved, sflag, nix_mode, dev)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         let meta = std::fs::symlink_metadata(&resolved)?;
         Ok((Self::make_qid(&meta), resolved))
     }
@@ -384,7 +384,7 @@ impl Backend for LocalBackend {
                 None
             };
             nix::unistd::chown(path, uid, gid)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         }
         if attr.valid & (P9_SETATTR_ATIME | P9_SETATTR_MTIME) != 0 {
             let atime = if attr.valid & P9_SETATTR_ATIME_SET != 0 {
@@ -408,7 +408,7 @@ impl Backend for LocalBackend {
                 &mtime,
                 nix::sys::stat::UtimensatFlags::NoFollowSymlink,
             )
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         }
         Ok(())
     }
@@ -416,7 +416,7 @@ impl Backend for LocalBackend {
     fn statfs(&self, path: &Path) -> io::Result<StatFs> {
         tracing::trace!("backend statfs: {}", path.display());
         let svfs = nix::sys::statvfs::statvfs(path)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         Ok(StatFs {
             fs_type: 0x01021997, // V9FS_MAGIC
             bsize: svfs.block_size() as u32,
@@ -740,7 +740,7 @@ impl Backend for LocalBackend {
         tracing::trace!("backend allocate: mode={mode} offset={offset} length={length}");
         let flags = nix::fcntl::FallocateFlags::from_bits_truncate(mode as i32);
         nix::fcntl::fallocate(handle.as_raw_fd(), flags, offset as i64, length as i64)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))
     }
 
     fn hash(
@@ -790,6 +790,6 @@ impl Backend for LocalBackend {
             None
         };
         nix::unistd::chown(path, nix_uid, nix_gid)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))
     }
 }

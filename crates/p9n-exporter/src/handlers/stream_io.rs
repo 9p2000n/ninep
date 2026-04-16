@@ -8,7 +8,7 @@ use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use crate::util::join_err;
 
 static NEXT_STREAM_ID: AtomicU32 = AtomicU32::new(1);
@@ -53,7 +53,7 @@ pub async fn handle<B: Backend>(
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "unknown stream"))?;
             let handle = stream.handle.clone();
             let direction = stream.direction;
-            let offset = *stream.offset.lock().unwrap();
+            let offset = *stream.offset.lock();
             drop(stream);
 
             if direction == STREAM_WRITE {
@@ -66,7 +66,7 @@ pub async fn handle<B: Backend>(
                 .map_err(join_err)??;
 
                 if let Some(stream) = session.active_streams.get(&stream_id) {
-                    *stream.offset.lock().unwrap() += written as u64;
+                    *stream.offset.lock() += written as u64;
                 }
 
                 tracing::debug!("stream write: id={stream_id} seq={seq} len={data_len} written={written}");
@@ -83,7 +83,7 @@ pub async fn handle<B: Backend>(
 
                 let read_len = read_data.len();
                 if let Some(stream) = session.active_streams.get(&stream_id) {
-                    *stream.offset.lock().unwrap() += read_len as u64;
+                    *stream.offset.lock() += read_len as u64;
                 }
 
                 tracing::debug!("stream read: id={stream_id} seq={seq} len={read_len}");
@@ -100,9 +100,11 @@ pub async fn handle<B: Backend>(
                 if stream.direction == STREAM_WRITE {
                     let handle = stream.handle;
                     let ctx = ctx.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        ctx.backend.fsync(&handle)
-                    }).await;
+                    match tokio::task::spawn_blocking(move || ctx.backend.fsync(&handle)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => tracing::warn!("stream {stream_id} fsync failed on close: {e}"),
+                        Err(e) => tracing::warn!("stream {stream_id} fsync task panicked: {e}"),
+                    }
                 }
             }
 

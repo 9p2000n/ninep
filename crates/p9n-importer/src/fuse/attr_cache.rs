@@ -7,7 +7,7 @@
 use lru::LruCache;
 use p9n_proto::wire::Stat;
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 pub struct AttrCache {
@@ -25,7 +25,7 @@ impl AttrCache {
 
     /// Get a cached stat if it exists and hasn't expired.
     pub fn get(&self, ino: u64) -> Option<Stat> {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         if let Some((stat, time)) = cache.get(&ino) {
             if time.elapsed() < self.ttl {
                 return Some(stat.clone());
@@ -38,19 +38,19 @@ impl AttrCache {
     /// Get a cached stat regardless of TTL expiry. Used when the inode has an
     /// active server lease — the lease guarantees coherence via Rleasebreak push.
     pub fn get_leased(&self, ino: u64) -> Option<Stat> {
-        let cache = self.cache.lock().unwrap();
+        let cache = self.cache.lock();
         cache.peek(&ino).map(|(stat, _)| stat.clone())
     }
 
     pub fn put(&self, ino: u64, stat: Stat) {
         tracing::trace!("attr_cache put: ino={ino} size={}", stat.size);
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.put(ino, (stat, Instant::now()));
     }
 
     pub fn invalidate(&self, ino: u64) {
         tracing::trace!("attr_cache invalidate: ino={ino}");
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.pop(&ino);
     }
 }

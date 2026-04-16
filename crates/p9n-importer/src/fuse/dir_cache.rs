@@ -7,7 +7,7 @@
 use fuse3::raw::prelude::DirectoryEntry;
 use lru::LruCache;
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 pub struct DirCache {
@@ -27,7 +27,7 @@ impl DirCache {
     /// index is strictly greater than `offset` (the offset a FUSE readdir
     /// call has already consumed).
     pub fn get(&self, ino: u64, offset: i64) -> Option<Vec<DirectoryEntry>> {
-        let mut cache = self.cache.lock().ok()?;
+        let mut cache = self.cache.lock();
         let (entries, time) = cache.get(&ino)?;
         if time.elapsed() >= self.ttl {
             cache.pop(&ino);
@@ -42,14 +42,10 @@ impl DirCache {
     /// Store the full entry list for `ino`. Call only with the entries
     /// starting from offset 0 — partial listings are not cached.
     pub fn put(&self, ino: u64, entries: Vec<DirectoryEntry>) {
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.put(ino, (entries, Instant::now()));
-        }
+        self.cache.lock().put(ino, (entries, Instant::now()));
     }
 
     pub fn invalidate(&self, ino: u64) {
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.pop(&ino);
-        }
+        self.cache.lock().pop(&ino);
     }
 }
