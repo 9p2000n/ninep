@@ -117,13 +117,7 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     // because Tattach is SVID-authenticated, not uid-authenticated:
     // the importer's pre-setuid uid does not affect server-side
     // identity resolution.
-    let posix = resolve_posix_identity(
-        &args,
-        &identity,
-        mapping_jwks.as_ref(),
-        &importer,
-    )
-    .await?;
+    let posix = resolve_posix_identity(&args, &identity, mapping_jwks.as_ref(), &importer).await?;
 
     let endpoint = importer.endpoint.take();
     let transport = match args.transport.as_str() {
@@ -156,9 +150,9 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     // mount() path falls through to the unprivileged `fusermount3` helper
     // because euid is no longer 0. See docs/POSIX_IDENTITY.md §7.1.
     if args.setuid_from_mapping {
-        let p = posix.as_ref().expect(
-            "resolve_posix_identity guarantees Some when --setuid-from-mapping is set",
-        );
+        let p = posix
+            .as_ref()
+            .expect("resolve_posix_identity guarantees Some when --setuid-from-mapping is set");
         p9n_importer::posix_bootstrap::apply_setuid(p)
             .map_err(|e| format!("setuid bootstrap failed: {e}"))?;
     }
@@ -166,7 +160,14 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     let mut mount_handle = mount(fs, &args.mount).await?;
 
     let fuse_exited = serve(&mut mount_handle).await;
-    shutdown(fuse_exited, mount_handle, shutdown_handle, endpoint, &args.mount).await;
+    shutdown(
+        fuse_exited,
+        mount_handle,
+        shutdown_handle,
+        endpoint,
+        &args.mount,
+    )
+    .await;
 
     Ok(())
 }
@@ -186,11 +187,15 @@ fn load_mapping_jwks(
     path: Option<&str>,
 ) -> Result<Option<p9n_auth::spiffe::jwt_svid::JwkSet>, Box<dyn std::error::Error + Send + Sync>> {
     let Some(path) = path else { return Ok(None) };
-    let bytes = std::fs::read(path)
-        .map_err(|e| format!("read --posix-mapping-jwks {path}: {e}"))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("read --posix-mapping-jwks {path}: {e}"))?;
     let jwks = p9n_auth::spiffe::jwt_svid::JwkSet::from_json(&bytes)
         .map_err(|e| format!("parse --posix-mapping-jwks {path}: {e}"))?;
-    tracing::info!(path, keys = jwks.keys.len(), "loaded mapping-bundle JWK Set");
+    tracing::info!(
+        path,
+        keys = jwks.keys.len(),
+        "loaded mapping-bundle JWK Set"
+    );
     Ok(Some(jwks))
 }
 
@@ -290,7 +295,9 @@ async fn load_auth(
     if let Some(ref socket) = args.spiffe_agent_socket {
         return Ok(p9n_auth::SpiffeAuth::from_workload_api(socket).await?);
     }
-    Ok(p9n_auth::SpiffeAuth::from_pem_files(&args.cert, &args.key, &args.ca)?)
+    Ok(p9n_auth::SpiffeAuth::from_pem_files(
+        &args.cert, &args.key, &args.ca,
+    )?)
 }
 
 // ── Transport ──
@@ -301,21 +308,22 @@ async fn connect(
 ) -> Result<p9n_importer::importer::Importer, Box<dyn std::error::Error + Send + Sync>> {
     match args.transport.as_str() {
         "tcp" => {
-            p9n_importer::importer::Importer::connect_tcp(
-                &args.exporter, &args.hostname, auth,
-            ).await
+            p9n_importer::importer::Importer::connect_tcp(&args.exporter, &args.hostname, auth)
+                .await
         }
         #[cfg(feature = "rdma")]
         "rdma" => {
             p9n_importer::importer::Importer::connect_rdma(
-                &args.exporter, &args.hostname, auth,
+                &args.exporter,
+                &args.hostname,
+                auth,
                 args.rdma_device.as_deref(),
-            ).await
+            )
+            .await
         }
         _ => {
-            p9n_importer::importer::Importer::connect_quic(
-                &args.exporter, &args.hostname, auth,
-            ).await
+            p9n_importer::importer::Importer::connect_quic(&args.exporter, &args.hostname, auth)
+                .await
         }
     }
 }
@@ -348,8 +356,7 @@ async fn mount(
 
 /// Returns `true` if the FUSE session ended on its own (external unmount or error).
 async fn serve(mount_handle: &mut fuse3::raw::MountHandle) -> bool {
-    let mut sigterm = signal(SignalKind::terminate())
-        .expect("failed to register SIGTERM handler");
+    let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
 
     tokio::select! {
         res = mount_handle => {

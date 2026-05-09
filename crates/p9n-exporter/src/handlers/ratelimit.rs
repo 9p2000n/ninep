@@ -11,13 +11,18 @@ use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
 
-pub fn handle<B: Backend>(session: &Session<B::Handle>, ctx: &Arc<SharedCtx<B>>, fc: Fcall) -> HandlerResult {
+pub fn handle<B: Backend>(
+    session: &Session<B::Handle>,
+    ctx: &Arc<SharedCtx<B>>,
+    fc: Fcall,
+) -> HandlerResult {
     let Msg::Ratelimit { fid, iops, bps } = fc.msg else {
         return Err("expected Ratelimit".into());
     };
     let tag = fc.tag;
     tracing::debug!(
-        tag, fid,
+        tag,
+        fid,
         requested_iops = iops,
         requested_bps = bps,
         enable_rate_limit = ctx.config.enable_rate_limit,
@@ -25,13 +30,24 @@ pub fn handle<B: Backend>(session: &Session<B::Handle>, ctx: &Arc<SharedCtx<B>>,
     );
 
     // Cap to server-configured maximums.
-    let effective_iops = if iops > 0 { iops.min(ctx.config.max_iops) } else { 0 };
-    let effective_bps = if bps > 0 { bps.min(ctx.config.max_bps) } else { 0 };
+    let effective_iops = if iops > 0 {
+        iops.min(ctx.config.max_iops)
+    } else {
+        0
+    };
+    let effective_bps = if bps > 0 {
+        bps.min(ctx.config.max_bps)
+    } else {
+        0
+    };
 
     if ctx.config.enable_rate_limit && (effective_iops > 0 || effective_bps > 0) {
-        session.rate_limits.insert(fid, RateLimiter::new(effective_iops, effective_bps));
+        session
+            .rate_limits
+            .insert(fid, RateLimiter::new(effective_iops, effective_bps));
         tracing::info!(
-            tag, fid,
+            tag,
+            fid,
             iops = effective_iops,
             bps = effective_bps,
             requested_iops = iops,
@@ -44,7 +60,8 @@ pub fn handle<B: Backend>(session: &Session<B::Handle>, ctx: &Arc<SharedCtx<B>>,
         tracing::info!(tag, fid, removed, "Tratelimit removed");
     } else {
         tracing::debug!(
-            tag, fid,
+            tag,
+            fid,
             requested_iops = iops,
             requested_bps = bps,
             "Tratelimit acknowledged (not enforced)",

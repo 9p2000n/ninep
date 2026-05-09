@@ -7,11 +7,11 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::{CapToken, Session};
 use crate::shared::SharedCtx;
+use crate::util::unknown_fid;
 use p9n_auth::spiffe::jwt_svid;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::unknown_fid;
 
 const MAX_CAP_TTL: u64 = 86400; // 24 hours maximum token lifetime
 
@@ -32,23 +32,21 @@ pub fn handle_capgrant<B: Backend>(
     };
     let tag = fc.tag;
     tracing::debug!(
-        tag, fid,
+        tag,
+        fid,
         rights = format_args!("{:#x}", rights),
         depth,
         expiry,
         "Tcapgrant received",
     );
 
-    let client_id = session
-        .spiffe_id
-        .as_deref()
-        .ok_or_else(|| {
-            tracing::debug!(fid, "Tcapgrant rejected: no SPIFFE identity");
-            std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "Tcapgrant requires SPIFFE identity",
-            )
-        })?;
+    let client_id = session.spiffe_id.as_deref().ok_or_else(|| {
+        tracing::debug!(fid, "Tcapgrant rejected: no SPIFFE identity");
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Tcapgrant requires SPIFFE identity",
+        )
+    })?;
 
     // Granted rights cannot exceed the client's policy maximum
     let policy = ctx.access.resolve(Some(client_id));
@@ -77,7 +75,10 @@ pub fn handle_capgrant<B: Backend>(
         effective_expiry,
     )
     .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            e.to_string(),
+        ))
     })?;
 
     tracing::info!(
@@ -112,16 +113,13 @@ pub fn handle_capuse<B: Backend>(
     let tag = fc.tag;
     tracing::debug!(tag, fid, token_len = token.len(), "Tcapuse received");
 
-    let client_id = session
-        .spiffe_id
-        .as_deref()
-        .ok_or_else(|| {
-            tracing::debug!(fid, "Tcapuse rejected: no SPIFFE identity");
-            std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "Tcapuse requires SPIFFE identity",
-            )
-        })?;
+    let client_id = session.spiffe_id.as_deref().ok_or_else(|| {
+        tracing::debug!(fid, "Tcapuse rejected: no SPIFFE identity");
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Tcapuse requires SPIFFE identity",
+        )
+    })?;
 
     // Verify the token
     let result = jwt_svid::verify_cap_token(

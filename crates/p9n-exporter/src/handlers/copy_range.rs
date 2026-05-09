@@ -2,10 +2,10 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{fid_not_open, join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::{fid_not_open, join_err, unknown_fid};
 
 /// Handle Tcopyrange: server-side copy between two open files.
 ///
@@ -31,13 +31,20 @@ pub async fn handle<B: Backend>(
     };
     let tag = fc.tag;
     tracing::debug!(
-        tag, src_fid, dst_fid,
-        src_off, dst_off, count,
+        tag,
+        src_fid,
+        dst_fid,
+        src_off,
+        dst_off,
+        count,
         flags = format_args!("{:#x}", flags),
         "Tcopyrange received",
     );
 
-    let src_state = session.fids.get(src_fid).ok_or_else(|| unknown_fid(src_fid, "Tcopyrange"))?;
+    let src_state = session
+        .fids
+        .get(src_fid)
+        .ok_or_else(|| unknown_fid(src_fid, "Tcopyrange"))?;
     let src_handle = src_state
         .handle
         .as_ref()
@@ -45,7 +52,10 @@ pub async fn handle<B: Backend>(
         .clone();
     drop(src_state);
 
-    let dst_state = session.fids.get(dst_fid).ok_or_else(|| unknown_fid(dst_fid, "Tcopyrange"))?;
+    let dst_state = session
+        .fids
+        .get(dst_fid)
+        .ok_or_else(|| unknown_fid(dst_fid, "Tcopyrange"))?;
     let dst_handle = dst_state
         .handle
         .as_ref()
@@ -55,13 +65,16 @@ pub async fn handle<B: Backend>(
 
     let ctx = ctx.clone();
     let total_copied = tokio::task::spawn_blocking(move || {
-        ctx.backend.copy_range(&src_handle, src_off, &dst_handle, dst_off, count, flags)
+        ctx.backend
+            .copy_range(&src_handle, src_off, &dst_handle, dst_off, count, flags)
     })
     .await
     .map_err(join_err)??;
 
     tracing::debug!(
-        tag, src_fid, dst_fid,
+        tag,
+        src_fid,
+        dst_fid,
         requested = count,
         copied = total_copied,
         "Tcopyrange result",

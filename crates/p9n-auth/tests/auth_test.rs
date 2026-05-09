@@ -11,8 +11,8 @@ fn test_cap_token_encode_decode() {
         &key,
         "spiffe://example.com/app/reader",
         "spiffe://example.com/server",
-        0x03, // READ | WRITE
-        10,   // depth
+        0x03,         // READ | WRITE
+        10,           // depth
         u64::MAX / 2, // far future expiry
     )
     .expect("encode failed");
@@ -42,7 +42,8 @@ fn test_cap_token_wrong_key_rejected() {
         &key1,
         "spiffe://a.com/app",
         "spiffe://a.com/srv",
-        0xFF, 0,
+        0xFF,
+        0,
         u64::MAX / 2,
     )
     .expect("encode failed");
@@ -65,7 +66,8 @@ fn test_cap_token_subject_mismatch_rejected() {
         &key,
         "spiffe://a.com/alice",
         "spiffe://a.com/srv",
-        0xFF, 0,
+        0xFF,
+        0,
         u64::MAX / 2,
     )
     .expect("encode failed");
@@ -79,7 +81,10 @@ fn test_cap_token_subject_mismatch_rejected() {
 
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("mismatch"), "error should mention mismatch: {err}");
+    assert!(
+        err.contains("mismatch"),
+        "error should mention mismatch: {err}"
+    );
 }
 
 #[test]
@@ -90,17 +95,14 @@ fn test_cap_token_expired_rejected() {
         &key,
         "spiffe://a.com/app",
         "spiffe://a.com/srv",
-        0x01, 0,
+        0x01,
+        0,
         1, // expired: Unix epoch + 1 second
     )
     .expect("encode failed");
 
-    let result = jwt_svid::verify_cap_token(
-        &key,
-        &token,
-        "spiffe://a.com/app",
-        "spiffe://a.com/srv",
-    );
+    let result =
+        jwt_svid::verify_cap_token(&key, &token, "spiffe://a.com/app", "spiffe://a.com/srv");
 
     assert!(result.is_err());
 }
@@ -112,7 +114,8 @@ fn test_extract_spiffe_id_from_jwt_unverified() {
         &key,
         "spiffe://test.org/workload/api",
         "spiffe://test.org/server",
-        0xFF, 5,
+        0xFF,
+        5,
         u64::MAX / 2,
     )
     .expect("encode failed");
@@ -173,19 +176,15 @@ fn test_trust_bundle_store() {
 
 // ── X.509 Chain Verification ──
 
-fn make_test_ca_and_leaf(
-    domain: &str,
-    workload: &str,
-) -> (Vec<u8>, Vec<u8>) {
+fn make_test_ca_and_leaf(domain: &str, workload: &str) -> (Vec<u8>, Vec<u8>) {
     use rcgen::{CertificateParams, KeyPair, SanType};
 
     // Generate CA
     let mut ca_params = CertificateParams::new(vec![]).unwrap();
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    ca_params.distinguished_name.push(
-        rcgen::DnType::CommonName,
-        format!("{domain} CA"),
-    );
+    ca_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, format!("{domain} CA"));
     let ca_key = KeyPair::generate().unwrap();
     let ca_cert = ca_params.self_signed(&ca_key).unwrap();
 
@@ -193,10 +192,9 @@ fn make_test_ca_and_leaf(
     let spiffe_id = format!("spiffe://{domain}/{workload}");
     let mut leaf_params = CertificateParams::new(vec![]).unwrap();
     leaf_params.subject_alt_names = vec![SanType::URI(spiffe_id.parse().unwrap())];
-    leaf_params.distinguished_name.push(
-        rcgen::DnType::CommonName,
-        workload.to_string(),
-    );
+    leaf_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, workload.to_string());
     let leaf_key = KeyPair::generate().unwrap();
     let leaf_cert = leaf_params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
 
@@ -250,8 +248,8 @@ fn test_chain_verify_wrong_ca() {
     let store = TrustBundleStore::new();
     store.add("example.com", vec![other_ca_der]); // wrong CA
 
-    let err = chain_verifier::verify_x509_svid(&leaf_der, &store)
-        .expect_err("should fail with wrong CA");
+    let err =
+        chain_verifier::verify_x509_svid(&leaf_der, &store).expect_err("should fail with wrong CA");
     assert!(
         err.to_string().contains("chain verification failed"),
         "error should mention chain verification: {err}"
@@ -264,8 +262,14 @@ fn test_chain_verify_wrong_ca() {
 fn test_extract_trust_domain() {
     use p9n_auth::spiffe::x509_svid::extract_trust_domain;
 
-    assert_eq!(extract_trust_domain("spiffe://example.com/app").unwrap(), "example.com");
-    assert_eq!(extract_trust_domain("spiffe://a.b.c/x/y/z").unwrap(), "a.b.c");
+    assert_eq!(
+        extract_trust_domain("spiffe://example.com/app").unwrap(),
+        "example.com"
+    );
+    assert_eq!(
+        extract_trust_domain("spiffe://a.b.c/x/y/z").unwrap(),
+        "a.b.c"
+    );
     assert!(extract_trust_domain("https://example.com").is_err());
     assert!(extract_trust_domain("not-a-uri").is_err());
 }
@@ -315,6 +319,8 @@ fn test_trust_store_concurrent_readers_writers() {
             }
         }));
     }
-    for h in handles { h.join().unwrap(); }
+    for h in handles {
+        h.join().unwrap();
+    }
     assert_eq!(store.domains().len(), 8 * 50);
 }

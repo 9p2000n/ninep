@@ -14,17 +14,11 @@ pub async fn read_message(recv: &mut quinn::RecvStream) -> Result<Fcall, Transpo
 }
 
 /// Write a 9P message to a QUIC SendStream.
-pub async fn write_message(
-    send: &mut quinn::SendStream,
-    fc: &Fcall,
-) -> Result<(), TransportError> {
+pub async fn write_message(send: &mut quinn::SendStream, fc: &Fcall) -> Result<(), TransportError> {
     crate::framing::write_message(send, fc).await
 }
 
 /// Write pre-encoded wire bytes directly (zero-copy fast path).
-pub async fn write_raw(
-    send: &mut quinn::SendStream,
-    data: &[u8],
-) -> Result<(), TransportError> {
+pub async fn write_raw(send: &mut quinn::SendStream, data: &[u8]) -> Result<(), TransportError> {
     crate::framing::write_raw(send, data).await
 }

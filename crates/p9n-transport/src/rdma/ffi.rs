@@ -53,15 +53,15 @@ pub struct ibv_mr {
 
 #[repr(C)]
 pub struct ibv_qp {
-    _priv1: *mut c_void,     // context
-    _priv2: *mut c_void,     // qp_context
-    _priv3: *mut c_void,     // pd
-    _priv4: *mut c_void,     // send_cq
-    _priv5: *mut c_void,     // recv_cq
-    _priv6: *mut c_void,     // srq
-    _priv7: u32,             // handle
+    _priv1: *mut c_void, // context
+    _priv2: *mut c_void, // qp_context
+    _priv3: *mut c_void, // pd
+    _priv4: *mut c_void, // send_cq
+    _priv5: *mut c_void, // recv_cq
+    _priv6: *mut c_void, // srq
+    _priv7: u32,         // handle
     pub qp_num: u32,
-    _priv8: u32,             // state (ibv_qp_state)
+    _priv8: u32, // state (ibv_qp_state)
     pub qp_type: u32,
     // ... more fields follow but we don't access them
 }

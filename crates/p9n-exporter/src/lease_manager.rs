@@ -118,17 +118,17 @@ impl LeaseManager {
     /// leases are broken (Rleasebreak pushed) and `Granted` is returned.
     /// If a conflicting WRITE lease from another connection exists, `Conflict`
     /// is returned.
-    pub fn try_grant(
-        &self,
-        qid_path: u64,
-        lease_type: u8,
-        conn_id: u64,
-    ) -> GrantResult {
+    pub fn try_grant(&self, qid_path: u64, lease_type: u8, conn_id: u64) -> GrantResult {
         tracing::trace!(qid_path, lease_type, conn_id, "lease try_grant");
         let lease_ids = match self.path_leases.get(&qid_path) {
             Some(ids) => ids.clone(),
             None => {
-                tracing::trace!(qid_path, lease_type, conn_id, "lease granted: no existing leases on path");
+                tracing::trace!(
+                    qid_path,
+                    lease_type,
+                    conn_id,
+                    "lease granted: no existing leases on path"
+                );
                 return GrantResult::Granted;
             }
         };
@@ -207,9 +207,19 @@ impl LeaseManager {
                     }
                 }
             }
-            tracing::debug!(qid_path, conn_id, broken, "lease granted: WRITE after breaking READs");
+            tracing::debug!(
+                qid_path,
+                conn_id,
+                broken,
+                "lease granted: WRITE after breaking READs"
+            );
         } else {
-            tracing::trace!(qid_path, conn_id, lease_type, "lease granted: compatible with existing");
+            tracing::trace!(
+                qid_path,
+                conn_id,
+                lease_type,
+                "lease granted: compatible with existing"
+            );
         }
 
         GrantResult::Granted
@@ -233,10 +243,7 @@ impl LeaseManager {
                 push_tx,
             },
         );
-        self.path_leases
-            .entry(qid_path)
-            .or_default()
-            .push(lease_id);
+        self.path_leases.entry(qid_path).or_default().push(lease_id);
         tracing::debug!(
             lease_id,
             qid_path,
@@ -311,7 +318,10 @@ impl LeaseManager {
                 "lease acknowledged and removed",
             );
         } else {
-            tracing::trace!(lease_id, "lease acknowledge: lease not found (already removed)");
+            tracing::trace!(
+                lease_id,
+                "lease acknowledge: lease not found (already removed)"
+            );
         }
     }
 

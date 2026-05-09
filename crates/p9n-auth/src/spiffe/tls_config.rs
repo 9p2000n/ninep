@@ -1,7 +1,7 @@
 //! Build rustls TLS configurations with SPIFFE certificates.
 
+use super::{cert_resolver::SpiffeCertResolver, trust_bundle::TrustBundleStore, SpiffeIdentity};
 use crate::error::AuthError;
-use super::{SpiffeIdentity, trust_bundle::TrustBundleStore, cert_resolver::SpiffeCertResolver};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::sync::Arc;
 
@@ -68,9 +68,7 @@ pub fn client_config(
         .cloned()
         .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
 
-    let verifier = super::server_verifier::SpiffeServerVerifier::new(
-        trust_store, crypto_provider,
-    );
+    let verifier = super::server_verifier::SpiffeServerVerifier::new(trust_store, crypto_provider);
 
     let config = rustls::ClientConfig::builder()
         .dangerous()

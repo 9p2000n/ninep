@@ -2,10 +2,10 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::{join_err, unknown_fid};
 
 /// Handle Tunlinkat: remove a file or directory.
 pub async fn handle_unlinkat<B: Backend>(
@@ -32,7 +32,10 @@ pub async fn handle_unlinkat<B: Backend>(
         "Tunlinkat received",
     );
 
-    let fid_state = session.fids.get(dirfid).ok_or_else(|| unknown_fid(dirfid, "Tunlinkat"))?;
+    let fid_state = session
+        .fids
+        .get(dirfid)
+        .ok_or_else(|| unknown_fid(dirfid, "Tunlinkat"))?;
     let target = fid_state.path.join(&name);
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
@@ -73,7 +76,10 @@ pub async fn handle_remove<B: Backend>(
     let tag = fc.tag;
     tracing::debug!(tag, fid, "Tremove received");
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tremove"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tremove"))?;
     let path = fid_state.path.clone();
     let is_dir = fid_state.is_dir;
     let qid_path = fid_state.qid.path;
@@ -94,7 +100,10 @@ pub async fn handle_remove<B: Backend>(
     session.fids.remove(fid);
 
     tracing::debug!(
-        tag, fid, qid_path, is_dir,
+        tag,
+        fid,
+        qid_path,
+        is_dir,
         fids_total = session.fids.len(),
         "Tremove result",
     );
@@ -130,12 +139,18 @@ pub async fn handle_renameat<B: Backend>(
         "Trenameat received",
     );
 
-    let old_dir = session.fids.get(olddirfid).ok_or_else(|| unknown_fid(olddirfid, "Trenameat"))?;
+    let old_dir = session
+        .fids
+        .get(olddirfid)
+        .ok_or_else(|| unknown_fid(olddirfid, "Trenameat"))?;
     let old_path = old_dir.path.join(&oldname);
     let old_dir_qid = old_dir.qid.path;
     drop(old_dir);
 
-    let new_dir = session.fids.get(newdirfid).ok_or_else(|| unknown_fid(newdirfid, "Trenameat"))?;
+    let new_dir = session
+        .fids
+        .get(newdirfid)
+        .ok_or_else(|| unknown_fid(newdirfid, "Trenameat"))?;
     let new_path = new_dir.path.join(&newname);
     let new_dir_qid = new_dir.qid.path;
     drop(new_dir);

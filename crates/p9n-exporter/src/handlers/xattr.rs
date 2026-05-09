@@ -4,10 +4,10 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::{join_err, unknown_fid};
 
 pub async fn handle<B: Backend>(
     session: &Session<B::Handle>,
@@ -33,15 +33,18 @@ async fn handle_xattrget<B: Backend>(
     let tag = fc.tag;
     tracing::trace!(tag, fid, name = %name, "Txattrget received");
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Txattrget"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Txattrget"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
     let ctx = ctx.clone();
     let name_for_log = name.clone();
-    let data = tokio::task::spawn_blocking(move || {
-        ctx.backend.xattr_get(&path, &name)
-    }).await.map_err(join_err)??;
+    let data = tokio::task::spawn_blocking(move || ctx.backend.xattr_get(&path, &name))
+        .await
+        .map_err(join_err)??;
 
     tracing::trace!(tag, fid, name = %name_for_log, n = data.len(), "Txattrget result");
 
@@ -58,7 +61,13 @@ async fn handle_xattrset<B: Backend>(
     ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
-    let Msg::Xattrset { fid, name, data, flags } = fc.msg else {
+    let Msg::Xattrset {
+        fid,
+        name,
+        data,
+        flags,
+    } = fc.msg
+    else {
         return Err("expected Xattrset".into());
     };
     let tag = fc.tag;
@@ -71,15 +80,18 @@ async fn handle_xattrset<B: Backend>(
         "Txattrset received",
     );
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Txattrset"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Txattrset"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
     let ctx = ctx.clone();
     let name_for_log = name.clone();
-    tokio::task::spawn_blocking(move || {
-        ctx.backend.xattr_set(&path, &name, &data, flags)
-    }).await.map_err(join_err)??;
+    tokio::task::spawn_blocking(move || ctx.backend.xattr_set(&path, &name, &data, flags))
+        .await
+        .map_err(join_err)??;
 
     tracing::debug!(tag, fid, name = %name_for_log, len = data_len, "Txattrset result");
 
@@ -102,14 +114,17 @@ async fn handle_xattrlist<B: Backend>(
     let tag = fc.tag;
     tracing::trace!(tag, fid, cookie, count, "Txattrlist received");
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Txattrlist"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Txattrlist"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
     let ctx = ctx.clone();
-    let raw_names = tokio::task::spawn_blocking(move || {
-        ctx.backend.xattr_list(&path)
-    }).await.map_err(join_err)??;
+    let raw_names = tokio::task::spawn_blocking(move || ctx.backend.xattr_list(&path))
+        .await
+        .map_err(join_err)??;
 
     // Parse null-separated list into individual names
     let all_names: Vec<String> = raw_names
@@ -121,16 +136,26 @@ async fn handle_xattrlist<B: Backend>(
     let total = all_names.len();
     // Apply pagination: skip entries before cookie, limit to count
     let start = cookie as usize;
-    let names: Vec<String> = all_names.into_iter()
+    let names: Vec<String> = all_names
+        .into_iter()
         .skip(start)
-        .take(if count > 0 { count as usize } else { usize::MAX })
+        .take(if count > 0 {
+            count as usize
+        } else {
+            usize::MAX
+        })
         .collect();
 
     // Next cookie = start + returned count (0 if no more)
-    let next_cookie = if names.is_empty() { 0 } else { (start + names.len()) as u64 };
+    let next_cookie = if names.is_empty() {
+        0
+    } else {
+        (start + names.len()) as u64
+    };
 
     tracing::trace!(
-        tag, fid,
+        tag,
+        fid,
         cookie,
         returned = names.len(),
         next_cookie,
@@ -142,6 +167,9 @@ async fn handle_xattrlist<B: Backend>(
         size: 0,
         msg_type: MsgType::Rxattrlist,
         tag,
-        msg: Msg::Rxattrlist { cookie: next_cookie, names },
+        msg: Msg::Rxattrlist {
+            cookie: next_cookie,
+            names,
+        },
     })
 }

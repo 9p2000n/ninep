@@ -2,10 +2,10 @@
 
 use super::{datagram, framing, streams};
 use crate::error::TransportError;
+use dashmap::DashMap;
 use p9n_proto::classify::{classify, MessageClass};
 use p9n_proto::fcall::Fcall;
 use p9n_proto::types::NO_TAG;
-use dashmap::DashMap;
 use quinn::Connection;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -113,25 +113,20 @@ impl QuicTransport {
                     let (tx, rx) = oneshot::channel();
                     self.dgram_inflight.insert(fc.tag, tx);
 
-                    let response = tokio::time::timeout(
-                        std::time::Duration::from_secs(30),
-                        rx,
-                    )
-                    .await
-                    .map_err(|_| {
-                        self.dgram_inflight.remove(&fc.tag);
-                        TransportError::Timeout
-                    })?
-                    .map_err(|_| TransportError::Closed)?;
+                    let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+                        .await
+                        .map_err(|_| {
+                            self.dgram_inflight.remove(&fc.tag);
+                            TransportError::Timeout
+                        })?
+                        .map_err(|_| TransportError::Closed)?;
 
                     Ok(response)
                 } else {
                     streams::stream_rpc(&self.conn, fc).await
                 }
             }
-            MessageClass::Push => {
-                Err(TransportError::Other("cannot RPC a push message".into()))
-            }
+            MessageClass::Push => Err(TransportError::Other("cannot RPC a push message".into())),
         }
     }
 

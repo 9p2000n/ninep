@@ -1,10 +1,10 @@
 //! Marshal/unmarshal for all 9P2000.N messages.
 
 use crate::buf::Buf;
+use crate::error::WireError;
+use crate::fcall::*;
 use crate::types::*;
 use crate::wire::*;
-use crate::fcall::*;
-use crate::error::WireError;
 
 type Result<T> = std::result::Result<T, WireError>;
 
@@ -43,7 +43,12 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
             buf.put_u32(*msize);
             buf.put_str(version);
         }
-        Msg::Attach { fid, afid, uname, aname } => {
+        Msg::Attach {
+            fid,
+            afid,
+            uname,
+            aname,
+        } => {
             buf.put_u32(*fid);
             buf.put_u32(*afid);
             buf.put_str(uname);
@@ -61,15 +66,23 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Flush { oldtag } => {
             buf.put_u16(*oldtag);
         }
-        Msg::Walk { fid, newfid, wnames } => {
+        Msg::Walk {
+            fid,
+            newfid,
+            wnames,
+        } => {
             buf.put_u32(*fid);
             buf.put_u32(*newfid);
             buf.put_u16(wnames.len() as u16);
-            for w in wnames { buf.put_str(w); }
+            for w in wnames {
+                buf.put_str(w);
+            }
         }
         Msg::Rwalk { qids } => {
             buf.put_u16(qids.len() as u16);
-            for q in qids { buf.put_qid(q); }
+            for q in qids {
+                buf.put_qid(q);
+            }
         }
         Msg::Read { fid, offset, count } => {
             buf.put_u32(*fid);
@@ -101,7 +114,13 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
             buf.put_qid(qid);
             buf.put_u32(*iounit);
         }
-        Msg::Lcreate { fid, name, flags, mode, gid } => {
+        Msg::Lcreate {
+            fid,
+            name,
+            flags,
+            mode,
+            gid,
+        } => {
             buf.put_u32(*fid);
             buf.put_str(name);
             buf.put_u32(*flags);
@@ -112,7 +131,12 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
             buf.put_qid(qid);
             buf.put_u32(*iounit);
         }
-        Msg::Symlink { fid, name, symtgt, gid } => {
+        Msg::Symlink {
+            fid,
+            name,
+            symtgt,
+            gid,
+        } => {
             buf.put_u32(*fid);
             buf.put_str(name);
             buf.put_str(symtgt);
@@ -121,7 +145,14 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rsymlink { qid } => {
             buf.put_qid(qid);
         }
-        Msg::Mknod { dfid, name, mode, major, minor, gid } => {
+        Msg::Mknod {
+            dfid,
+            name,
+            mode,
+            major,
+            minor,
+            gid,
+        } => {
             buf.put_u32(*dfid);
             buf.put_str(name);
             buf.put_u32(*mode);
@@ -189,7 +220,12 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rxattrwalk { size } => {
             buf.put_u64(*size);
         }
-        Msg::Xattrcreate { fid, name, attr_size, flags } => {
+        Msg::Xattrcreate {
+            fid,
+            name,
+            attr_size,
+            flags,
+        } => {
             buf.put_u32(*fid);
             buf.put_str(name);
             buf.put_u64(*attr_size);
@@ -206,7 +242,15 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Fsync { fid } => {
             buf.put_u32(*fid);
         }
-        Msg::Lock { fid, lock_type, flags, start, length, proc_id, client_id } => {
+        Msg::Lock {
+            fid,
+            lock_type,
+            flags,
+            start,
+            length,
+            proc_id,
+            client_id,
+        } => {
             buf.put_u32(*fid);
             buf.put_u8(*lock_type);
             buf.put_u32(*flags);
@@ -218,7 +262,14 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rlock { status } => {
             buf.put_u8(*status);
         }
-        Msg::GetlockReq { fid, lock_type, start, length, proc_id, client_id } => {
+        Msg::GetlockReq {
+            fid,
+            lock_type,
+            start,
+            length,
+            proc_id,
+            client_id,
+        } => {
             buf.put_u32(*fid);
             buf.put_u8(*lock_type);
             buf.put_u64(*start);
@@ -226,7 +277,13 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
             buf.put_u32(*proc_id);
             buf.put_str(client_id);
         }
-        Msg::RgetlockResp { lock_type, start, length, proc_id, client_id } => {
+        Msg::RgetlockResp {
+            lock_type,
+            start,
+            length,
+            proc_id,
+            client_id,
+        } => {
             buf.put_u8(*lock_type);
             buf.put_u64(*start);
             buf.put_u64(*length);
@@ -238,7 +295,12 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
             buf.put_u32(*fid);
             buf.put_str(name);
         }
-        Msg::Mkdir { dfid, name, mode, gid } => {
+        Msg::Mkdir {
+            dfid,
+            name,
+            mode,
+            gid,
+        } => {
             buf.put_u32(*dfid);
             buf.put_str(name);
             buf.put_u32(*mode);
@@ -247,13 +309,22 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rmkdir { qid } => {
             buf.put_qid(qid);
         }
-        Msg::Renameat { olddirfid, oldname, newdirfid, newname } => {
+        Msg::Renameat {
+            olddirfid,
+            oldname,
+            newdirfid,
+            newname,
+        } => {
             buf.put_u32(*olddirfid);
             buf.put_str(oldname);
             buf.put_u32(*newdirfid);
             buf.put_str(newname);
         }
-        Msg::Unlinkat { dirfid, name, flags } => {
+        Msg::Unlinkat {
+            dirfid,
+            name,
+            flags,
+        } => {
             buf.put_u32(*dirfid);
             buf.put_str(name);
             buf.put_u32(*flags);
@@ -276,9 +347,16 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         // ── 9P2000.N extension messages ──
         Msg::Caps { caps } => {
             buf.put_u16(caps.len() as u16);
-            for c in caps { buf.put_str(c); }
+            for c in caps {
+                buf.put_str(c);
+            }
         }
-        Msg::Capgrant { fid, rights, expiry, depth } => {
+        Msg::Capgrant {
+            fid,
+            rights,
+            expiry,
+            depth,
+        } => {
             buf.put_u32(*fid);
             buf.put_u64(*rights);
             buf.put_u64(*expiry);
@@ -298,30 +376,54 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
             buf.put_u32(*fid);
             buf.put_u32(*flags);
         }
-        Msg::StartlsSpiffe { spiffe_id, trust_domain } => {
+        Msg::StartlsSpiffe {
+            spiffe_id,
+            trust_domain,
+        } => {
             buf.put_str(spiffe_id);
             buf.put_str(trust_domain);
         }
-        Msg::Fetchbundle { trust_domain, format } => {
+        Msg::Fetchbundle {
+            trust_domain,
+            format,
+        } => {
             buf.put_str(trust_domain);
             buf.put_u8(*format);
         }
-        Msg::Rfetchbundle { trust_domain, format, bundle } => {
+        Msg::Rfetchbundle {
+            trust_domain,
+            format,
+            bundle,
+        } => {
             buf.put_str(trust_domain);
             buf.put_u8(*format);
             buf.put_data(bundle);
         }
-        Msg::Spiffeverify { svid_type, spiffe_id, svid } => {
+        Msg::Spiffeverify {
+            svid_type,
+            spiffe_id,
+            svid,
+        } => {
             buf.put_u8(*svid_type);
             buf.put_str(spiffe_id);
             buf.put_data(svid);
         }
-        Msg::Rspiffeverify { status, spiffe_id, expiry } => {
+        Msg::Rspiffeverify {
+            status,
+            spiffe_id,
+            expiry,
+        } => {
             buf.put_u8(*status);
             buf.put_str(spiffe_id);
             buf.put_u64(*expiry);
         }
-        Msg::Rdmatoken { fid, direction, rkey, addr, length } => {
+        Msg::Rdmatoken {
+            fid,
+            direction,
+            rkey,
+            addr,
+            length,
+        } => {
             buf.put_u32(*fid);
             buf.put_u8(*direction);
             buf.put_u32(*rkey);
@@ -333,27 +435,46 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
             buf.put_u64(*addr);
             buf.put_u32(*length);
         }
-        Msg::Rdmanotify { rkey, addr, length, slots } => {
+        Msg::Rdmanotify {
+            rkey,
+            addr,
+            length,
+            slots,
+        } => {
             buf.put_u32(*rkey);
             buf.put_u64(*addr);
             buf.put_u32(*length);
             buf.put_u16(*slots);
         }
-        Msg::Quicstream { stream_type, stream_id } => {
+        Msg::Quicstream {
+            stream_type,
+            stream_id,
+        } => {
             buf.put_u8(*stream_type);
             buf.put_u64(*stream_id);
         }
         Msg::Rquicstream { stream_id } => {
             buf.put_u64(*stream_id);
         }
-        Msg::Cxlmap { fid, offset, length, prot, flags } => {
+        Msg::Cxlmap {
+            fid,
+            offset,
+            length,
+            prot,
+            flags,
+        } => {
             buf.put_u32(*fid);
             buf.put_u64(*offset);
             buf.put_u64(*length);
             buf.put_u32(*prot);
             buf.put_u32(*flags);
         }
-        Msg::Rcxlmap { hpa, length, granularity, coherence } => {
+        Msg::Rcxlmap {
+            hpa,
+            length,
+            granularity,
+            coherence,
+        } => {
             buf.put_u64(*hpa);
             buf.put_u64(*length);
             buf.put_u32(*granularity);
@@ -380,7 +501,14 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rcompress { algo } => {
             buf.put_u8(*algo);
         }
-        Msg::Copyrange { src_fid, src_off, dst_fid, dst_off, count, flags } => {
+        Msg::Copyrange {
+            src_fid,
+            src_off,
+            dst_fid,
+            dst_off,
+            count,
+            flags,
+        } => {
             buf.put_u32(*src_fid);
             buf.put_u64(*src_off);
             buf.put_u32(*dst_fid);
@@ -391,13 +519,22 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rcopyrange { count } => {
             buf.put_u64(*count);
         }
-        Msg::Allocate { fid, mode, offset, length } => {
+        Msg::Allocate {
+            fid,
+            mode,
+            offset,
+            length,
+        } => {
             buf.put_u32(*fid);
             buf.put_u32(*mode);
             buf.put_u64(*offset);
             buf.put_u64(*length);
         }
-        Msg::Seekhole { fid, seek_type, offset } => {
+        Msg::Seekhole {
+            fid,
+            seek_type,
+            offset,
+        } => {
             buf.put_u32(*fid);
             buf.put_u8(*seek_type);
             buf.put_u64(*offset);
@@ -405,7 +542,12 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rseekhole { offset } => {
             buf.put_u64(*offset);
         }
-        Msg::Mmaphint { fid, offset, length, prot } => {
+        Msg::Mmaphint {
+            fid,
+            offset,
+            length,
+            prot,
+        } => {
             buf.put_u32(*fid);
             buf.put_u64(*offset);
             buf.put_u64(*length);
@@ -425,7 +567,12 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Unwatch { watch_id } => {
             buf.put_u32(*watch_id);
         }
-        Msg::Notify { watch_id, event, name, qid } => {
+        Msg::Notify {
+            watch_id,
+            event,
+            name,
+            qid,
+        } => {
             buf.put_u32(*watch_id);
             buf.put_u32(*event);
             buf.put_str(name);
@@ -438,7 +585,11 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rgetacl { data } => {
             buf.put_data(data);
         }
-        Msg::Setacl { fid, acl_type, data } => {
+        Msg::Setacl {
+            fid,
+            acl_type,
+            data,
+        } => {
             buf.put_u32(*fid);
             buf.put_u8(*acl_type);
             buf.put_data(data);
@@ -451,7 +602,12 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rsnapshot { qid } => {
             buf.put_qid(qid);
         }
-        Msg::Clone { src_fid, dst_fid, name, flags } => {
+        Msg::Clone {
+            src_fid,
+            dst_fid,
+            name,
+            flags,
+        } => {
             buf.put_u32(*src_fid);
             buf.put_u32(*dst_fid);
             buf.put_str(name);
@@ -467,7 +623,12 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rxattrget { data } => {
             buf.put_data(data);
         }
-        Msg::Xattrset { fid, name, data, flags } => {
+        Msg::Xattrset {
+            fid,
+            name,
+            data,
+            flags,
+        } => {
             buf.put_u32(*fid);
             buf.put_str(name);
             buf.put_data(data);
@@ -481,14 +642,24 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rxattrlist { cookie, names } => {
             buf.put_u64(*cookie);
             buf.put_u16(names.len() as u16);
-            for n in names { buf.put_str(n); }
+            for n in names {
+                buf.put_str(n);
+            }
         }
-        Msg::Lease { fid, lease_type, duration } => {
+        Msg::Lease {
+            fid,
+            lease_type,
+            duration,
+        } => {
             buf.put_u32(*fid);
             buf.put_u8(*lease_type);
             buf.put_u32(*duration);
         }
-        Msg::Rlease { lease_id, lease_type, duration } => {
+        Msg::Rlease {
+            lease_id,
+            lease_type,
+            duration,
+        } => {
             buf.put_u64(*lease_id);
             buf.put_u8(*lease_type);
             buf.put_u32(*duration);
@@ -539,7 +710,11 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
                 buf.put_str(v);
             }
         }
-        Msg::Rhealth { status, load, metrics } => {
+        Msg::Rhealth {
+            status,
+            load,
+            metrics,
+        } => {
             buf.put_u8(*status);
             buf.put_u32(*load);
             buf.put_u16(metrics.len() as u16);
@@ -563,14 +738,26 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
             buf.put_u32(*fid);
             buf.put_u8(*quota_type);
         }
-        Msg::Rgetquota { bytes_used, bytes_limit, files_used, files_limit, grace } => {
+        Msg::Rgetquota {
+            bytes_used,
+            bytes_limit,
+            files_used,
+            files_limit,
+            grace,
+        } => {
             buf.put_u64(*bytes_used);
             buf.put_u64(*bytes_limit);
             buf.put_u64(*files_used);
             buf.put_u64(*files_limit);
             buf.put_u32(*grace);
         }
-        Msg::Setquota { fid, quota_type, bytes_limit, files_limit, grace } => {
+        Msg::Setquota {
+            fid,
+            quota_type,
+            bytes_limit,
+            files_limit,
+            grace,
+        } => {
             buf.put_u32(*fid);
             buf.put_u8(*quota_type);
             buf.put_u64(*bytes_limit);
@@ -586,7 +773,10 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
             buf.put_u32(*iops);
             buf.put_u64(*bps);
         }
-        Msg::Async { inner_type, payload } => {
+        Msg::Async {
+            inner_type,
+            payload,
+        } => {
             buf.put_u8(*inner_type as u8);
             buf.put_bytes(payload);
         }
@@ -597,12 +787,21 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Poll { op_id } => {
             buf.put_u64(*op_id);
         }
-        Msg::Rpoll { status, progress, payload } => {
+        Msg::Rpoll {
+            status,
+            progress,
+            payload,
+        } => {
             buf.put_u8(*status);
             buf.put_u32(*progress);
             buf.put_bytes(payload);
         }
-        Msg::Streamopen { fid, direction, offset, count } => {
+        Msg::Streamopen {
+            fid,
+            direction,
+            offset,
+            count,
+        } => {
             buf.put_u32(*fid);
             buf.put_u8(*direction);
             buf.put_u64(*offset);
@@ -611,7 +810,11 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Rstreamopen { stream_id } => {
             buf.put_u32(*stream_id);
         }
-        Msg::Streamdata { stream_id, seq, data } => {
+        Msg::Streamdata {
+            stream_id,
+            seq,
+            data,
+        } => {
             buf.put_u32(*stream_id);
             buf.put_u32(*seq);
             buf.put_data(data);
@@ -619,7 +822,13 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Streamclose { stream_id } => {
             buf.put_u32(*stream_id);
         }
-        Msg::Search { fid, query, flags, max_results, cookie } => {
+        Msg::Search {
+            fid,
+            query,
+            flags,
+            max_results,
+            cookie,
+        } => {
             buf.put_u32(*fid);
             buf.put_str(query);
             buf.put_u32(*flags);
@@ -635,7 +844,12 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
                 buf.put_u32(e.score);
             }
         }
-        Msg::Hash { fid, algo, offset, length } => {
+        Msg::Hash {
+            fid,
+            algo,
+            offset,
+            length,
+        } => {
             buf.put_u32(*fid);
             buf.put_u8(*algo);
             buf.put_u64(*offset);
@@ -667,8 +881,7 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
     let size = buf.get_u32()?;
     let t = buf.get_u8()?;
     let tag = buf.get_u16()?;
-    let msg_type = MsgType::from_u8(t)
-        .ok_or(WireError::UnknownType(t))?;
+    let msg_type = MsgType::from_u8(t).ok_or(WireError::UnknownType(t))?;
 
     let msg = match msg_type {
         // ── empty-payload responses ──
@@ -1310,13 +1523,20 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
         MsgType::Tnotify | MsgType::Tleasebreak => Msg::Empty,
     };
 
-    Ok(Fcall { size, msg_type, tag, msg })
+    Ok(Fcall {
+        size,
+        msg_type,
+        tag,
+        msg,
+    })
 }
 
 fn unmarshal_subops(buf: &mut Buf) -> Result<Vec<SubOp>> {
     let n = buf.get_u16()? as usize;
     if n > MAX_COMPOUND_OPS {
-        return Err(WireError::InvalidData(format!("compound: {n} ops exceeds limit {MAX_COMPOUND_OPS}")));
+        return Err(WireError::InvalidData(format!(
+            "compound: {n} ops exceeds limit {MAX_COMPOUND_OPS}"
+        )));
     }
     let mut ops = Vec::with_capacity(n);
     for _ in 0..n {
@@ -1328,7 +1548,11 @@ fn unmarshal_subops(buf: &mut Buf) -> Result<Vec<SubOp>> {
         }
         let t = buf.get_u8()?;
         let plen = opsize - SUBOP_HDR_SZ;
-        let payload = if plen > 0 { buf.get_fixed(plen)? } else { vec![] };
+        let payload = if plen > 0 {
+            buf.get_fixed(plen)?
+        } else {
+            vec![]
+        };
         ops.push(SubOp {
             msg_type: MsgType::from_u8(t).unwrap_or(MsgType::Tcaps),
             payload,

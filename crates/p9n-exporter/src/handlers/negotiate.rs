@@ -54,7 +54,10 @@ pub fn handle_caps<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) ->
     session.set_caps(negotiated.clone());
 
     let result_caps: Vec<String> = negotiated.caps().to_vec();
-    let dropped: Vec<&String> = client_caps.iter().filter(|c| !result_caps.contains(c)).collect();
+    let dropped: Vec<&String> = client_caps
+        .iter()
+        .filter(|c| !result_caps.contains(c))
+        .collect();
     tracing::info!(
         n_requested = client_caps.len(),
         n_server = server_caps.caps().len(),
@@ -71,4 +74,3 @@ pub fn handle_caps<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) ->
         msg: Msg::Caps { caps: result_caps },
     })
 }
-

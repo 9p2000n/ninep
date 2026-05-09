@@ -25,8 +25,7 @@ pub fn server_endpoint(
     transport.max_concurrent_uni_streams(16u32.into());
     transport.datagram_receive_buffer_size(Some(65536));
 
-    let endpoint =
-        quinn::Endpoint::server(server_config, bind).map_err(TransportError::Io)?;
+    let endpoint = quinn::Endpoint::server(server_config, bind).map_err(TransportError::Io)?;
 
     Ok(endpoint)
 }
@@ -52,8 +51,8 @@ pub fn client_endpoint(auth: &SpiffeAuth) -> Result<quinn::Endpoint, TransportEr
         tc
     }));
 
-    let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())
-        .map_err(TransportError::Io)?;
+    let mut endpoint =
+        quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).map_err(TransportError::Io)?;
     endpoint.set_default_client_config(client_config);
 
     Ok(endpoint)

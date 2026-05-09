@@ -40,14 +40,18 @@ impl SessionStore {
     /// Save session state for potential future resumption.
     pub fn save(&self, key: [u8; 16], spiffe_id: Option<String>, flags: u32) {
         let id = spiffe_id.unwrap_or_default();
-        let id_for_log = if id.is_empty() { "<anonymous>".to_string() } else { id.clone() };
-        self.store
-            .entry(id)
-            .or_default()
-            .insert(key, SavedSession {
+        let id_for_log = if id.is_empty() {
+            "<anonymous>".to_string()
+        } else {
+            id.clone()
+        };
+        self.store.entry(id).or_default().insert(
+            key,
+            SavedSession {
                 flags,
                 saved_at: Instant::now(),
-            });
+            },
+        );
         tracing::debug!(
             spiffe = %id_for_log,
             flags = format_args!("{:#x}", flags),
@@ -102,7 +106,9 @@ impl SessionStore {
     pub fn gc(&self) -> (usize, usize, usize) {
         let before = self.total_count();
         for entry in self.store.iter() {
-            entry.value().retain(|_, v| v.saved_at.elapsed() <= self.ttl);
+            entry
+                .value()
+                .retain(|_, v| v.saved_at.elapsed() <= self.ttl);
         }
         self.store.retain(|_, v| !v.is_empty());
         let after = self.total_count();

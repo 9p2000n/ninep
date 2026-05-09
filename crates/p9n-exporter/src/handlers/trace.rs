@@ -22,5 +22,10 @@ pub fn handle<H: Send + Sync + 'static>(_session: &Session<H>, fc: Fcall) -> Han
         tracing::info!(tag, traceparent = %traceparent.1, "Ttraceattr: traceparent recorded");
     }
 
-    Ok(Fcall { size: 0, msg_type: MsgType::Rtraceattr, tag, msg: Msg::Empty })
+    Ok(Fcall {
+        size: 0,
+        msg_type: MsgType::Rtraceattr,
+        tag,
+        msg: Msg::Empty,
+    })
 }

@@ -12,10 +12,10 @@ use crate::importer::{self, RpcHandle};
 use arc_swap::ArcSwap;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 
 /// Transport type, determines reconnection path.
 #[derive(Clone)]
@@ -125,11 +125,7 @@ impl RpcClient {
     }
 
     /// Send a 9P request. On transport failure, reconnect and retry once.
-    pub async fn call(
-        &self,
-        msg_type: MsgType,
-        msg: Msg,
-    ) -> Result<Fcall, RpcError> {
+    pub async fn call(&self, msg_type: MsgType, msg: Msg) -> Result<Fcall, RpcError> {
         let conn_id = self.current_conn_id.load(Ordering::Relaxed);
         tracing::trace!(conn_id, msg_type = msg_type.name(), "rpc_client call");
         let rpc = self.inner.load();
@@ -190,7 +186,10 @@ impl RpcClient {
                     "reconnect skipped: another task already reconnected",
                 );
             } else {
-                tracing::debug!(conn_id = old_conn_id, "reconnect skipped: connection still alive");
+                tracing::debug!(
+                    conn_id = old_conn_id,
+                    "reconnect skipped: connection still alive"
+                );
             }
             return;
         }
@@ -226,7 +225,8 @@ impl RpcClient {
                     &self.ctx.addr,
                     &self.ctx.hostname,
                     self.ctx.push_tx.clone(),
-                ).await
+                )
+                .await
             }
             Transport::Tcp => {
                 importer::reconnect_tcp(
@@ -235,7 +235,8 @@ impl RpcClient {
                     &self.ctx.identity,
                     &self.ctx.trust_store,
                     self.ctx.push_tx.clone(),
-                ).await
+                )
+                .await
             }
             #[cfg(feature = "rdma")]
             Transport::Rdma => {
@@ -246,7 +247,8 @@ impl RpcClient {
                     &self.ctx.trust_store,
                     self.ctx.push_tx.clone(),
                     self.ctx.rdma_device.as_deref(),
-                ).await
+                )
+                .await
             }
         };
 

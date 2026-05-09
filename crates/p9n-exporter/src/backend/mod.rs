@@ -41,11 +41,7 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Walk one path component: resolve `parent.join(name)` and return
     /// `(resolved_path, qid, is_dir)`.
-    fn walk_component(
-        &self,
-        parent: &Path,
-        name: &str,
-    ) -> io::Result<(PathBuf, Qid, bool)>;
+    fn walk_component(&self, parent: &Path, name: &str) -> io::Result<(PathBuf, Qid, bool)>;
 
     // ── Open ──
 
@@ -60,12 +56,7 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Read directly into a caller-provided buffer (zero-copy fast path).
     /// Returns the number of bytes read.
-    fn read_into(
-        &self,
-        handle: &Self::Handle,
-        offset: u64,
-        buf: &mut [u8],
-    ) -> io::Result<usize> {
+    fn read_into(&self, handle: &Self::Handle, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let data = self.read(handle, offset, buf.len() as u32)?;
         let n = data.len().min(buf.len());
         buf[..n].copy_from_slice(&data[..n]);
@@ -127,12 +118,7 @@ pub trait Backend: Send + Sync + 'static {
     /// Read directory entries in 9P readdir wire format.
     /// `offset` is the entry index to start from, `count` is the maximum
     /// number of bytes to return.
-    fn readdir(
-        &self,
-        path: &Path,
-        offset: u64,
-        count: u32,
-    ) -> io::Result<Vec<u8>>;
+    fn readdir(&self, path: &Path, offset: u64, count: u32) -> io::Result<Vec<u8>>;
 
     // ── Delete / Rename ──
 

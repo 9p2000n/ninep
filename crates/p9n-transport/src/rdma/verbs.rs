@@ -201,10 +201,7 @@ impl CompletionChannel {
                     io::Error::last_os_error()
                 )));
             }
-            Ok(Self {
-                channel,
-                _ctx: ctx,
-            })
+            Ok(Self { channel, _ctx: ctx })
         }
     }
 
@@ -251,8 +248,7 @@ impl CompletionQueue {
         channel: Arc<CompletionChannel>,
     ) -> Result<Self, TransportError> {
         unsafe {
-            let cq =
-                ffi::ibv_create_cq(ctx.as_ptr(), cqe, ptr::null_mut(), channel.as_ptr(), 0);
+            let cq = ffi::ibv_create_cq(ctx.as_ptr(), cqe, ptr::null_mut(), channel.as_ptr(), 0);
             if cq.is_null() {
                 return Err(TransportError::Rdma("ibv_create_cq failed".into()));
             }
@@ -378,8 +374,9 @@ impl QueuePair {
             attr.qp_state = ffi::IBV_QPS_INIT;
             attr.port_num = port;
             attr.pkey_index = 0;
-            attr.qp_access_flags =
-                ffi::IBV_ACCESS_LOCAL_WRITE | ffi::IBV_ACCESS_REMOTE_READ | ffi::IBV_ACCESS_REMOTE_WRITE;
+            attr.qp_access_flags = ffi::IBV_ACCESS_LOCAL_WRITE
+                | ffi::IBV_ACCESS_REMOTE_READ
+                | ffi::IBV_ACCESS_REMOTE_WRITE;
 
             let mask = ffi::IBV_QP_STATE
                 | ffi::IBV_QP_PKEY_INDEX
@@ -484,7 +481,6 @@ impl QueuePair {
             let _ = ffi::ibv_modify_qp(self.qp, &mut attr, ffi::IBV_QP_STATE);
         }
     }
-
 }
 
 impl Drop for QueuePair {
@@ -523,19 +519,17 @@ impl AsyncCompletionQueue {
     /// drains all pending completions from the CQ.
     pub async fn poll(&self, wc_buf: &mut Vec<ffi::ibv_wc>) -> Result<(), TransportError> {
         loop {
-            let mut guard = self.async_fd.readable().await.map_err(|e| {
-                TransportError::Rdma(format!("AsyncFd readable: {e}"))
-            })?;
+            let mut guard = self
+                .async_fd
+                .readable()
+                .await
+                .map_err(|e| TransportError::Rdma(format!("AsyncFd readable: {e}")))?;
 
             // Acknowledge the completion event from the channel.
             unsafe {
                 let mut ev_cq: *mut ffi::ibv_cq = ptr::null_mut();
                 let mut ev_ctx: *mut std::ffi::c_void = ptr::null_mut();
-                let rc = ffi::ibv_get_cq_event(
-                    self.cq.channel().as_ptr(),
-                    &mut ev_cq,
-                    &mut ev_ctx,
-                );
+                let rc = ffi::ibv_get_cq_event(self.cq.channel().as_ptr(), &mut ev_cq, &mut ev_ctx);
                 if rc != 0 {
                     let err = io::Error::last_os_error();
                     if err.kind() == io::ErrorKind::WouldBlock {

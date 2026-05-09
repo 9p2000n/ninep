@@ -15,7 +15,10 @@ mod framing_tests {
             size: 0,
             msg_type: MsgType::Tversion,
             tag: 1,
-            msg: Msg::Version { msize: 65536, version: "9P2000.N".into() },
+            msg: Msg::Version {
+                msize: 65536,
+                version: "9P2000.N".into(),
+            },
         };
         let wire = framing::encode(&fc).unwrap();
         let decoded = framing::decode(&wire).unwrap();
@@ -36,7 +39,11 @@ mod framing_tests {
             size: 0,
             msg_type: MsgType::Tread,
             tag: 42,
-            msg: Msg::Read { fid: 7, offset: 1024, count: 4096 },
+            msg: Msg::Read {
+                fid: 7,
+                offset: 1024,
+                count: 4096,
+            },
         };
         let wire = framing::encode(&fc).unwrap();
         let decoded = framing::decode_owned(wire).unwrap();
@@ -57,12 +64,20 @@ mod framing_tests {
             size: 0,
             msg_type: MsgType::Twrite,
             tag: 5,
-            msg: Msg::Write { fid: 3, offset: 0, data: data.clone() },
+            msg: Msg::Write {
+                fid: 3,
+                offset: 0,
+                data: data.clone(),
+            },
         };
         let wire = framing::encode(&fc).unwrap();
         let decoded = framing::decode_owned(wire).unwrap();
         match decoded.msg {
-            Msg::Write { fid, offset, data: d } => {
+            Msg::Write {
+                fid,
+                offset,
+                data: d,
+            } => {
                 assert_eq!(fid, 3);
                 assert_eq!(offset, 0);
                 assert_eq!(d, data);
@@ -117,7 +132,10 @@ mod framing_async_tests {
             msg_type: MsgType::Tattach,
             tag: 3,
             msg: Msg::Attach {
-                fid: 0, afid: NO_FID, uname: "user".into(), aname: "/export".into(),
+                fid: 0,
+                afid: NO_FID,
+                uname: "user".into(),
+                aname: "/export".into(),
             },
         };
 
@@ -127,7 +145,12 @@ mod framing_async_tests {
         assert_eq!(decoded.msg_type, MsgType::Tattach);
         assert_eq!(decoded.tag, 3);
         match decoded.msg {
-            Msg::Attach { fid, afid, uname, aname } => {
+            Msg::Attach {
+                fid,
+                afid,
+                uname,
+                aname,
+            } => {
                 assert_eq!(fid, 0);
                 assert_eq!(afid, NO_FID);
                 assert_eq!(uname, "user");
@@ -146,7 +169,11 @@ mod framing_async_tests {
                 size: 0,
                 msg_type: MsgType::Tread,
                 tag: i,
-                msg: Msg::Read { fid: i as u32, offset: 0, count: 1024 },
+                msg: Msg::Read {
+                    fid: i as u32,
+                    offset: 0,
+                    count: 1024,
+                },
             };
             framing::write_message(&mut client, &fc).await.unwrap();
         }
@@ -182,7 +209,12 @@ mod router_tests {
     use p9n_transport::quic::router::should_use_datagram;
 
     fn make_fc(msg_type: MsgType) -> Fcall {
-        Fcall { size: 0, msg_type, tag: 1, msg: Msg::Empty }
+        Fcall {
+            size: 0,
+            msg_type,
+            tag: 1,
+            msg: Msg::Empty,
+        }
     }
 
     #[test]

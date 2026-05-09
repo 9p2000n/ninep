@@ -94,7 +94,9 @@ fn decode_varint(data: &[u8], pos: &mut usize) -> Result<u64, AuthError> {
 fn decode_len_field<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], AuthError> {
     let len = decode_varint(data, pos)? as usize;
     if *pos + len > data.len() {
-        return Err(AuthError::WorkloadApi("truncated length-delimited field".into()));
+        return Err(AuthError::WorkloadApi(
+            "truncated length-delimited field".into(),
+        ));
     }
     let slice = &data[*pos..*pos + len];
     *pos += len;
@@ -103,21 +105,29 @@ fn decode_len_field<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], Aut
 
 fn skip_field(data: &[u8], pos: &mut usize, wire_type: u8) -> Result<(), AuthError> {
     match wire_type {
-        WIRE_VARINT => { decode_varint(data, pos)?; }
+        WIRE_VARINT => {
+            decode_varint(data, pos)?;
+        }
         WIRE_64BIT => {
             if *pos + 8 > data.len() {
                 return Err(AuthError::WorkloadApi("truncated fixed64".into()));
             }
             *pos += 8;
         }
-        WIRE_LEN => { decode_len_field(data, pos)?; }
+        WIRE_LEN => {
+            decode_len_field(data, pos)?;
+        }
         WIRE_32BIT => {
             if *pos + 4 > data.len() {
                 return Err(AuthError::WorkloadApi("truncated fixed32".into()));
             }
             *pos += 4;
         }
-        _ => return Err(AuthError::WorkloadApi(format!("unknown wire type {wire_type}"))),
+        _ => {
+            return Err(AuthError::WorkloadApi(format!(
+                "unknown wire type {wire_type}"
+            )))
+        }
     }
     Ok(())
 }
@@ -176,9 +186,13 @@ mod tests {
         loop {
             let mut byte = (val & 0x7F) as u8;
             val >>= 7;
-            if val != 0 { byte |= 0x80; }
+            if val != 0 {
+                byte |= 0x80;
+            }
             buf.push(byte);
-            if val == 0 { break; }
+            if val == 0 {
+                break;
+            }
         }
     }
 

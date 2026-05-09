@@ -23,7 +23,11 @@ impl<H: Send + Sync + 'static> FidTable<H> {
     }
 
     pub fn insert(&self, fid: u32, state: FidState<H>) {
-        tracing::trace!("fid insert: fid={fid} path={} is_dir={}", state.path.display(), state.is_dir);
+        tracing::trace!(
+            "fid insert: fid={fid} path={} is_dir={}",
+            state.path.display(),
+            state.is_dir
+        );
         self.fids.insert(fid, state);
     }
 

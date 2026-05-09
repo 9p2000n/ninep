@@ -23,12 +23,12 @@ pub struct ShutdownHandle {
 }
 
 impl ShutdownHandle {
-    pub fn new(
-        rpc: Arc<RpcClient>,
-        leases: Arc<LeaseMap>,
-        inodes: Arc<InodeMap>,
-    ) -> Self {
-        Self { rpc, leases, inodes }
+    pub fn new(rpc: Arc<RpcClient>, leases: Arc<LeaseMap>, inodes: Arc<InodeMap>) -> Self {
+        Self {
+            rpc,
+            leases,
+            inodes,
+        }
     }
 
     /// Run the ordered shutdown sequence.
@@ -62,7 +62,13 @@ impl ShutdownHandle {
         let ops: Vec<_> = leases
             .iter()
             .filter_map(|(_, lease_id)| {
-                encode_subop(MsgType::Tleaseack, &Msg::Leaseack { lease_id: *lease_id }).ok()
+                encode_subop(
+                    MsgType::Tleaseack,
+                    &Msg::Leaseack {
+                        lease_id: *lease_id,
+                    },
+                )
+                .ok()
             })
             .collect();
         if ops.len() == n {
@@ -74,7 +80,11 @@ impl ShutdownHandle {
         }
 
         // Fallback: individual RPCs
-        tracing::debug!(conn_id, leases = n, "shutdown: leaseack via per-lease RPCs (encode failed)");
+        tracing::debug!(
+            conn_id,
+            leases = n,
+            "shutdown: leaseack via per-lease RPCs (encode failed)"
+        );
         for (_fh, lease_id) in leases {
             if let Err(e) = self
                 .rpc
@@ -114,13 +124,13 @@ impl ShutdownHandle {
         }
 
         // Fallback: individual RPCs
-        tracing::debug!(conn_id, fids = n, "shutdown: clunk via per-fid RPCs (encode failed)");
+        tracing::debug!(
+            conn_id,
+            fids = n,
+            "shutdown: clunk via per-fid RPCs (encode failed)"
+        );
         for fid in fids {
-            if let Err(e) = self
-                .rpc
-                .call(MsgType::Tclunk, Msg::Clunk { fid })
-                .await
-            {
+            if let Err(e) = self.rpc.call(MsgType::Tclunk, Msg::Clunk { fid }).await {
                 tracing::debug!(conn_id, fid, error = %e, "clunk failed");
             }
         }

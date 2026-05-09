@@ -124,13 +124,16 @@ impl AccessControl {
     /// a subdirectory named after its workload path component.
     /// E.g., "spiffe://example.com/app/worker" → `{export_root}/app/worker/`
     pub fn enable_isolation(&mut self, domain: &str, permissions: u32) {
-        self.add_domain_policy(domain, Policy {
-            root: None, // will be computed dynamically in resolve_root()
-            permissions,
-            max_depth: 0,
-            uid: 0,
-            gid: 0,
-        });
+        self.add_domain_policy(
+            domain,
+            Policy {
+                root: None, // will be computed dynamically in resolve_root()
+                permissions,
+                max_depth: 0,
+                uid: 0,
+                gid: 0,
+            },
+        );
     }
 
     /// Resolve the policy for a given SPIFFE ID.
@@ -370,7 +373,11 @@ fn extract_workload_path(spiffe_id: &str) -> Option<&str> {
     let rest = spiffe_id.strip_prefix("spiffe://")?;
     let slash = rest.find('/')?;
     let path = &rest[slash + 1..];
-    if path.is_empty() { None } else { Some(path) }
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
 }
 
 #[cfg(test)]
@@ -378,7 +385,11 @@ mod tests {
     use super::*;
 
     fn posix(uid: u32, gid: u32) -> PosixIdentity {
-        PosixIdentity { uid, gid, groups: Vec::new() }
+        PosixIdentity {
+            uid,
+            gid,
+            groups: Vec::new(),
+        }
     }
 
     #[test]
@@ -392,9 +403,7 @@ mod tests {
     fn validate_wire_gid_rejects_mismatch_with_peer_posix() {
         let ac = AccessControl::new(PathBuf::from("/"));
         let p = posix(1_048_577, 1_048_577);
-        let err = ac
-            .validate_wire_gid(None, Some(&p), 1_048_578)
-            .unwrap_err();
+        let err = ac.validate_wire_gid(None, Some(&p), 1_048_578).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EPERM));
     }
 
@@ -413,7 +422,10 @@ mod tests {
     #[test]
     fn validate_wire_gid_enforces_static_policy_when_set() {
         let mut ac = AccessControl::new(PathBuf::from("/"));
-        ac.set_default(Policy { gid: 5000, ..Policy::default() });
+        ac.set_default(Policy {
+            gid: 5000,
+            ..Policy::default()
+        });
         ac.validate_wire_gid(None, None, 5000).unwrap();
         let err = ac.validate_wire_gid(None, None, 4999).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EPERM));
@@ -423,7 +435,10 @@ mod tests {
     fn validate_wire_gid_peer_posix_wins_over_static_policy() {
         // When both are present, peer_posix is authoritative.
         let mut ac = AccessControl::new(PathBuf::from("/"));
-        ac.set_default(Policy { gid: 5000, ..Policy::default() });
+        ac.set_default(Policy {
+            gid: 5000,
+            ..Policy::default()
+        });
         let p = posix(1_048_577, 1_048_577);
         // Wire matches peer_posix but not policy — must succeed.
         ac.validate_wire_gid(None, Some(&p), 1_048_577).unwrap();
@@ -455,7 +470,8 @@ mod tests {
     fn setattr_no_owner_change_is_noop() {
         // Neither bit set → never errors regardless of values or admin.
         let ac = ac_no_admin();
-        ac.validate_setattr_owner(None, None, 0, 12345, 67890).unwrap();
+        ac.validate_setattr_owner(None, None, 0, 12345, 67890)
+            .unwrap();
     }
 
     #[test]
@@ -464,7 +480,8 @@ mod tests {
         // because it's a no-op semantically.
         let ac = ac_no_admin();
         let p = posix_with_groups(1_048_577, 1_048_577, vec![]);
-        ac.validate_setattr_owner(None, Some(&p), P9_SETATTR_UID, 1_048_577, 0).unwrap();
+        ac.validate_setattr_owner(None, Some(&p), P9_SETATTR_UID, 1_048_577, 0)
+            .unwrap();
     }
 
     #[test]
@@ -476,7 +493,8 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EPERM));
         let ac_a = ac_with_admin();
-        ac_a.validate_setattr_owner(None, Some(&p), P9_SETATTR_UID, 2_097_152, 0).unwrap();
+        ac_a.validate_setattr_owner(None, Some(&p), P9_SETATTR_UID, 2_097_152, 0)
+            .unwrap();
     }
 
     #[test]
@@ -494,7 +512,8 @@ mod tests {
     fn setattr_chgrp_to_supplementary_group_allowed_without_admin() {
         let p = posix_with_groups(1_048_577, 1_048_577, vec![1_048_577, 2_097_152]);
         let ac = ac_no_admin();
-        ac.validate_setattr_owner(None, Some(&p), P9_SETATTR_GID, 0, 2_097_152).unwrap();
+        ac.validate_setattr_owner(None, Some(&p), P9_SETATTR_GID, 0, 2_097_152)
+            .unwrap();
     }
 
     #[test]
@@ -506,7 +525,8 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EPERM));
         let ac_a = ac_with_admin();
-        ac_a.validate_setattr_owner(None, Some(&p), P9_SETATTR_GID, 0, 3_145_728).unwrap();
+        ac_a.validate_setattr_owner(None, Some(&p), P9_SETATTR_GID, 0, 3_145_728)
+            .unwrap();
     }
 
     #[test]
@@ -557,8 +577,13 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EPERM));
         let mut ac_a = ac_with_admin();
-        ac_a.set_default(Policy { uid: 1000, gid: 1000, ..Policy::default() });
+        ac_a.set_default(Policy {
+            uid: 1000,
+            gid: 1000,
+            ..Policy::default()
+        });
         // Non-SPIFFE uid is fine in fallback mode with explicit policy.
-        ac_a.validate_setattr_owner(None, p_absent, P9_SETATTR_UID, 500, 0).unwrap();
+        ac_a.validate_setattr_owner(None, p_absent, P9_SETATTR_UID, 500, 0)
+            .unwrap();
     }
 }

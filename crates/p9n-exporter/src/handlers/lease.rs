@@ -3,11 +3,11 @@
 use crate::handlers::{HandlerResult, PushTx};
 use crate::lease_manager::{GrantResult, LeaseManager};
 use crate::session::Session;
+use crate::util::unknown_fid;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use crate::util::unknown_fid;
 
 static NEXT_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -21,14 +21,28 @@ pub fn handle<H: Send + Sync + 'static>(
     let tag = fc.tag;
     match fc.msg_type {
         MsgType::Tlease => {
-            let Msg::Lease { fid, lease_type, duration } = fc.msg else {
+            let Msg::Lease {
+                fid,
+                lease_type,
+                duration,
+            } = fc.msg
+            else {
                 return Err("expected Lease".into());
             };
-            tracing::debug!(tag, fid, lease_type, requested_duration = duration, "Tlease received");
+            tracing::debug!(
+                tag,
+                fid,
+                lease_type,
+                requested_duration = duration,
+                "Tlease received"
+            );
 
             // Verify fid exists and get qid_path for the global lease registry
             let qid_path = {
-                let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tlease"))?;
+                let fid_state = session
+                    .fids
+                    .get(fid)
+                    .ok_or_else(|| unknown_fid(fid, "Tlease"))?;
                 fid_state.qid.path
             };
 
@@ -45,7 +59,8 @@ pub fn handle<H: Send + Sync + 'static>(
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::WouldBlock,
                         "lease conflict",
-                    ).into());
+                    )
+                    .into());
                 }
             }
 
@@ -55,7 +70,9 @@ pub fn handle<H: Send + Sync + 'static>(
             let expiry = Instant::now() + Duration::from_secs(effective_duration as u64);
 
             // Store lease in session (per-connection state)
-            session.active_leases.insert(lease_id, (fid, lease_type, expiry, effective_duration));
+            session
+                .active_leases
+                .insert(lease_id, (fid, lease_type, expiry, effective_duration));
 
             // Register in global lease manager (cross-connection visibility)
             lease_mgr.register(
@@ -79,8 +96,14 @@ pub fn handle<H: Send + Sync + 'static>(
             );
 
             Ok(Fcall {
-                size: 0, msg_type: MsgType::Rlease, tag,
-                msg: Msg::Rlease { lease_id, lease_type, duration: effective_duration },
+                size: 0,
+                msg_type: MsgType::Rlease,
+                tag,
+                msg: Msg::Rlease {
+                    lease_id,
+                    lease_type,
+                    duration: effective_duration,
+                },
             })
         }
         MsgType::Tleaserenew => {
@@ -109,13 +132,18 @@ pub fn handle<H: Send + Sync + 'static>(
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         format!("lease {lease_id} not found"),
-                    ).into());
+                    )
+                    .into());
                 }
             }
 
             Ok(Fcall {
-                size: 0, msg_type: MsgType::Rleaserenew, tag,
-                msg: Msg::Rleaserenew { duration: effective_duration },
+                size: 0,
+                msg_type: MsgType::Rleaserenew,
+                tag,
+                msg: Msg::Rleaserenew {
+                    duration: effective_duration,
+                },
             })
         }
         MsgType::Tleaseack => {
@@ -134,7 +162,9 @@ pub fn handle<H: Send + Sync + 'static>(
             );
 
             Ok(Fcall {
-                size: 0, msg_type: MsgType::Rleaseack, tag,
+                size: 0,
+                msg_type: MsgType::Rleaseack,
+                tag,
                 msg: Msg::Empty,
             })
         }

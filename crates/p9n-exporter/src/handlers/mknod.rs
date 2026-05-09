@@ -4,17 +4,25 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::{join_err, unknown_fid};
 
 pub async fn handle<B: Backend>(
     session: &Session<B::Handle>,
     ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
-    let Msg::Mknod { dfid, name, mode, major, minor, gid: wire_gid } = fc.msg else {
+    let Msg::Mknod {
+        dfid,
+        name,
+        mode,
+        major,
+        minor,
+        gid: wire_gid,
+    } = fc.msg
+    else {
         return Err("expected Mknod message".into());
     };
     let tag = fc.tag;
@@ -27,7 +35,10 @@ pub async fn handle<B: Backend>(
         "Tmknod received",
     );
 
-    let fid_state = session.fids.get(dfid).ok_or_else(|| unknown_fid(dfid, "Tmknod"))?;
+    let fid_state = session
+        .fids
+        .get(dfid)
+        .ok_or_else(|| unknown_fid(dfid, "Tmknod"))?;
     let parent_path = fid_state.path.clone();
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
@@ -46,12 +57,17 @@ pub async fn handle<B: Backend>(
     let ctx_clone = ctx.clone();
     let name_for_log = name.clone();
     let (qid, _resolved_path) = tokio::task::spawn_blocking(move || {
-        let (qid, resolved_path) = ctx_clone.backend.mknod(&parent_path, &name, mode, major, minor)?;
+        let (qid, resolved_path) =
+            ctx_clone
+                .backend
+                .mknod(&parent_path, &name, mode, major, minor)?;
         if uid != 0 || gid != 0 {
             ctx_clone.backend.chown(&resolved_path, uid, gid)?;
         }
         Ok::<_, std::io::Error>((qid, resolved_path))
-    }).await.map_err(join_err)??;
+    })
+    .await
+    .map_err(join_err)??;
 
     tracing::debug!(
         tag, dfid,
@@ -62,5 +78,10 @@ pub async fn handle<B: Backend>(
         "Tmknod result",
     );
 
-    Ok(Fcall { size: 0, msg_type: MsgType::Rmknod, tag, msg: Msg::Rmknod { qid } })
+    Ok(Fcall {
+        size: 0,
+        msg_type: MsgType::Rmknod,
+        tag,
+        msg: Msg::Rmknod { qid },
+    })
 }

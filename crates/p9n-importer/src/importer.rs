@@ -1,14 +1,14 @@
 use crate::error::RpcError;
 use crate::quic_rpc::QuicRpcClient;
-use crate::tcp_rpc::TcpRpcClient;
 #[cfg(feature = "rdma")]
 use crate::rdma_rpc::RdmaRpcClient;
+use crate::tcp_rpc::TcpRpcClient;
 use p9n_proto::caps::CapSet;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::*;
 use p9n_proto::wire::Qid;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
@@ -32,11 +32,7 @@ pub enum RpcHandle {
 
 impl RpcHandle {
     /// Send a request and wait for the matching response.
-    pub async fn call(
-        &self,
-        msg_type: MsgType,
-        msg: Msg,
-    ) -> Result<Fcall, RpcError> {
+    pub async fn call(&self, msg_type: MsgType, msg: Msg) -> Result<Fcall, RpcError> {
         match self {
             Self::Quic(rpc) => rpc.call(msg_type, msg).await,
             Self::Tcp(rpc) => rpc.call(msg_type, msg).await,
@@ -251,15 +247,12 @@ impl Importer {
         auth: p9n_auth::SpiffeAuth,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let conn_id = next_conn_id();
-        let tls_config = p9n_auth::spiffe::tls_config::client_config(
-            &auth.identity,
-            &auth.trust_store,
-        )?;
+        let tls_config =
+            p9n_auth::spiffe::tls_config::client_config(&auth.identity, &auth.trust_store)?;
         let server_addr: std::net::SocketAddr = addr.parse()?;
         tracing::info!(conn_id, %addr, hostname, "connecting via TCP+TLS");
-        let stream = p9n_transport::tcp::config::client_connect(
-            server_addr, hostname, tls_config,
-        ).await?;
+        let stream =
+            p9n_transport::tcp::config::client_connect(server_addr, hostname, tls_config).await?;
         tracing::info!(conn_id, %addr, hostname, transport = "tcp", "connected");
 
         // Derive session key from TLS connection BEFORE splitting the stream
@@ -325,21 +318,21 @@ impl Importer {
         device_name: Option<&str>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let conn_id = next_conn_id();
-        let tls_config = p9n_auth::spiffe::tls_config::client_config(
-            &auth.identity,
-            &auth.trust_store,
-        )?;
+        let tls_config =
+            p9n_auth::spiffe::tls_config::client_config(&auth.identity, &auth.trust_store)?;
         let server_addr: std::net::SocketAddr = addr.parse()?;
         let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
         let server_name = rustls::pki_types::ServerName::try_from(hostname.to_string())?;
 
         tracing::info!(conn_id, %addr, hostname, device = ?device_name, "connecting via RDMA");
 
-        let (rdma_conn, session_key_bytes) =
-            p9n_transport::rdma::config::client_connect(
-                server_addr, &tls_connector, server_name, device_name,
-            )
-            .await?;
+        let (rdma_conn, session_key_bytes) = p9n_transport::rdma::config::client_connect(
+            server_addr,
+            &tls_connector,
+            server_name,
+            device_name,
+        )
+        .await?;
         tracing::info!(conn_id, %addr, hostname, transport = "rdma", "connected");
 
         let (push_tx, push_rx) = mpsc::channel(64);
@@ -462,7 +455,8 @@ pub async fn reconnect_tcp(
     let tls_config = p9n_auth::spiffe::tls_config::client_config(identity, trust_store)?;
     let server_addr: std::net::SocketAddr = addr.parse()?;
     tracing::info!(conn_id, %addr, hostname, "reconnecting via TCP+TLS");
-    let stream = p9n_transport::tcp::config::client_connect(server_addr, hostname, tls_config).await?;
+    let stream =
+        p9n_transport::tcp::config::client_connect(server_addr, hostname, tls_config).await?;
     tracing::info!(conn_id, %addr, hostname, transport = "tcp", "reconnected");
 
     let session_key_bytes = {
@@ -523,11 +517,13 @@ pub async fn reconnect_rdma(
 
     tracing::info!(conn_id, %addr, hostname, device = ?device_name, "reconnecting via RDMA");
 
-    let (rdma_conn, session_key_bytes) =
-        p9n_transport::rdma::config::client_connect(
-            server_addr, &tls_connector, server_name, device_name,
-        )
-        .await?;
+    let (rdma_conn, session_key_bytes) = p9n_transport::rdma::config::client_connect(
+        server_addr,
+        &tls_connector,
+        server_name,
+        device_name,
+    )
+    .await?;
     tracing::info!(conn_id, %addr, hostname, transport = "rdma", "reconnected");
 
     let rpc = Arc::new(RdmaRpcClient::new(rdma_conn, push_tx, conn_id));
@@ -621,10 +617,13 @@ async fn negotiate_version(
         "handshake: sending Tversion",
     );
     let ver_resp = rpc
-        .call(MsgType::Tversion, Msg::Version {
-            msize: requested_msize,
-            version: VERSION_9P2000_N.to_string(),
-        })
+        .call(
+            MsgType::Tversion,
+            Msg::Version {
+                msize: requested_msize,
+                version: VERSION_9P2000_N.to_string(),
+            },
+        )
         .await?;
 
     match &ver_resp.msg {
@@ -673,14 +672,20 @@ async fn negotiate_caps(
     );
 
     let caps_resp = rpc
-        .call(MsgType::Tcaps, Msg::Caps {
-            caps: requested.clone(),
-        })
+        .call(
+            MsgType::Tcaps,
+            Msg::Caps {
+                caps: requested.clone(),
+            },
+        )
         .await?;
 
     match caps_resp.msg {
         Msg::Caps { caps: server_caps } => {
-            let dropped: Vec<&String> = requested.iter().filter(|c| !server_caps.contains(c)).collect();
+            let dropped: Vec<&String> = requested
+                .iter()
+                .filter(|c| !server_caps.contains(c))
+                .collect();
             tracing::info!(
                 n_requested = requested.len(),
                 n_granted = server_caps.len(),
@@ -710,7 +715,10 @@ async fn bind_push_stream(rpc: &impl RpcCaller) -> Option<u64> {
     let resp = match rpc
         .call(
             MsgType::Tquicstream,
-            Msg::Quicstream { stream_type: 2, stream_id: 0 },
+            Msg::Quicstream {
+                stream_type: 2,
+                stream_id: 0,
+            },
         )
         .await
     {
@@ -749,12 +757,15 @@ async fn do_attach(
         "handshake: sending Tattach",
     );
     let attach_resp = rpc
-        .call(MsgType::Tattach, Msg::Attach {
-            fid: root_fid,
-            afid: NO_FID,
-            uname: opts.uname.clone(),
-            aname: opts.aname.clone(),
-        })
+        .call(
+            MsgType::Tattach,
+            Msg::Attach {
+                fid: root_fid,
+                afid: NO_FID,
+                uname: opts.uname.clone(),
+                aname: opts.aname.clone(),
+            },
+        )
         .await?;
 
     match attach_resp.msg {
@@ -785,10 +796,13 @@ async fn establish_session(
         "handshake: sending Tsession",
     );
     let session_resp = rpc
-        .call(MsgType::Tsession, Msg::Session {
-            key,
-            flags: requested_flags,
-        })
+        .call(
+            MsgType::Tsession,
+            Msg::Session {
+                key,
+                flags: requested_flags,
+            },
+        )
         .await?;
 
     match session_resp.msg {

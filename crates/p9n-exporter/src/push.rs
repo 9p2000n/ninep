@@ -19,7 +19,9 @@ impl std::fmt::Display for BindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AlreadyBound => f.write_str("push stream already bound"),
-            Self::NotSupported => f.write_str("push stream binding not supported on this transport"),
+            Self::NotSupported => {
+                f.write_str("push stream binding not supported on this transport")
+            }
             Self::Io(e) => write!(f, "push stream bind I/O error: {e}"),
         }
     }
@@ -44,8 +46,7 @@ pub trait PushSender: Send + Sync {
     fn send_push(
         &self,
         fc: Fcall,
-    ) -> impl std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
-           + Send;
+    ) -> impl std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send;
 }
 
 /// Build an Rnotify Fcall from a watch event.
@@ -103,10 +104,7 @@ impl QuicPushSender {
 }
 
 impl PushSender for QuicPushSender {
-    async fn send_push(
-        &self,
-        fc: Fcall,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn send_push(&self, fc: Fcall) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Try the persistent stream first. If the write fails, drop it
         // and fall through to the legacy ephemeral path. We deliberately
         // do not try to reopen a replacement persistent stream — a write
@@ -139,10 +137,7 @@ pub fn leasebreak_fcall(lease_id: u64, new_type: u8) -> Fcall {
         size: 0,
         msg_type: MsgType::Rleasebreak,
         tag: NO_TAG,
-        msg: Msg::Leasebreak {
-            lease_id,
-            new_type,
-        },
+        msg: Msg::Leasebreak { lease_id, new_type },
     }
 }
 
@@ -158,10 +153,7 @@ impl<W> TcpPushSender<W> {
 }
 
 impl<W: tokio::io::AsyncWrite + Unpin + Send + 'static> PushSender for TcpPushSender<W> {
-    async fn send_push(
-        &self,
-        fc: Fcall,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn send_push(&self, fc: Fcall) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut writer = self.writer.lock().await;
         p9n_transport::framing::write_message(&mut *writer, &fc).await?;
         Ok(())
@@ -183,10 +175,7 @@ impl RdmaPushSender {
 
 #[cfg(feature = "rdma")]
 impl PushSender for RdmaPushSender {
-    async fn send_push(
-        &self,
-        fc: Fcall,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn send_push(&self, fc: Fcall) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.transport.send(&fc).await?;
         Ok(())
     }

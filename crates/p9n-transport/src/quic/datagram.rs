@@ -14,10 +14,7 @@ const BASE_DELAY_MS: u64 = 10;
 ///
 /// Returns `Ok(false)` if the message is too large for datagrams (caller should
 /// use a stream instead). Returns `Ok(true)` on successful send.
-pub async fn send_datagram(
-    conn: &quinn::Connection,
-    fc: &Fcall,
-) -> Result<bool, TransportError> {
+pub async fn send_datagram(conn: &quinn::Connection, fc: &Fcall) -> Result<bool, TransportError> {
     let data = framing::encode(fc)?;
 
     let max = conn.max_datagram_size().unwrap_or(0);

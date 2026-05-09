@@ -1,10 +1,10 @@
 use crate::handlers::HandlerResult;
 use crate::session::Session;
+use crate::watch_manager::WatchEvent;
 use crate::watch_manager::WatchManager;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::*;
 use tokio::sync::mpsc;
-use crate::watch_manager::WatchEvent;
 
 pub fn handle<H: Send + Sync + 'static>(
     session: &Session<H>,

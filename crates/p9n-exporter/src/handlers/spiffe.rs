@@ -4,9 +4,9 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
-use p9n_auth::spiffe::{chain_verifier, x509_svid};
-use p9n_auth::spiffe::jwt_svid;
 use p9n_auth::error::AuthError;
+use p9n_auth::spiffe::jwt_svid;
+use p9n_auth::spiffe::{chain_verifier, x509_svid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::*;
 use std::sync::Arc;
@@ -132,9 +132,7 @@ pub fn handle_fetchbundle<B: Backend>(
                 );
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!(
-                        "no POSIX mapping bundle for domain: {trust_domain}"
-                    ),
+                    format!("no POSIX mapping bundle for domain: {trust_domain}"),
                 )
                 .into());
             }
@@ -409,7 +407,10 @@ pub fn handle_startls_spiffe<B: Backend>(
             }
         }
         None => {
-            tracing::warn!(tag, "TstartlsSpiffe rejected: no SPIFFE ID in TLS certificate");
+            tracing::warn!(
+                tag,
+                "TstartlsSpiffe rejected: no SPIFFE ID in TLS certificate"
+            );
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "no SPIFFE ID in peer TLS certificate",
@@ -439,4 +440,3 @@ pub fn handle_startls_spiffe<B: Backend>(
         },
     })
 }
-

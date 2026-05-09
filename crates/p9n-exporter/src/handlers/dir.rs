@@ -2,10 +2,10 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::{join_err, unknown_fid};
 
 /// Handle Treaddir: list directory entries.
 ///
@@ -22,7 +22,10 @@ pub async fn handle_readdir<B: Backend>(
     let tag = fc.tag;
     tracing::trace!(tag, fid, offset, count, "Treaddir received");
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Treaddir"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Treaddir"))?;
 
     if !fid_state.is_dir {
         tracing::debug!(fid, "Treaddir rejected: not a directory");
@@ -35,11 +38,9 @@ pub async fn handle_readdir<B: Backend>(
     drop(fid_state);
 
     let ctx = ctx.clone();
-    let data = tokio::task::spawn_blocking(move || {
-        ctx.backend.readdir(&dir_path, offset, count)
-    })
-    .await
-    .map_err(join_err)??;
+    let data = tokio::task::spawn_blocking(move || ctx.backend.readdir(&dir_path, offset, count))
+        .await
+        .map_err(join_err)??;
 
     tracing::trace!(tag, fid, offset, count, n = data.len(), "Treaddir result");
 
@@ -75,7 +76,10 @@ pub async fn handle_mkdir<B: Backend>(
         "Tmkdir received",
     );
 
-    let fid_state = session.fids.get(dfid).ok_or_else(|| unknown_fid(dfid, "Tmkdir"))?;
+    let fid_state = session
+        .fids
+        .get(dfid)
+        .ok_or_else(|| unknown_fid(dfid, "Tmkdir"))?;
     let parent_path = fid_state.path.clone();
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);

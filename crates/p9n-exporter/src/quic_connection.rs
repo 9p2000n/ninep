@@ -4,11 +4,11 @@ use crate::lease_manager;
 use crate::push::{self, BindResponder, PushSender, QuicPushSender};
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::map_io_error;
 use crate::watch_manager::WatchEvent;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::{MsgType, SESSION_FIDS, SESSION_WATCHES};
 use p9n_transport::quic::framing;
-use crate::util::map_io_error;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{Instrument, Span};
@@ -183,7 +183,10 @@ impl<B: Backend> QuicConnectionHandler<B> {
                 flags |= SESSION_WATCHES;
             }
             session_resumable = true;
-            tracing::debug!(flags = format_args!("{:#x}", flags), "session saved for resume");
+            tracing::debug!(
+                flags = format_args!("{:#x}", flags),
+                "session saved for resume"
+            );
             self.ctx
                 .session_store
                 .save(key, self.session.spiffe_id.clone(), flags);
@@ -238,10 +241,18 @@ async fn handle_stream<B: Backend>(
             };
             if !session.fids.contains(fid) {
                 return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound, format!("stale fid {fid}"),
-                ).into());
+                    std::io::ErrorKind::NotFound,
+                    format!("stale fid {fid}"),
+                )
+                .into());
             }
-            handlers::check_perm(&session, &ctx.access, sid, Some(fid), crate::access::PERM_READ)?;
+            handlers::check_perm(
+                &session,
+                &ctx.access,
+                sid,
+                Some(fid),
+                crate::access::PERM_READ,
+            )?;
             Ok(())
         })();
 
@@ -249,8 +260,12 @@ async fn handle_stream<B: Backend>(
             session.deregister_inflight(tag);
             tracing::debug!(tag, msg_type = mt_name, error = %e, "pre-check failed");
             let err_fc = Fcall {
-                size: 0, msg_type: MsgType::Rlerror, tag,
-                msg: Msg::Lerror { ecode: map_io_error(&*e) },
+                size: 0,
+                msg_type: MsgType::Rlerror,
+                tag,
+                msg: Msg::Lerror {
+                    ecode: map_io_error(&*e),
+                },
             };
             framing::write_message(&mut send, &err_fc).await?;
             send.finish()?;
@@ -277,8 +292,12 @@ async fn handle_stream<B: Backend>(
             Err(e) => {
                 tracing::debug!(tag, msg_type = mt_name, error = %e, "handler error");
                 let err_fc = Fcall {
-                    size: 0, msg_type: MsgType::Rlerror, tag,
-                    msg: Msg::Lerror { ecode: map_io_error(&*e) },
+                    size: 0,
+                    msg_type: MsgType::Rlerror,
+                    tag,
+                    msg: Msg::Lerror {
+                        ecode: map_io_error(&*e),
+                    },
                 };
                 framing::write_message(&mut send, &err_fc).await?;
             }

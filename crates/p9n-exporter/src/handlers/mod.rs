@@ -17,8 +17,8 @@ pub mod allocate;
 pub mod attach;
 pub mod capgrant;
 pub mod clunk;
-pub mod compress;
 pub mod compound;
+pub mod compress;
 pub mod consistency;
 pub mod copy_range;
 pub mod create;
@@ -116,8 +116,11 @@ fn fid_from_msg(fc: &Fcall) -> Option<u32> {
         Msg::Walk { fid, .. } => Some(*fid),
         Msg::Lock { fid, .. } | Msg::GetlockReq { fid, .. } => Some(*fid),
         Msg::Xattrwalk { fid, .. } | Msg::Xattrcreate { fid, .. } => Some(*fid),
-        Msg::Hash { fid, .. } | Msg::Getacl { fid, .. } | Msg::Setacl { fid, .. }
-        | Msg::Streamopen { fid, .. } | Msg::Ratelimit { fid, .. }
+        Msg::Hash { fid, .. }
+        | Msg::Getacl { fid, .. }
+        | Msg::Setacl { fid, .. }
+        | Msg::Streamopen { fid, .. }
+        | Msg::Ratelimit { fid, .. }
         | Msg::Consistency { fid, .. } => Some(*fid),
         _ => None,
     }
@@ -187,17 +190,28 @@ pub async fn dispatch<B: Backend>(
     if let Some(fid) = msg_fid {
         match fc.msg_type {
             // Skip messages where fid might not exist yet (attach creates fid 0)
-            MsgType::Tversion | MsgType::Tcaps
-            | MsgType::Tattach | MsgType::Tsession | MsgType::Tflush | MsgType::Thealth
-            | MsgType::TstartlsSpiffe | MsgType::Tfetchbundle | MsgType::Tspiffeverify
-            | MsgType::Tcapgrant | MsgType::Tcompress | MsgType::Tconsistency
-            | MsgType::Ttraceattr | MsgType::Tserverstats | MsgType::Tquicstream => {}
+            MsgType::Tversion
+            | MsgType::Tcaps
+            | MsgType::Tattach
+            | MsgType::Tsession
+            | MsgType::Tflush
+            | MsgType::Thealth
+            | MsgType::TstartlsSpiffe
+            | MsgType::Tfetchbundle
+            | MsgType::Tspiffeverify
+            | MsgType::Tcapgrant
+            | MsgType::Tcompress
+            | MsgType::Tconsistency
+            | MsgType::Ttraceattr
+            | MsgType::Tserverstats
+            | MsgType::Tquicstream => {}
             _ => {
                 if !session.fids.contains(fid) {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         format!("stale fid {fid}"),
-                    ).into());
+                    )
+                    .into());
                 }
             }
         }
@@ -306,11 +320,23 @@ pub async fn dispatch<B: Backend>(
             remove::handle_remove(session, ctx, fc).await
         }
         MsgType::Trenameat => {
-            check_perm(session, &ctx.access, sid, msg_fid, access::PERM_REMOVE | access::PERM_CREATE)?;
+            check_perm(
+                session,
+                &ctx.access,
+                sid,
+                msg_fid,
+                access::PERM_REMOVE | access::PERM_CREATE,
+            )?;
             remove::handle_renameat(session, ctx, fc).await
         }
         MsgType::Trename => {
-            check_perm(session, &ctx.access, sid, msg_fid, access::PERM_REMOVE | access::PERM_CREATE)?;
+            check_perm(
+                session,
+                &ctx.access,
+                sid,
+                msg_fid,
+                access::PERM_REMOVE | access::PERM_CREATE,
+            )?;
             rename::handle(session, ctx, fc).await
         }
 
@@ -327,12 +353,22 @@ pub async fn dispatch<B: Backend>(
         }
 
         // ── Extensions ──
-        MsgType::Tlease | MsgType::Tleaserenew | MsgType::Tleaseack => {
-            lease::handle(session, &ctx.lease_mgr, push_tx, ctx.config.max_lease_duration, fc)
-        }
+        MsgType::Tlease | MsgType::Tleaserenew | MsgType::Tleaseack => lease::handle(
+            session,
+            &ctx.lease_mgr,
+            push_tx,
+            ctx.config.max_lease_duration,
+            fc,
+        ),
         MsgType::Tcompound => compound::handle(session, ctx, watch_tx, push_tx, bind_tx, fc).await,
         MsgType::Tcopyrange => {
-            check_perm(session, &ctx.access, sid, msg_fid, access::PERM_READ | access::PERM_WRITE)?;
+            check_perm(
+                session,
+                &ctx.access,
+                sid,
+                msg_fid,
+                access::PERM_READ | access::PERM_WRITE,
+            )?;
             copy_range::handle(session, ctx, fc).await
         }
         MsgType::Tallocate => {

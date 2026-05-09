@@ -4,8 +4,8 @@
 //! Currently supports static files, file-based rotation watching, and
 //! (with the `workload-api` feature) gRPC streaming from a SPIRE agent.
 
+use super::{trust_bundle::TrustBundleStore, x509_svid, SpiffeIdentity};
 use crate::error::AuthError;
-use super::{SpiffeIdentity, trust_bundle::TrustBundleStore, x509_svid};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -161,13 +161,19 @@ impl SvidSource {
                         let p = cert_path.clone();
                         tokio::task::spawn_blocking(move || {
                             std::fs::metadata(&p).and_then(|m| m.modified()).ok()
-                        }).await.ok().flatten()
+                        })
+                        .await
+                        .ok()
+                        .flatten()
                     };
                     let mut last_ca_modified = {
                         let p = ca_path.clone();
                         tokio::task::spawn_blocking(move || {
                             std::fs::metadata(&p).and_then(|m| m.modified()).ok()
-                        }).await.ok().flatten()
+                        })
+                        .await
+                        .ok()
+                        .flatten()
                     };
 
                     loop {
@@ -178,7 +184,10 @@ impl SvidSource {
                             let p = cert_path.clone();
                             tokio::task::spawn_blocking(move || {
                                 std::fs::metadata(&p).and_then(|m| m.modified()).ok()
-                            }).await.ok().flatten()
+                            })
+                            .await
+                            .ok()
+                            .flatten()
                         };
 
                         if current_cert_modified != last_cert_modified {
@@ -190,12 +199,11 @@ impl SvidSource {
                                     cp.to_str().unwrap_or(""),
                                     kp.to_str().unwrap_or(""),
                                 )
-                            }).await {
+                            })
+                            .await
+                            {
                                 Ok(Ok(new_identity)) => {
-                                    tracing::info!(
-                                        "SVID rotated: {}",
-                                        new_identity.spiffe_id
-                                    );
+                                    tracing::info!("SVID rotated: {}", new_identity.spiffe_id);
                                     let _ = tx.send(Arc::new(new_identity));
                                 }
                                 Ok(Err(e)) => {
@@ -214,7 +222,10 @@ impl SvidSource {
                                 let p = ca_path.clone();
                                 tokio::task::spawn_blocking(move || {
                                     std::fs::metadata(&p).and_then(|m| m.modified()).ok()
-                                }).await.ok().flatten()
+                                })
+                                .await
+                                .ok()
+                                .flatten()
                             };
 
                             if current_ca_modified != last_ca_modified {
@@ -224,7 +235,9 @@ impl SvidSource {
                                 let p = ca_path.clone();
                                 match tokio::task::spawn_blocking(move || {
                                     s.load_pem_file(&td, p.to_str().unwrap_or(""))
-                                }).await {
+                                })
+                                .await
+                                {
                                     Ok(Ok(())) => {
                                         tracing::info!(
                                             "CA bundle reloaded for domain: {trust_domain}"
@@ -266,9 +279,7 @@ impl SvidSource {
 }
 
 #[cfg(feature = "workload-api")]
-fn svid_to_identity(
-    svid: &super::grpc::proto::X509Svid,
-) -> Result<SpiffeIdentity, AuthError> {
+fn svid_to_identity(svid: &super::grpc::proto::X509Svid) -> Result<SpiffeIdentity, AuthError> {
     let cert_chain = super::grpc::proto::split_der_certs(&svid.cert_chain_der);
     if cert_chain.is_empty() {
         return Err(AuthError::WorkloadApi("empty certificate chain".into()));
@@ -307,13 +318,9 @@ async fn workload_api_watch_loop(
                                 if let Some(svid) = resp.svids.into_iter().next() {
                                     match svid_to_identity(&svid) {
                                         Ok(identity) => {
-                                            let ca_certs =
-                                                proto::split_der_certs(&svid.bundle_der);
+                                            let ca_certs = proto::split_der_certs(&svid.bundle_der);
                                             if !ca_certs.is_empty() {
-                                                trust_store.add(
-                                                    &identity.trust_domain,
-                                                    ca_certs,
-                                                );
+                                                trust_store.add(&identity.trust_domain, ca_certs);
                                             }
                                             tracing::info!(
                                                 "SVID updated via Workload API: {}",
@@ -322,9 +329,7 @@ async fn workload_api_watch_loop(
                                             let _ = tx.send(Arc::new(identity));
                                         }
                                         Err(e) => {
-                                            tracing::warn!(
-                                                "failed to convert SVID: {e}"
-                                            );
+                                            tracing::warn!("failed to convert SVID: {e}");
                                         }
                                     }
                                 }

@@ -76,9 +76,7 @@ impl Drop for FidGuard {
             let rpc = self.rpc.clone();
             // Spawn a background task to send Tclunk — can't block in drop.
             tokio::spawn(async move {
-                let _ = rpc
-                    .call(MsgType::Tclunk, Msg::Clunk { fid })
-                    .await;
+                let _ = rpc.call(MsgType::Tclunk, Msg::Clunk { fid }).await;
             });
         }
     }

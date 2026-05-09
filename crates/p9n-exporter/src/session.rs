@@ -2,11 +2,11 @@ use crate::fid_table::FidTable;
 use dashmap::DashMap;
 use p9n_auth::PosixIdentity;
 use p9n_proto::caps::CapSet;
+use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::os::unix::io::OwnedFd;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -244,19 +244,45 @@ impl<H: Send + Sync + 'static> Session<H> {
         self.inflight.clear();
     }
 
-    pub fn get_version(&self) -> Option<String> { self.version.lock().clone() }
-    pub fn set_version(&self, v: String) { *self.version.lock() = Some(v); }
-    pub fn get_msize(&self) -> u32 { self.msize.load(Ordering::Relaxed) }
-    pub fn set_msize(&self, v: u32) { self.msize.store(v, Ordering::Relaxed); }
-    pub fn set_caps(&self, c: CapSet) { *self.caps.lock() = c; }
-    pub fn has_cap(&self, cap: &str) -> bool { self.caps.lock().has(cap) }
-    pub fn get_session_key(&self) -> Option<[u8; 16]> { *self.session_key.lock() }
-    pub fn set_session_key(&self, k: [u8; 16]) { *self.session_key.lock() = Some(k); }
-    pub fn add_watch_id(&self, id: u32) { self.watch_ids.lock().insert(id); }
-    pub fn remove_watch_id(&self, id: u32) { self.watch_ids.lock().remove(&id); }
-    pub fn watch_id_list(&self) -> Vec<u32> { self.watch_ids.lock().iter().copied().collect() }
-    pub fn is_spiffe_verified(&self) -> bool { self.spiffe_verified.load(Ordering::Relaxed) }
-    pub fn set_spiffe_verified(&self, v: bool) { self.spiffe_verified.store(v, Ordering::Relaxed); }
+    pub fn get_version(&self) -> Option<String> {
+        self.version.lock().clone()
+    }
+    pub fn set_version(&self, v: String) {
+        *self.version.lock() = Some(v);
+    }
+    pub fn get_msize(&self) -> u32 {
+        self.msize.load(Ordering::Relaxed)
+    }
+    pub fn set_msize(&self, v: u32) {
+        self.msize.store(v, Ordering::Relaxed);
+    }
+    pub fn set_caps(&self, c: CapSet) {
+        *self.caps.lock() = c;
+    }
+    pub fn has_cap(&self, cap: &str) -> bool {
+        self.caps.lock().has(cap)
+    }
+    pub fn get_session_key(&self) -> Option<[u8; 16]> {
+        *self.session_key.lock()
+    }
+    pub fn set_session_key(&self, k: [u8; 16]) {
+        *self.session_key.lock() = Some(k);
+    }
+    pub fn add_watch_id(&self, id: u32) {
+        self.watch_ids.lock().insert(id);
+    }
+    pub fn remove_watch_id(&self, id: u32) {
+        self.watch_ids.lock().remove(&id);
+    }
+    pub fn watch_id_list(&self) -> Vec<u32> {
+        self.watch_ids.lock().iter().copied().collect()
+    }
+    pub fn is_spiffe_verified(&self) -> bool {
+        self.spiffe_verified.load(Ordering::Relaxed)
+    }
+    pub fn set_spiffe_verified(&self, v: bool) {
+        self.spiffe_verified.store(v, Ordering::Relaxed);
+    }
 
     pub fn check_cap(&self, fid: u32, required: u32) -> bool {
         if let Some(cap) = self.active_caps.get(&fid) {
@@ -296,9 +322,9 @@ impl<H: Send + Sync + 'static> Session<H> {
         };
         match cap.depth {
             None => Ok(Some(cap)), // unlimited; propagate unchanged
-            Some(remaining) if wname_len > remaining => Err(
-                std::io::Error::from_raw_os_error(libc::EPERM),
-            ),
+            Some(remaining) if wname_len > remaining => {
+                Err(std::io::Error::from_raw_os_error(libc::EPERM))
+            }
             Some(remaining) => Ok(Some(CapToken {
                 rights: cap.rights,
                 depth: Some(remaining - wname_len),
@@ -357,7 +383,14 @@ mod tests {
     #[test]
     fn check_walk_cap_unlimited_propagates_unchanged() {
         let s = make_session();
-        s.active_caps.insert(42, CapToken { rights: 0xFF, depth: None, expiry: far_future() });
+        s.active_caps.insert(
+            42,
+            CapToken {
+                rights: 0xFF,
+                depth: None,
+                expiry: far_future(),
+            },
+        );
         let cap = s.check_walk_cap(42, 100).unwrap().unwrap();
         assert_eq!(cap.depth, None);
         assert_eq!(cap.rights, 0xFF);
@@ -366,7 +399,14 @@ mod tests {
     #[test]
     fn check_walk_cap_decrements_finite_depth() {
         let s = make_session();
-        s.active_caps.insert(42, CapToken { rights: 0x01, depth: Some(5), expiry: far_future() });
+        s.active_caps.insert(
+            42,
+            CapToken {
+                rights: 0x01,
+                depth: Some(5),
+                expiry: far_future(),
+            },
+        );
         // Walking 2 steps from depth-5 → child cap has depth-3.
         let cap = s.check_walk_cap(42, 2).unwrap().unwrap();
         assert_eq!(cap.depth, Some(3));
@@ -377,7 +417,14 @@ mod tests {
     fn check_walk_cap_zero_steps_preserves_depth() {
         // Twalk(0) clones the fid; cap propagates with depth unchanged.
         let s = make_session();
-        s.active_caps.insert(42, CapToken { rights: 0x01, depth: Some(3), expiry: far_future() });
+        s.active_caps.insert(
+            42,
+            CapToken {
+                rights: 0x01,
+                depth: Some(3),
+                expiry: far_future(),
+            },
+        );
         let cap = s.check_walk_cap(42, 0).unwrap().unwrap();
         assert_eq!(cap.depth, Some(3));
     }
@@ -385,7 +432,14 @@ mod tests {
     #[test]
     fn check_walk_cap_rejects_beyond_remaining_depth() {
         let s = make_session();
-        s.active_caps.insert(42, CapToken { rights: 0x01, depth: Some(2), expiry: far_future() });
+        s.active_caps.insert(
+            42,
+            CapToken {
+                rights: 0x01,
+                depth: Some(2),
+                expiry: far_future(),
+            },
+        );
         let err = s.check_walk_cap(42, 3).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EPERM));
         // Cap is unchanged on the source fid (rejection is non-destructive).
@@ -397,7 +451,14 @@ mod tests {
         // Walking exactly the remaining depth lands on Some(0); the
         // destination fid's cap permits I/O but no further walks.
         let s = make_session();
-        s.active_caps.insert(42, CapToken { rights: 0x01, depth: Some(3), expiry: far_future() });
+        s.active_caps.insert(
+            42,
+            CapToken {
+                rights: 0x01,
+                depth: Some(3),
+                expiry: far_future(),
+            },
+        );
         let child_cap = s.check_walk_cap(42, 3).unwrap().unwrap();
         assert_eq!(child_cap.depth, Some(0));
 

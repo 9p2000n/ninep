@@ -10,8 +10,8 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::ResolvesServerCert;
 use rustls::sign::CertifiedKey;
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -46,8 +46,10 @@ impl CertCounters {
     }
 
     fn record_success(&self) -> u64 {
-        self.last_reload_nanos
-            .store(self.created_at.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.last_reload_nanos.store(
+            self.created_at.elapsed().as_nanos() as u64,
+            Ordering::Relaxed,
+        );
         self.reloads.fetch_add(1, Ordering::Relaxed) + 1
     }
 
@@ -205,6 +207,9 @@ mod tests {
         let snap = c.snapshot();
         assert_eq!(snap.reloads, 2);
         assert_eq!(snap.reload_failures, 1);
-        assert!(snap.last_reload_age.is_some(), "age set after record_success");
+        assert!(
+            snap.last_reload_age.is_some(),
+            "age set after record_success"
+        );
     }
 }

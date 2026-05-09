@@ -28,38 +28,16 @@ pub fn classify(t: MsgType) -> MessageClass {
         Tnotify | Tleasebreak => MessageClass::Metadata,
 
         // ── Metadata: small control-plane messages → datagrams ──
-        Tversion | Rversion |
-        Tcaps | Rcaps |
-        Tstartls | Rstartls |
-        Tcapgrant | Rcapgrant |
-        Tcapuse | Rcapuse |
-        Tauditctl | Rauditctl |
-        TstartlsSpiffe | RstartlsSpiffe |
-        Tfetchbundle | Rfetchbundle |
-        Tspiffeverify | Rspiffeverify |
-        Tsession | Rsession |
-        Twatch | Rwatch |
-        Tunwatch | Runwatch |
-        Tlease | Rlease |
-        Tleaserenew | Rleaserenew |
-        Tleaseack | Rleaseack |
-        Tconsistency | Rconsistency |
-        Ttopology | Rtopology |
-        Ttraceattr | Rtraceattr |
-        Thealth | Rhealth |
-        Tserverstats | Rserverstats |
-        Tgetquota | Rgetquota |
-        Tsetquota | Rsetquota |
-        Tratelimit | Rratelimit |
-        Tquicstream | Rquicstream |
-        Tcxlmap | Rcxlmap |
-        Tcxlcoherence | Rcxlcoherence |
-        Trdmatoken | Rrdmatoken |
-        Trdmanotify | Rrdmanotify |
-        Tcompress | Rcompress |
-        Tflush | Rflush |
-        Rerror |
-        Rlerror => MessageClass::Metadata,
+        Tversion | Rversion | Tcaps | Rcaps | Tstartls | Rstartls | Tcapgrant | Rcapgrant
+        | Tcapuse | Rcapuse | Tauditctl | Rauditctl | TstartlsSpiffe | RstartlsSpiffe
+        | Tfetchbundle | Rfetchbundle | Tspiffeverify | Rspiffeverify | Tsession | Rsession
+        | Twatch | Rwatch | Tunwatch | Runwatch | Tlease | Rlease | Tleaserenew | Rleaserenew
+        | Tleaseack | Rleaseack | Tconsistency | Rconsistency | Ttopology | Rtopology
+        | Ttraceattr | Rtraceattr | Thealth | Rhealth | Tserverstats | Rserverstats | Tgetquota
+        | Rgetquota | Tsetquota | Rsetquota | Tratelimit | Rratelimit | Tquicstream
+        | Rquicstream | Tcxlmap | Rcxlmap | Tcxlcoherence | Rcxlcoherence | Trdmatoken
+        | Rrdmatoken | Trdmanotify | Rrdmanotify | Tcompress | Rcompress | Tflush | Rflush
+        | Rerror | Rlerror => MessageClass::Metadata,
 
         // ── Data: everything else (I/O, walk, stat, compound, etc.) → streams ──
         _ => MessageClass::Data,

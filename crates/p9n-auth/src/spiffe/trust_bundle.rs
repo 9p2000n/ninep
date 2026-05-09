@@ -3,12 +3,12 @@
 //! Thread-safe via `Arc<RwLock<>>` — cloning shares the underlying store.
 //! Uses `parking_lot::RwLock` so a panicking writer does not poison the lock.
 
-use crate::error::AuthError;
 use super::jwt_svid::JwkSet;
+use crate::error::AuthError;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::fs;
+use std::sync::Arc;
 
 /// Per-domain trust bundle: X.509 CA certs and optional JWT JWK Set.
 #[derive(Debug, Clone, Default)]
@@ -28,7 +28,9 @@ pub struct TrustBundleStore {
 
 impl Default for TrustBundleStore {
     fn default() -> Self {
-        Self { inner: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 }
 
@@ -39,16 +41,13 @@ impl TrustBundleStore {
 
     /// Load a PEM CA bundle file for a trust domain.
     pub fn load_pem_file(&self, trust_domain: &str, path: &str) -> Result<(), AuthError> {
-        let pem =
-            fs::read(path).map_err(|e| AuthError::CertificateLoad(format!("{path}: {e}")))?;
+        let pem = fs::read(path).map_err(|e| AuthError::CertificateLoad(format!("{path}: {e}")))?;
         let certs: Vec<Vec<u8>> = rustls_pemfile::certs(&mut &pem[..])
             .filter_map(|r| r.ok())
             .map(|c| c.to_vec())
             .collect();
         if certs.is_empty() {
-            return Err(AuthError::CertificateLoad(format!(
-                "no CA certs in {path}"
-            )));
+            return Err(AuthError::CertificateLoad(format!("no CA certs in {path}")));
         }
         let mut bundles = self.inner.write();
         let bundle = bundles.entry(trust_domain.to_string()).or_default();
@@ -120,8 +119,7 @@ impl TrustBundleStore {
 }
 
 fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;

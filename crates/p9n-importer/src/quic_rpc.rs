@@ -43,12 +43,10 @@ impl QuicRpcClient {
             tracing::trace!(conn_id, "QuicRpcClient datagram reader started");
             loop {
                 match conn2.read_datagram().await {
-                    Ok(data) => {
-                        match framing::decode(&data) {
-                            Ok(fc) => dispatch_response(&inflight2, &push_tx2, fc, conn_id).await,
-                            Err(e) => tracing::debug!(conn_id, error = %e, "datagram decode failed"),
-                        }
-                    }
+                    Ok(data) => match framing::decode(&data) {
+                        Ok(fc) => dispatch_response(&inflight2, &push_tx2, fc, conn_id).await,
+                        Err(e) => tracing::debug!(conn_id, error = %e, "datagram decode failed"),
+                    },
                     Err(e) => {
                         tracing::debug!(conn_id, error = %e, "datagram reader exited");
                         break;
@@ -72,7 +70,10 @@ impl QuicRpcClient {
                         let permit = match stream_limit.clone().acquire_owned().await {
                             Ok(p) => p,
                             Err(_) => {
-                                tracing::debug!(conn_id, "uni-stream acceptor exiting (semaphore closed)");
+                                tracing::debug!(
+                                    conn_id,
+                                    "uni-stream acceptor exiting (semaphore closed)"
+                                );
                                 break;
                             }
                         };
@@ -81,7 +82,9 @@ impl QuicRpcClient {
                             while let Ok(fc) = framing::read_message(&mut recv).await {
                                 n += 1;
                                 tracing::trace!(
-                                    conn_id, msg_type = fc.msg_type.name(), tag = fc.tag,
+                                    conn_id,
+                                    msg_type = fc.msg_type.name(),
+                                    tag = fc.tag,
                                     "uni-stream push received",
                                 );
                                 let _ = tx.send(fc).await;
@@ -116,12 +119,11 @@ impl QuicRpcClient {
     ///
     /// Tag is automatically allocated and freed (via RAII guard) even on error.
     /// Returns the raw Fcall — caller checks for error responses.
-    pub async fn call(
-        &self,
-        msg_type: MsgType,
-        msg: Msg,
-    ) -> Result<Fcall, RpcError> {
-        let guard = self.tags.alloc_guard().ok_or(RpcError::from("tag pool exhausted"))?;
+    pub async fn call(&self, msg_type: MsgType, msg: Msg) -> Result<Fcall, RpcError> {
+        let guard = self
+            .tags
+            .alloc_guard()
+            .ok_or(RpcError::from("tag pool exhausted"))?;
         let tag = guard.tag();
 
         let fc = Fcall {
@@ -151,16 +153,28 @@ impl QuicRpcClient {
             .await
             .map_err(|_| {
                 self.inflight.remove(&tag);
-                tracing::warn!(conn_id, tag, msg_type = mt_name, timeout_secs = 30, "rpc timeout");
+                tracing::warn!(
+                    conn_id,
+                    tag,
+                    msg_type = mt_name,
+                    timeout_secs = 30,
+                    "rpc timeout"
+                );
                 RpcError::from("RPC timeout (30s)")
             })?
             .map_err(|_| {
-                tracing::debug!(conn_id, tag, msg_type = mt_name, "rpc channel closed (connection lost)");
+                tracing::debug!(
+                    conn_id,
+                    tag,
+                    msg_type = mt_name,
+                    "rpc channel closed (connection lost)"
+                );
                 RpcError::from("RPC channel closed (connection lost)")
             })?;
 
         tracing::trace!(
-            conn_id, tag,
+            conn_id,
+            tag,
             msg_type = mt_name,
             resp = response.msg_type.name(),
             "rpc recv",
@@ -172,7 +186,9 @@ impl QuicRpcClient {
         // Check for error response — preserve errno
         match &response.msg {
             Msg::Lerror { ecode } => Err(RpcError::NineP { ecode: *ecode }),
-            Msg::Error { ename } => Err(RpcError::NinePString { ename: ename.clone() }),
+            Msg::Error { ename } => Err(RpcError::NinePString {
+                ename: ename.clone(),
+            }),
             _ => Ok(response),
         }
     }
@@ -189,20 +205,26 @@ impl QuicRpcClient {
                 // Try datagram, fall back to stream if too large
                 if !datagram::send_datagram(&self.conn, fc).await? {
                     tracing::trace!(
-                        conn_id, tag = fc.tag, msg_type = fc.msg_type.name(),
+                        conn_id,
+                        tag = fc.tag,
+                        msg_type = fc.msg_type.name(),
                         "routing: datagram→stream (too large)",
                     );
                     self.send_on_stream(fc).await?;
                 } else {
                     tracing::trace!(
-                        conn_id, tag = fc.tag, msg_type = fc.msg_type.name(),
+                        conn_id,
+                        tag = fc.tag,
+                        msg_type = fc.msg_type.name(),
                         "routing: datagram",
                     );
                 }
             }
             MessageClass::Data | MessageClass::Push => {
                 tracing::trace!(
-                    conn_id, tag = fc.tag, msg_type = fc.msg_type.name(),
+                    conn_id,
+                    tag = fc.tag,
+                    msg_type = fc.msg_type.name(),
                     "routing: stream",
                 );
                 self.send_on_stream(fc).await?;
@@ -266,9 +288,19 @@ async fn dispatch_response(
         tracing::trace!(conn_id, msg_type = mt_name, "push received");
         let _ = push_tx.send(fc).await;
     } else if let Some((_, tx)) = inflight.remove(&fc.tag) {
-        tracing::trace!(conn_id, tag = fc.tag, msg_type = mt_name, "response dispatched");
+        tracing::trace!(
+            conn_id,
+            tag = fc.tag,
+            msg_type = mt_name,
+            "response dispatched"
+        );
         let _ = tx.send(fc);
     } else {
-        tracing::warn!(conn_id, tag = fc.tag, msg_type = mt_name, "response for unknown tag");
+        tracing::warn!(
+            conn_id,
+            tag = fc.tag,
+            msg_type = mt_name,
+            "response for unknown tag"
+        );
     }
 }

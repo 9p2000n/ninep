@@ -6,8 +6,8 @@
 
 use lru::LruCache;
 use p9n_proto::wire::Stat;
-use std::num::NonZeroUsize;
 use parking_lot::Mutex;
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 pub struct AttrCache {

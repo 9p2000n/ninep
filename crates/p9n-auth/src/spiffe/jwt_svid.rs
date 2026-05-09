@@ -171,8 +171,8 @@ pub fn verify_jwt_svid(
     jwk_set: &JwkSet,
     expected_audience: &str,
 ) -> Result<JwtVerifyResult, AuthError> {
-    let header = jsonwebtoken::decode_header(token)
-        .map_err(|e| AuthError::Jwt(format!("header: {e}")))?;
+    let header =
+        jsonwebtoken::decode_header(token).map_err(|e| AuthError::Jwt(format!("header: {e}")))?;
 
     let kid = header.kid.as_deref().unwrap_or("");
     let jwk = jwk_set
@@ -252,8 +252,7 @@ pub fn encode_cap_token(
 
     let key = jsonwebtoken::EncodingKey::from_secret(hmac_key);
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
-    jsonwebtoken::encode(&header, &claims, &key)
-        .map_err(|e| AuthError::Jwt(format!("encode: {e}")))
+    jsonwebtoken::encode(&header, &claims, &key).map_err(|e| AuthError::Jwt(format!("encode: {e}")))
 }
 
 /// Verify a capability token using HMAC-SHA256.

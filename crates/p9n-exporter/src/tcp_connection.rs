@@ -11,11 +11,11 @@ use crate::lease_manager;
 use crate::push::{self, PushSender, TcpPushSender};
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::map_io_error;
 use crate::watch_manager::WatchEvent;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::{MsgType, SESSION_FIDS, SESSION_WATCHES};
 use p9n_transport::framing;
-use crate::util::map_io_error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{ReadHalf, WriteHalf};
@@ -94,7 +94,10 @@ impl<B: Backend> TcpConnectionHandler<B> {
             "tcp_conn",
             conn_id = self.session.conn_id,
             peer = self.session.spiffe_id.as_deref().unwrap_or("anonymous"),
-            remote = self.remote.map(|a| a.to_string()).unwrap_or_else(|| "unknown".into()),
+            remote = self
+                .remote
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "unknown".into()),
         );
         self.run_loop().instrument(span).await
     }
@@ -192,7 +195,10 @@ impl<B: Backend> TcpConnectionHandler<B> {
                 flags |= SESSION_WATCHES;
             }
             session_resumable = true;
-            tracing::debug!(flags = format_args!("{:#x}", flags), "tcp session saved for resume");
+            tracing::debug!(
+                flags = format_args!("{:#x}", flags),
+                "tcp session saved for resume"
+            );
             self.ctx
                 .session_store
                 .save(key, self.session.spiffe_id.clone(), flags);

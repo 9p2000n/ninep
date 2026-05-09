@@ -3,12 +3,12 @@
 use crate::error::TransportError;
 use crate::framing;
 use p9n_proto::fcall::Fcall;
+use std::sync::Arc;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
-use tokio_rustls::server::TlsStream as ServerTlsStream;
 use tokio_rustls::client::TlsStream as ClientTlsStream;
-use std::sync::Arc;
+use tokio_rustls::server::TlsStream as ServerTlsStream;
 
 /// TCP transport wrapping a TLS stream.
 ///

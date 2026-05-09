@@ -53,10 +53,7 @@ impl RdmaTransport {
         let alive_bg = alive.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = recv_loop(
-                recv_cq, qp, recv_pool, inflight_bg, push_tx, alive_bg,
-            )
-            .await
+            if let Err(e) = recv_loop(recv_cq, qp, recv_pool, inflight_bg, push_tx, alive_bg).await
             {
                 warn!("RDMA recv loop exited: {e}");
             }

@@ -47,13 +47,17 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
                             let _ = push_tx2.send(fc).await;
                         } else if let Some((_, tx)) = inflight2.remove(&fc.tag) {
                             tracing::trace!(
-                                conn_id, tag = fc.tag, msg_type = mt_name,
+                                conn_id,
+                                tag = fc.tag,
+                                msg_type = mt_name,
                                 "tcp response dispatched",
                             );
                             let _ = tx.send(fc);
                         } else {
                             tracing::warn!(
-                                conn_id, tag = fc.tag, msg_type = mt_name,
+                                conn_id,
+                                tag = fc.tag,
+                                msg_type = mt_name,
                                 "tcp response for unknown tag",
                             );
                         }
@@ -100,12 +104,11 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
     /// Send a request and wait for the matching response.
     ///
     /// Tag is automatically allocated and freed (via RAII guard) even on error.
-    pub async fn call(
-        &self,
-        msg_type: MsgType,
-        msg: Msg,
-    ) -> Result<Fcall, RpcError> {
-        let guard = self.tags.alloc_guard().ok_or(RpcError::from("tag pool exhausted"))?;
+    pub async fn call(&self, msg_type: MsgType, msg: Msg) -> Result<Fcall, RpcError> {
+        let guard = self
+            .tags
+            .alloc_guard()
+            .ok_or(RpcError::from("tag pool exhausted"))?;
         let tag = guard.tag();
 
         let fc = Fcall {
@@ -137,16 +140,28 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
             .await
             .map_err(|_| {
                 self.inflight.remove(&tag);
-                tracing::warn!(conn_id, tag, msg_type = mt_name, timeout_secs = 30, "tcp rpc timeout");
+                tracing::warn!(
+                    conn_id,
+                    tag,
+                    msg_type = mt_name,
+                    timeout_secs = 30,
+                    "tcp rpc timeout"
+                );
                 RpcError::from("TCP RPC timeout (30s)")
             })?
             .map_err(|_| {
-                tracing::debug!(conn_id, tag, msg_type = mt_name, "tcp rpc channel closed (connection lost)");
+                tracing::debug!(
+                    conn_id,
+                    tag,
+                    msg_type = mt_name,
+                    "tcp rpc channel closed (connection lost)"
+                );
                 RpcError::from("TCP RPC channel closed (connection lost)")
             })?;
 
         tracing::trace!(
-            conn_id, tag,
+            conn_id,
+            tag,
             msg_type = mt_name,
             resp = response.msg_type.name(),
             "tcp rpc recv",
@@ -157,7 +172,9 @@ impl<W: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpRpcClient<W> {
         // Check for error response — preserve errno
         match &response.msg {
             Msg::Lerror { ecode } => Err(RpcError::NineP { ecode: *ecode }),
-            Msg::Error { ename } => Err(RpcError::NinePString { ename: ename.clone() }),
+            Msg::Error { ename } => Err(RpcError::NinePString {
+                ename: ename.clone(),
+            }),
             _ => Ok(response),
         }
     }

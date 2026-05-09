@@ -20,8 +20,8 @@ use crate::util::{join_err, map_io_error};
 use crate::watch_manager::WatchEvent;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::{MsgType, SESSION_FIDS, SESSION_WATCHES};
-use p9n_transport::rdma::RdmaTransport;
 use p9n_transport::rdma::config::RdmaConnection;
+use p9n_transport::rdma::RdmaTransport;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -91,7 +91,10 @@ impl<B: Backend> RdmaConnectionHandler<B> {
             "rdma_conn",
             conn_id = self.session.conn_id,
             peer = self.session.spiffe_id.as_deref().unwrap_or("anonymous"),
-            remote = self.remote.map(|a| a.to_string()).unwrap_or_else(|| "unknown".into()),
+            remote = self
+                .remote
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "unknown".into()),
         );
         self.run_loop().instrument(span).await
     }
@@ -191,31 +194,47 @@ impl<B: Backend> RdmaConnectionHandler<B> {
         let Some(token) = token else {
             // No RDMA token — use standard handler.
             return handlers::dispatch(
-                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, None, fc,
-            ).await;
+                &self.session,
+                &self.ctx,
+                &self.watch_tx,
+                &self.push_tx,
+                None,
+                fc,
+            )
+            .await;
         };
         if token.direction != 0 {
             // Token is for WRITE direction, not READ — use standard handler.
             return handlers::dispatch(
-                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, None, fc,
-            ).await;
+                &self.session,
+                &self.ctx,
+                &self.watch_tx,
+                &self.push_tx,
+                None,
+                fc,
+            )
+            .await;
         }
 
         let tag = fc.tag;
         tracing::debug!(
-            tag, fid, offset, count,
+            tag,
+            fid,
+            offset,
+            count,
             token_addr = format_args!("{:#x}", token.addr),
             token_len = token.length,
             "rdma read (RDMA Write path)",
         );
 
         // Read file data from backend.
-        let fid_state = self.session.fids.get(fid)
-            .ok_or_else(|| {
-                tracing::debug!(fid, "rdma read rejected: unknown fid");
-                std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid")
-            })?;
-        let handle = fid_state.handle.as_ref()
+        let fid_state = self.session.fids.get(fid).ok_or_else(|| {
+            tracing::debug!(fid, "rdma read rejected: unknown fid");
+            std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid")
+        })?;
+        let handle = fid_state
+            .handle
+            .as_ref()
             .ok_or_else(|| {
                 tracing::debug!(fid, "rdma read rejected: fid not open");
                 std::io::Error::new(std::io::ErrorKind::Other, "fid not open")
@@ -224,9 +243,9 @@ impl<B: Backend> RdmaConnectionHandler<B> {
         drop(fid_state);
 
         let ctx = self.ctx.clone();
-        let data = tokio::task::spawn_blocking(move || {
-            ctx.backend.read(&handle, offset, count)
-        }).await.map_err(join_err)??;
+        let data = tokio::task::spawn_blocking(move || ctx.backend.read(&handle, offset, count))
+            .await
+            .map_err(join_err)??;
 
         let data_len = data.len();
         let mut rdma_written = 0usize;
@@ -241,7 +260,9 @@ impl<B: Backend> RdmaConnectionHandler<B> {
             rdma_written = data_len;
         } else if data_len as u32 > token.length {
             tracing::warn!(
-                tag, fid, data_len,
+                tag,
+                fid,
+                data_len,
                 token_len = token.length,
                 "rdma read: data exceeds client buffer; skipping RDMA Write",
             );
@@ -275,13 +296,25 @@ impl<B: Backend> RdmaConnectionHandler<B> {
         let token = self.session.rdma_tokens.get(&fid).map(|t| t.clone());
         let Some(token) = token else {
             return handlers::dispatch(
-                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, None, fc,
-            ).await;
+                &self.session,
+                &self.ctx,
+                &self.watch_tx,
+                &self.push_tx,
+                None,
+                fc,
+            )
+            .await;
         };
         if token.direction != 1 {
             return handlers::dispatch(
-                &self.session, &self.ctx, &self.watch_tx, &self.push_tx, None, fc,
-            ).await;
+                &self.session,
+                &self.ctx,
+                &self.watch_tx,
+                &self.push_tx,
+                None,
+                fc,
+            )
+            .await;
         }
 
         let tag = fc.tag;
@@ -291,7 +324,10 @@ impl<B: Backend> RdmaConnectionHandler<B> {
         let (data, source) = if msg_data.is_empty() {
             let count = token.length.min(self.session.get_msize()) as usize;
             tracing::debug!(
-                tag, fid, offset, count,
+                tag,
+                fid,
+                offset,
+                count,
                 token_addr = format_args!("{:#x}", token.addr),
                 token_len = token.length,
                 "rdma write (RDMA Read path)",
@@ -304,19 +340,22 @@ impl<B: Backend> RdmaConnectionHandler<B> {
             (bytes, "rdma_read")
         } else {
             tracing::debug!(
-                tag, fid, offset,
+                tag,
+                fid,
+                offset,
                 len = msg_data.len(),
                 "rdma write (inline payload)",
             );
             (msg_data, "inline")
         };
 
-        let fid_state = self.session.fids.get(fid)
-            .ok_or_else(|| {
-                tracing::debug!(fid, "rdma write rejected: unknown fid");
-                std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid")
-            })?;
-        let handle = fid_state.handle.as_ref()
+        let fid_state = self.session.fids.get(fid).ok_or_else(|| {
+            tracing::debug!(fid, "rdma write rejected: unknown fid");
+            std::io::Error::new(std::io::ErrorKind::NotFound, "unknown fid")
+        })?;
+        let handle = fid_state
+            .handle
+            .as_ref()
             .ok_or_else(|| {
                 tracing::debug!(fid, "rdma write rejected: fid not open");
                 std::io::Error::new(std::io::ErrorKind::Other, "fid not open")
@@ -326,13 +365,15 @@ impl<B: Backend> RdmaConnectionHandler<B> {
         drop(fid_state);
 
         // Break read leases held by other connections.
-        self.ctx.lease_mgr.break_for_write(qid_path, self.session.conn_id);
+        self.ctx
+            .lease_mgr
+            .break_for_write(qid_path, self.session.conn_id);
 
         let ctx = self.ctx.clone();
         let data_len = data.len();
-        let n = tokio::task::spawn_blocking(move || {
-            ctx.backend.write(&handle, offset, &data)
-        }).await.map_err(join_err)??;
+        let n = tokio::task::spawn_blocking(move || ctx.backend.write(&handle, offset, &data))
+            .await
+            .map_err(join_err)??;
 
         tracing::debug!(tag, fid, data_len, written = n, source, "rdma write result");
 
@@ -365,7 +406,10 @@ impl<B: Backend> RdmaConnectionHandler<B> {
                 flags |= SESSION_WATCHES;
             }
             session_resumable = true;
-            tracing::debug!(flags = format_args!("{:#x}", flags), "rdma session saved for resume");
+            tracing::debug!(
+                flags = format_args!("{:#x}", flags),
+                "rdma session saved for resume"
+            );
             self.ctx
                 .session_store
                 .save(key, self.session.spiffe_id.clone(), flags);

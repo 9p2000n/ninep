@@ -9,12 +9,7 @@ pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) -> Hand
     };
     let tag = fc.tag;
     let removed = session.fids.remove(fid).is_some();
-    tracing::debug!(
-        tag, fid,
-        removed,
-        fids_total = session.fids.len(),
-        "Tclunk",
-    );
+    tracing::debug!(tag, fid, removed, fids_total = session.fids.len(), "Tclunk",);
 
     Ok(Fcall {
         size: 0,

@@ -73,11 +73,7 @@ impl Heartbeat {
         let interval_secs = interval.as_secs();
         let n_sources = sources.len();
         tokio::spawn(async move {
-            tracing::info!(
-                interval_secs,
-                n_sources,
-                "heartbeat task starting",
-            );
+            tracing::info!(interval_secs, n_sources, "heartbeat task starting",);
             let mut tick: u64 = 0;
             loop {
                 tokio::select! {
@@ -100,8 +96,8 @@ impl Heartbeat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn new_and_builder_is_empty() {
@@ -135,7 +131,9 @@ mod tests {
             })
             .add({
                 let c = counter_b.clone();
-                move |_tick| { c.fetch_add(1, Ordering::Relaxed); }
+                move |_tick| {
+                    c.fetch_add(1, Ordering::Relaxed);
+                }
             })
             .spawn(token.clone());
 

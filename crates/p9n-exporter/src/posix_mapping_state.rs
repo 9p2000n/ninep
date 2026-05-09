@@ -65,12 +65,13 @@ impl PosixMappingState {
         let raw_jws = std::fs::read(bundle_path).map_err(|e| {
             BundleLoadError::Io(format!("read bundle {}: {e}", bundle_path.display()))
         })?;
-        let mtime = std::fs::metadata(bundle_path).ok().and_then(|m| m.modified().ok());
+        let mtime = std::fs::metadata(bundle_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
 
         let now = unix_now();
-        let bundle =
-            MappingBundle::load_and_verify(&raw_jws, &jwk_set, expected_trust_domain, now)
-                .map_err(|e| BundleLoadError::Auth(e.to_string()))?;
+        let bundle = MappingBundle::load_and_verify(&raw_jws, &jwk_set, expected_trust_domain, now)
+            .map_err(|e| BundleLoadError::Auth(e.to_string()))?;
 
         Ok(Self {
             inner: RwLock::new(Inner {
@@ -87,11 +88,7 @@ impl PosixMappingState {
     /// Construct directly from in-memory artifacts. Used by tests and
     /// any future API that delivers the bundle through a non-file
     /// channel.
-    pub fn from_parts(
-        bundle: MappingBundle,
-        raw_jws: Vec<u8>,
-        jwk_set: JwkSet,
-    ) -> Self {
+    pub fn from_parts(bundle: MappingBundle, raw_jws: Vec<u8>, jwk_set: JwkSet) -> Self {
         let trust_domain = bundle.trust_domain().to_string();
         Self {
             inner: RwLock::new(Inner {
@@ -169,13 +166,9 @@ impl PosixMappingState {
         let raw_jws = std::fs::read(path)
             .map_err(|e| BundleLoadError::Io(format!("read {}: {e}", path.display())))?;
         let now = unix_now();
-        let bundle = MappingBundle::load_and_verify(
-            &raw_jws,
-            &self.jwk_set,
-            &self.trust_domain,
-            now,
-        )
-        .map_err(|e| BundleLoadError::Auth(e.to_string()))?;
+        let bundle =
+            MappingBundle::load_and_verify(&raw_jws, &self.jwk_set, &self.trust_domain, now)
+                .map_err(|e| BundleLoadError::Auth(e.to_string()))?;
 
         // Reject monotonic regressions: if the new bundle's serial is
         // strictly less than the current one, refuse the swap so that a
@@ -286,7 +279,9 @@ mod reload_tests {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
         header.kid = Some(TEST_KID.into());
         header.typ = Some("p9n-posix-mapping-bundle".into());
-        jsonwebtoken::encode(&header, payload, &key).unwrap().into_bytes()
+        jsonwebtoken::encode(&header, payload, &key)
+            .unwrap()
+            .into_bytes()
     }
 
     fn payload(serial: u64, alice_uid: u32) -> BundlePayload {
@@ -327,10 +322,8 @@ mod reload_tests {
                 "use": "p9n-mapping", "x": TEST_PUB_X, "y": TEST_PUB_Y,
             }]
         });
-        let jwks =
-            JwkSet::from_json(&serde_json::to_vec(&jwk_json).unwrap()).unwrap();
-        let bundle =
-            MappingBundle::load_and_verify(&jws, &jwks, "example.com", 1_500).unwrap();
+        let jwks = JwkSet::from_json(&serde_json::to_vec(&jwk_json).unwrap()).unwrap();
+        let bundle = MappingBundle::load_and_verify(&jws, &jwks, "example.com", 1_500).unwrap();
         let state = PosixMappingState::from_parts(bundle, jws, jwks);
         assert_eq!(state.maybe_reload().unwrap(), false);
     }
@@ -343,13 +336,14 @@ mod reload_tests {
 
         // v1 on disk
         std::fs::write(&bundle_path, sign_bundle(&payload(1, 1_048_577))).unwrap();
-        let state = PosixMappingState::load_from_files(
-            &bundle_path, &jwks_path, "example.com",
-        )
-        .unwrap();
+        let state =
+            PosixMappingState::load_from_files(&bundle_path, &jwks_path, "example.com").unwrap();
         assert_eq!(state.serial(), 1);
         assert_eq!(
-            state.lookup_posix("spiffe://example.com/workloads/alice").unwrap().uid,
+            state
+                .lookup_posix("spiffe://example.com/workloads/alice")
+                .unwrap()
+                .uid,
             1_048_577,
         );
 
@@ -362,7 +356,10 @@ mod reload_tests {
         assert_eq!(state.maybe_reload().unwrap(), true);
         assert_eq!(state.serial(), 2);
         assert_eq!(
-            state.lookup_posix("spiffe://example.com/workloads/alice").unwrap().uid,
+            state
+                .lookup_posix("spiffe://example.com/workloads/alice")
+                .unwrap()
+                .uid,
             1_048_999,
         );
     }
@@ -374,10 +371,8 @@ mod reload_tests {
         let bundle_path = tmp.path().join("bundle.jws");
 
         std::fs::write(&bundle_path, sign_bundle(&payload(1, 1_048_577))).unwrap();
-        let state = PosixMappingState::load_from_files(
-            &bundle_path, &jwks_path, "example.com",
-        )
-        .unwrap();
+        let state =
+            PosixMappingState::load_from_files(&bundle_path, &jwks_path, "example.com").unwrap();
 
         // Corrupt the on-disk bundle (truncate signature).
         let mut corrupt = sign_bundle(&payload(2, 1_048_999));
@@ -390,7 +385,10 @@ mod reload_tests {
         // Old bundle remains.
         assert_eq!(state.serial(), 1);
         assert_eq!(
-            state.lookup_posix("spiffe://example.com/workloads/alice").unwrap().uid,
+            state
+                .lookup_posix("spiffe://example.com/workloads/alice")
+                .unwrap()
+                .uid,
             1_048_577,
         );
     }
@@ -403,10 +401,8 @@ mod reload_tests {
 
         // Start at serial 5.
         std::fs::write(&bundle_path, sign_bundle(&payload(5, 1_048_577))).unwrap();
-        let state = PosixMappingState::load_from_files(
-            &bundle_path, &jwks_path, "example.com",
-        )
-        .unwrap();
+        let state =
+            PosixMappingState::load_from_files(&bundle_path, &jwks_path, "example.com").unwrap();
         assert_eq!(state.serial(), 5);
 
         // Operator publishes serial 3 by mistake (older copy).
@@ -426,16 +422,17 @@ mod reload_tests {
         let bundle_path = tmp.path().join("bundle.jws");
 
         std::fs::write(&bundle_path, sign_bundle(&payload(7, 1_048_577))).unwrap();
-        let state = PosixMappingState::load_from_files(
-            &bundle_path, &jwks_path, "example.com",
-        )
-        .unwrap();
+        let state =
+            PosixMappingState::load_from_files(&bundle_path, &jwks_path, "example.com").unwrap();
 
         write_with_distinct_mtime(&bundle_path, &sign_bundle(&payload(7, 1_048_999)));
         assert_eq!(state.maybe_reload().unwrap(), true);
         assert_eq!(state.serial(), 7);
         assert_eq!(
-            state.lookup_posix("spiffe://example.com/workloads/alice").unwrap().uid,
+            state
+                .lookup_posix("spiffe://example.com/workloads/alice")
+                .unwrap()
+                .uid,
             1_048_999,
         );
     }

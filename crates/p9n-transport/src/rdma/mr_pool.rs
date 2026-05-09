@@ -9,9 +9,9 @@
 
 use std::sync::Arc;
 
-use crate::error::TransportError;
 use super::ffi;
 use super::verbs::ProtectionDomain;
+use crate::error::TransportError;
 
 /// A pool of pre-registered memory slots backed by a single large MR.
 ///
@@ -219,23 +219,13 @@ impl MrSlot {
     /// Get a mutable slice for writing data into this slot.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         let offset = self.idx as usize * self.pool.slot_size;
-        unsafe {
-            std::slice::from_raw_parts_mut(
-                self.pool.buf.add(offset),
-                self.pool.slot_size,
-            )
-        }
+        unsafe { std::slice::from_raw_parts_mut(self.pool.buf.add(offset), self.pool.slot_size) }
     }
 
     /// Get a slice for reading data from this slot.
     pub fn as_slice(&self) -> &[u8] {
         let offset = self.idx as usize * self.pool.slot_size;
-        unsafe {
-            std::slice::from_raw_parts(
-                self.pool.buf.add(offset),
-                self.pool.slot_size,
-            )
-        }
+        unsafe { std::slice::from_raw_parts(self.pool.buf.add(offset), self.pool.slot_size) }
     }
 
     /// Copy data into this slot. Returns error if data exceeds slot size.
@@ -286,10 +276,7 @@ impl MrSlot {
     }
 
     /// Post this slot as a receive work request.
-    pub fn post_recv(
-        &self,
-        qp: &super::verbs::QueuePair,
-    ) -> Result<(), TransportError> {
+    pub fn post_recv(&self, qp: &super::verbs::QueuePair) -> Result<(), TransportError> {
         unsafe {
             let mut sge = ffi::ibv_sge {
                 addr: self.addr(),
@@ -441,12 +428,7 @@ impl LeasedSlot {
     /// Read data from this slot.
     pub fn as_slice(&self) -> &[u8] {
         let offset = self.idx as usize * self.pool.slot_size;
-        unsafe {
-            std::slice::from_raw_parts(
-                self.pool.buf.add(offset),
-                self.pool.slot_size,
-            )
-        }
+        unsafe { std::slice::from_raw_parts(self.pool.buf.add(offset), self.pool.slot_size) }
     }
 
     /// Get a mutable slice for writing data into this slot.
@@ -457,12 +439,7 @@ impl LeasedSlot {
     /// referencing this buffer.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         let offset = self.idx as usize * self.pool.slot_size;
-        unsafe {
-            std::slice::from_raw_parts_mut(
-                self.pool.buf.add(offset),
-                self.pool.slot_size,
-            )
-        }
+        unsafe { std::slice::from_raw_parts_mut(self.pool.buf.add(offset), self.pool.slot_size) }
     }
 
     /// Return the slot to the pool.

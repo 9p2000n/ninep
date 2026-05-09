@@ -3,10 +3,10 @@ use crate::fid_table::FidState;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::{join_err, unknown_fid};
 
 /// Handle Tlcreate: create and open a new file.
 pub async fn handle_lcreate<B: Backend>(
@@ -34,7 +34,10 @@ pub async fn handle_lcreate<B: Backend>(
         "Tlcreate received",
     );
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tlcreate"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tlcreate"))?;
     let dir_path = fid_state.path.clone();
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
@@ -118,7 +121,10 @@ pub async fn handle_symlink<B: Backend>(
         "Tsymlink received",
     );
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tsymlink"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tsymlink"))?;
     let dir_path = fid_state.path.clone();
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
@@ -174,7 +180,10 @@ pub async fn handle_link<B: Backend>(
     let tag = fc.tag;
     tracing::debug!(tag, dfid, fid, name = %name, "Tlink received");
 
-    let dfid_state = session.fids.get(dfid).ok_or_else(|| unknown_fid(dfid, "Tlink"))?;
+    let dfid_state = session
+        .fids
+        .get(dfid)
+        .ok_or_else(|| unknown_fid(dfid, "Tlink"))?;
     let dir_path = dfid_state.path.clone();
     let dir_qid_path = dfid_state.qid.path;
     drop(dfid_state);
@@ -182,17 +191,18 @@ pub async fn handle_link<B: Backend>(
     // Break leases on the parent directory (its contents are changing).
     ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tlink"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tlink"))?;
     let target_path = fid_state.path.clone();
     drop(fid_state);
 
     let ctx = ctx.clone();
     let name_for_log = name.clone();
-    tokio::task::spawn_blocking(move || {
-        ctx.backend.link(&target_path, &dir_path, &name)
-    })
-    .await
-    .map_err(join_err)??;
+    tokio::task::spawn_blocking(move || ctx.backend.link(&target_path, &dir_path, &name))
+        .await
+        .map_err(join_err)??;
 
     tracing::debug!(tag, dfid, fid, name = %name_for_log, "Tlink result");
 

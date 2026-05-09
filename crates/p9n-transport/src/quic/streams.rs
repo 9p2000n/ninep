@@ -5,10 +5,7 @@ use crate::error::TransportError;
 use p9n_proto::fcall::Fcall;
 
 /// Send a message on a new bidirectional stream and read the response.
-pub async fn stream_rpc(
-    conn: &quinn::Connection,
-    fc: &Fcall,
-) -> Result<Fcall, TransportError> {
+pub async fn stream_rpc(conn: &quinn::Connection, fc: &Fcall) -> Result<Fcall, TransportError> {
     let (mut send, mut recv) = conn.open_bi().await?;
 
     framing::write_message(&mut send, fc).await?;

@@ -22,7 +22,11 @@ pub async fn handle<H: Send + Sync + 'static>(
     bind_tx: Option<&BindTx>,
     fc: Fcall,
 ) -> HandlerResult {
-    let Msg::Quicstream { stream_type, stream_id: req_stream_id } = fc.msg else {
+    let Msg::Quicstream {
+        stream_type,
+        stream_id: req_stream_id,
+    } = fc.msg
+    else {
         return Err("expected Quicstream".into());
     };
     let tag = fc.tag;
@@ -46,7 +50,11 @@ pub async fn handle<H: Send + Sync + 'static>(
     }
     // 3. P0 only accepts the push channel.
     if stream_type != STREAM_TYPE_PUSH {
-        tracing::warn!(tag, stream_type, "Tquicstream rejected: unsupported stream_type");
+        tracing::warn!(
+            tag,
+            stream_type,
+            "Tquicstream rejected: unsupported stream_type"
+        );
         return Ok(lerror(tag, libc::EOPNOTSUPP as u32));
     }
     // 4. For push bindings the request stream_id field is reserved and
@@ -56,7 +64,11 @@ pub async fn handle<H: Send + Sync + 'static>(
     //    the semantic space for future stream_types that may assign
     //    meaning to the field. See docs/QUICSTREAM.md §3.3.
     if req_stream_id != 0 {
-        tracing::warn!(tag, req_stream_id, "Tquicstream rejected: non-zero stream_id");
+        tracing::warn!(
+            tag,
+            req_stream_id,
+            "Tquicstream rejected: non-zero stream_id"
+        );
         return Ok(lerror(tag, libc::EINVAL as u32));
     }
     // 5. One binding per session; rebinding is rejected.
@@ -80,7 +92,10 @@ pub async fn handle<H: Send + Sync + 'static>(
     if bind_tx.send(tx).await.is_err() {
         // Run loop has exited. The connection is tearing down anyway;
         // report EIO so the client sees a concrete failure.
-        tracing::warn!(tag, "Tquicstream: bind channel send failed (connection tearing down)");
+        tracing::warn!(
+            tag,
+            "Tquicstream: bind channel send failed (connection tearing down)"
+        );
         return Ok(lerror(tag, libc::EIO as u32));
     }
     let bind_result = match rx.await {
@@ -113,7 +128,11 @@ pub async fn handle<H: Send + Sync + 'static>(
     // processes messages sequentially per session, but defend against it.
     let mut slot = session.quic_push_binding.lock();
     if slot.is_some() {
-        tracing::warn!(tag, alias, "Tquicstream: racing rebind detected, dropping alias");
+        tracing::warn!(
+            tag,
+            alias,
+            "Tquicstream: racing rebind detected, dropping alias"
+        );
         return Ok(lerror(tag, libc::EBUSY as u32));
     }
     *slot = Some(QuicBinding {

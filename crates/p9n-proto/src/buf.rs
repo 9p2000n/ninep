@@ -14,7 +14,10 @@ pub struct Buf {
 impl Buf {
     /// Create a new write buffer.
     pub fn new(cap: usize) -> Self {
-        Self { data: Vec::with_capacity(cap), pos: 0 }
+        Self {
+            data: Vec::with_capacity(cap),
+            pos: 0,
+        }
     }
 
     /// Wrap existing data for reading (takes ownership, zero-copy).
@@ -36,32 +39,53 @@ impl Buf {
     }
 
     /// Returns the written data.
-    pub fn as_bytes(&self) -> &[u8] { &self.data }
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
 
     /// Returns the number of bytes written.
-    pub fn len(&self) -> usize { self.data.len() }
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
 
     /// Returns true if empty.
-    pub fn is_empty(&self) -> bool { self.data.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
 
     /// Current read position.
-    pub fn pos(&self) -> usize { self.pos }
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
 
     /// Resets the buffer.
-    pub fn reset(&mut self) { self.data.clear(); self.pos = 0; }
+    pub fn reset(&mut self) {
+        self.data.clear();
+        self.pos = 0;
+    }
 
     /// Remaining bytes available for reading.
-    pub fn remaining(&self) -> usize { self.data.len().saturating_sub(self.pos) }
+    pub fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
 
     // ── Write operations ──
 
-    pub fn put_u8(&mut self, v: u8) { self.data.push(v); }
+    pub fn put_u8(&mut self, v: u8) {
+        self.data.push(v);
+    }
 
-    pub fn put_u16(&mut self, v: u16) { self.data.extend_from_slice(&v.to_le_bytes()); }
+    pub fn put_u16(&mut self, v: u16) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
 
-    pub fn put_u32(&mut self, v: u32) { self.data.extend_from_slice(&v.to_le_bytes()); }
+    pub fn put_u32(&mut self, v: u32) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
 
-    pub fn put_u64(&mut self, v: u64) { self.data.extend_from_slice(&v.to_le_bytes()); }
+    pub fn put_u64(&mut self, v: u64) {
+        self.data.extend_from_slice(&v.to_le_bytes());
+    }
 
     /// Write a length-prefixed string: len[2] + UTF-8 bytes.
     pub fn put_str(&mut self, s: &str) {
@@ -76,7 +100,9 @@ impl Buf {
     }
 
     /// Write raw bytes.
-    pub fn put_bytes(&mut self, d: &[u8]) { self.data.extend_from_slice(d); }
+    pub fn put_bytes(&mut self, d: &[u8]) {
+        self.data.extend_from_slice(d);
+    }
 
     /// Write a QID (13 bytes).
     pub fn put_qid(&mut self, q: &Qid) {
@@ -94,7 +120,10 @@ impl Buf {
 
     fn check(&self, n: usize) -> Result<()> {
         if self.remaining() < n {
-            Err(WireError::ShortBuffer { need: n, have: self.remaining() })
+            Err(WireError::ShortBuffer {
+                need: n,
+                have: self.remaining(),
+            })
         } else {
             Ok(())
         }
@@ -117,7 +146,12 @@ impl Buf {
     pub fn get_u32(&mut self) -> Result<u32> {
         self.check(4)?;
         let p = self.pos;
-        let v = u32::from_le_bytes([self.data[p], self.data[p+1], self.data[p+2], self.data[p+3]]);
+        let v = u32::from_le_bytes([
+            self.data[p],
+            self.data[p + 1],
+            self.data[p + 2],
+            self.data[p + 3],
+        ]);
         self.pos += 4;
         Ok(v)
     }
@@ -126,8 +160,14 @@ impl Buf {
         self.check(8)?;
         let p = self.pos;
         let v = u64::from_le_bytes([
-            self.data[p], self.data[p+1], self.data[p+2], self.data[p+3],
-            self.data[p+4], self.data[p+5], self.data[p+6], self.data[p+7],
+            self.data[p],
+            self.data[p + 1],
+            self.data[p + 2],
+            self.data[p + 3],
+            self.data[p + 4],
+            self.data[p + 5],
+            self.data[p + 6],
+            self.data[p + 7],
         ]);
         self.pos += 8;
         Ok(v)

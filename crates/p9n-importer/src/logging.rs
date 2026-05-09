@@ -155,7 +155,10 @@ mod tests {
             tracing::info!(target: "my_target", foo = 42, "hello");
         });
         let cols: Vec<&str> = out.split_whitespace().collect();
-        assert_eq!(cols[2], "my_target:", "column 3 should be target; got: {out}");
+        assert_eq!(
+            cols[2], "my_target:",
+            "column 3 should be target; got: {out}"
+        );
     }
 
     #[test]

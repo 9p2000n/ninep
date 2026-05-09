@@ -7,7 +7,12 @@ use p9n_proto::types::*;
 use p9n_proto::wire::*;
 
 fn round_trip(msg_type: MsgType, tag: u16, msg: Msg) -> Msg {
-    let fc = Fcall { size: 0, msg_type, tag, msg };
+    let fc = Fcall {
+        size: 0,
+        msg_type,
+        tag,
+        msg,
+    };
     let mut buf = Buf::new(256);
     marshal(&mut buf, &fc).expect("marshal failed");
     let data = buf.into_vec();
@@ -23,7 +28,10 @@ fn round_trip(msg_type: MsgType, tag: u16, msg: Msg) -> Msg {
 
 #[test]
 fn test_version_round_trip() {
-    let msg = Msg::Version { msize: 65536, version: "9P2000.N".to_string() };
+    let msg = Msg::Version {
+        msize: 65536,
+        version: "9P2000.N".to_string(),
+    };
     let decoded = round_trip(MsgType::Tversion, 1, msg);
     match decoded {
         Msg::Version { msize, version } => {
@@ -36,10 +44,20 @@ fn test_version_round_trip() {
 
 #[test]
 fn test_attach_round_trip() {
-    let msg = Msg::Attach { fid: 0, afid: NO_FID, uname: "user".into(), aname: "/export".into() };
+    let msg = Msg::Attach {
+        fid: 0,
+        afid: NO_FID,
+        uname: "user".into(),
+        aname: "/export".into(),
+    };
     let decoded = round_trip(MsgType::Tattach, 2, msg);
     match decoded {
-        Msg::Attach { fid, afid, uname, aname } => {
+        Msg::Attach {
+            fid,
+            afid,
+            uname,
+            aname,
+        } => {
             assert_eq!(fid, 0);
             assert_eq!(afid, NO_FID);
             assert_eq!(uname, "user");
@@ -51,10 +69,18 @@ fn test_attach_round_trip() {
 
 #[test]
 fn test_walk_round_trip() {
-    let msg = Msg::Walk { fid: 0, newfid: 1, wnames: vec!["a".into(), "b".into(), "c".into()] };
+    let msg = Msg::Walk {
+        fid: 0,
+        newfid: 1,
+        wnames: vec!["a".into(), "b".into(), "c".into()],
+    };
     let decoded = round_trip(MsgType::Twalk, 3, msg);
     match decoded {
-        Msg::Walk { fid, newfid, wnames } => {
+        Msg::Walk {
+            fid,
+            newfid,
+            wnames,
+        } => {
             assert_eq!(fid, 0);
             assert_eq!(newfid, 1);
             assert_eq!(wnames, vec!["a", "b", "c"]);
@@ -66,8 +92,16 @@ fn test_walk_round_trip() {
 #[test]
 fn test_rwalk_round_trip() {
     let qids = vec![
-        Qid { qtype: QT_DIR, version: 1, path: 100 },
-        Qid { qtype: QT_FILE, version: 2, path: 200 },
+        Qid {
+            qtype: QT_DIR,
+            version: 1,
+            path: 100,
+        },
+        Qid {
+            qtype: QT_FILE,
+            version: 2,
+            path: 200,
+        },
     ];
     let decoded = round_trip(MsgType::Rwalk, 3, Msg::Rwalk { qids: qids.clone() });
     match decoded {
@@ -82,7 +116,15 @@ fn test_rwalk_round_trip() {
 
 #[test]
 fn test_read_write_round_trip() {
-    let decoded = round_trip(MsgType::Tread, 4, Msg::Read { fid: 5, offset: 1024, count: 4096 });
+    let decoded = round_trip(
+        MsgType::Tread,
+        4,
+        Msg::Read {
+            fid: 5,
+            offset: 1024,
+            count: 4096,
+        },
+    );
     match decoded {
         Msg::Read { fid, offset, count } => {
             assert_eq!(fid, 5);
@@ -103,11 +145,21 @@ fn test_read_write_round_trip() {
 #[test]
 fn test_write_round_trip() {
     let data = b"hello world".to_vec();
-    let decoded = round_trip(MsgType::Twrite, 5, Msg::Write {
-        fid: 7, offset: 0, data: data.clone(),
-    });
+    let decoded = round_trip(
+        MsgType::Twrite,
+        5,
+        Msg::Write {
+            fid: 7,
+            offset: 0,
+            data: data.clone(),
+        },
+    );
     match decoded {
-        Msg::Write { fid, offset, data: d } => {
+        Msg::Write {
+            fid,
+            offset,
+            data: d,
+        } => {
             assert_eq!(fid, 7);
             assert_eq!(offset, 0);
             assert_eq!(d, data);
@@ -150,7 +202,14 @@ fn test_lopen_round_trip() {
 
 #[test]
 fn test_getattr_round_trip() {
-    let decoded = round_trip(MsgType::Tgetattr, 11, Msg::Getattr { fid: 1, mask: P9_GETATTR_ALL });
+    let decoded = round_trip(
+        MsgType::Tgetattr,
+        11,
+        Msg::Getattr {
+            fid: 1,
+            mask: P9_GETATTR_ALL,
+        },
+    );
     match decoded {
         Msg::Getattr { fid, mask } => {
             assert_eq!(fid, 1);
@@ -162,11 +221,23 @@ fn test_getattr_round_trip() {
 
 #[test]
 fn test_mkdir_round_trip() {
-    let decoded = round_trip(MsgType::Tmkdir, 12, Msg::Mkdir {
-        dfid: 0, name: "testdir".into(), mode: 0o755, gid: 1000,
-    });
+    let decoded = round_trip(
+        MsgType::Tmkdir,
+        12,
+        Msg::Mkdir {
+            dfid: 0,
+            name: "testdir".into(),
+            mode: 0o755,
+            gid: 1000,
+        },
+    );
     match decoded {
-        Msg::Mkdir { dfid, name, mode, gid } => {
+        Msg::Mkdir {
+            dfid,
+            name,
+            mode,
+            gid,
+        } => {
             assert_eq!(dfid, 0);
             assert_eq!(name, "testdir");
             assert_eq!(mode, 0o755);
@@ -180,7 +251,11 @@ fn test_mkdir_round_trip() {
 
 #[test]
 fn test_caps_round_trip() {
-    let caps = vec!["security.spiffe".into(), "perf.compound".into(), "fs.watch".into()];
+    let caps = vec![
+        "security.spiffe".into(),
+        "perf.compound".into(),
+        "fs.watch".into(),
+    ];
     let decoded = round_trip(MsgType::Tcaps, 20, Msg::Caps { caps: caps.clone() });
     match decoded {
         Msg::Caps { caps: c } => assert_eq!(c, caps),
@@ -191,9 +266,14 @@ fn test_caps_round_trip() {
 #[test]
 fn test_session_round_trip() {
     let key = [1u8; 16];
-    let decoded = round_trip(MsgType::Tsession, 21, Msg::Session {
-        key, flags: SESSION_FIDS | SESSION_WATCHES,
-    });
+    let decoded = round_trip(
+        MsgType::Tsession,
+        21,
+        Msg::Session {
+            key,
+            flags: SESSION_FIDS | SESSION_WATCHES,
+        },
+    );
     match decoded {
         Msg::Session { key: k, flags } => {
             assert_eq!(k, key);
@@ -205,9 +285,15 @@ fn test_session_round_trip() {
 
 #[test]
 fn test_watch_round_trip() {
-    let decoded = round_trip(MsgType::Twatch, 22, Msg::Watch {
-        fid: 5, mask: WATCH_CREATE | WATCH_MODIFY, flags: WATCH_RECURSIVE,
-    });
+    let decoded = round_trip(
+        MsgType::Twatch,
+        22,
+        Msg::Watch {
+            fid: 5,
+            mask: WATCH_CREATE | WATCH_MODIFY,
+            flags: WATCH_RECURSIVE,
+        },
+    );
     match decoded {
         Msg::Watch { fid, mask, flags } => {
             assert_eq!(fid, 5);
@@ -220,12 +306,28 @@ fn test_watch_round_trip() {
 
 #[test]
 fn test_notify_round_trip() {
-    let qid = Qid { qtype: QT_FILE, version: 42, path: 12345 };
-    let decoded = round_trip(MsgType::Rnotify, NO_TAG, Msg::Notify {
-        watch_id: 7, event: WATCH_MODIFY, name: "file.txt".into(), qid: qid.clone(),
-    });
+    let qid = Qid {
+        qtype: QT_FILE,
+        version: 42,
+        path: 12345,
+    };
+    let decoded = round_trip(
+        MsgType::Rnotify,
+        NO_TAG,
+        Msg::Notify {
+            watch_id: 7,
+            event: WATCH_MODIFY,
+            name: "file.txt".into(),
+            qid: qid.clone(),
+        },
+    );
     match decoded {
-        Msg::Notify { watch_id, event, name, qid: q } => {
+        Msg::Notify {
+            watch_id,
+            event,
+            name,
+            qid: q,
+        } => {
             assert_eq!(watch_id, 7);
             assert_eq!(event, WATCH_MODIFY);
             assert_eq!(name, "file.txt");
@@ -238,11 +340,21 @@ fn test_notify_round_trip() {
 #[test]
 fn test_spiffe_verify_round_trip() {
     let svid = b"fake-cert-data".to_vec();
-    let decoded = round_trip(MsgType::Tspiffeverify, 30, Msg::Spiffeverify {
-        svid_type: SVID_X509, spiffe_id: "spiffe://example.com/app".into(), svid: svid.clone(),
-    });
+    let decoded = round_trip(
+        MsgType::Tspiffeverify,
+        30,
+        Msg::Spiffeverify {
+            svid_type: SVID_X509,
+            spiffe_id: "spiffe://example.com/app".into(),
+            svid: svid.clone(),
+        },
+    );
     match decoded {
-        Msg::Spiffeverify { svid_type, spiffe_id, svid: s } => {
+        Msg::Spiffeverify {
+            svid_type,
+            spiffe_id,
+            svid: s,
+        } => {
             assert_eq!(svid_type, SVID_X509);
             assert_eq!(spiffe_id, "spiffe://example.com/app");
             assert_eq!(s, svid);
@@ -253,11 +365,23 @@ fn test_spiffe_verify_round_trip() {
 
 #[test]
 fn test_capgrant_round_trip() {
-    let decoded = round_trip(MsgType::Tcapgrant, 31, Msg::Capgrant {
-        fid: 10, rights: 0xFF, expiry: 1712345678, depth: 20,
-    });
+    let decoded = round_trip(
+        MsgType::Tcapgrant,
+        31,
+        Msg::Capgrant {
+            fid: 10,
+            rights: 0xFF,
+            expiry: 1712345678,
+            depth: 20,
+        },
+    );
     match decoded {
-        Msg::Capgrant { fid, rights, expiry, depth } => {
+        Msg::Capgrant {
+            fid,
+            rights,
+            expiry,
+            depth,
+        } => {
             assert_eq!(fid, 10);
             assert_eq!(rights, 0xFF);
             assert_eq!(expiry, 1712345678);
@@ -307,8 +431,8 @@ fn test_tag_guard_consume() {
     let alloc = p9n_proto::tag::TagAllocator::new();
     let guard = alloc.alloc_guard().expect("alloc failed");
     let tag_val = guard.consume(); // does NOT free
-    // Tag should still be occupied
-    // Alloc next should get a different tag
+                                   // Tag should still be occupied
+                                   // Alloc next should get a different tag
     let next = alloc.alloc_raw().expect("alloc failed");
     assert_ne!(next, tag_val);
     alloc.free(tag_val); // manual free
@@ -359,7 +483,7 @@ fn test_message_classification() {
 
 #[test]
 fn test_capset() {
-    use p9n_proto::caps::{CapSet, intersect};
+    use p9n_proto::caps::{intersect, CapSet};
 
     let mut client = CapSet::new();
     client.add(CAP_SPIFFE);

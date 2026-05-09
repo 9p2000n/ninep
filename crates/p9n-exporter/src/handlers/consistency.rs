@@ -19,11 +19,23 @@ pub fn handle<H: Send + Sync + 'static>(_session: &Session<H>, fc: Fcall) -> Han
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("invalid consistency level: {level} (max 3)"),
-        ).into());
+        )
+        .into());
     }
 
     // We always operate at linearizable, but report the requested level
     // (since we meet or exceed any requested level on a single node)
-    tracing::debug!(tag, fid, requested_level = level, granted_level = 3, "Tconsistency negotiated");
-    Ok(Fcall { size: 0, msg_type: MsgType::Rconsistency, tag, msg: Msg::Rconsistency { level: 3 } })
+    tracing::debug!(
+        tag,
+        fid,
+        requested_level = level,
+        granted_level = 3,
+        "Tconsistency negotiated"
+    );
+    Ok(Fcall {
+        size: 0,
+        msg_type: MsgType::Rconsistency,
+        tag,
+        msg: Msg::Rconsistency { level: 3 },
+    })
 }

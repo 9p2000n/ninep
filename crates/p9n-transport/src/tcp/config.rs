@@ -3,7 +3,10 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::{TlsAcceptor, TlsConnector, client::TlsStream as ClientTlsStream, server::TlsStream as ServerTlsStream};
+use tokio_rustls::{
+    client::TlsStream as ClientTlsStream, server::TlsStream as ServerTlsStream, TlsAcceptor,
+    TlsConnector,
+};
 
 /// Create a TCP+TLS server listener.
 pub async fn server_listener(

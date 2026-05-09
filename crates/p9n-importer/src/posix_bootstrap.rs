@@ -44,8 +44,7 @@ pub fn extract_from_bundle(
     expected_trust_domain: &str,
     now: u64,
 ) -> Result<Option<PosixIdentity>, p9n_auth::AuthError> {
-    let bundle =
-        MappingBundle::load_and_verify(jws_bytes, jwk_set, expected_trust_domain, now)?;
+    let bundle = MappingBundle::load_and_verify(jws_bytes, jwk_set, expected_trust_domain, now)?;
     Ok(bundle.lookup_posix(spiffe_id))
 }
 
@@ -86,12 +85,24 @@ pub fn apply_setuid(p: &PosixIdentity) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
 
-    let rc = unsafe { libc::setresgid(p.gid as libc::gid_t, p.gid as libc::gid_t, p.gid as libc::gid_t) };
+    let rc = unsafe {
+        libc::setresgid(
+            p.gid as libc::gid_t,
+            p.gid as libc::gid_t,
+            p.gid as libc::gid_t,
+        )
+    };
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
 
-    let rc = unsafe { libc::setresuid(p.uid as libc::uid_t, p.uid as libc::uid_t, p.uid as libc::uid_t) };
+    let rc = unsafe {
+        libc::setresuid(
+            p.uid as libc::uid_t,
+            p.uid as libc::uid_t,
+            p.uid as libc::uid_t,
+        )
+    };
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -125,7 +136,9 @@ pub fn apply_setuid(p: &PosixIdentity) -> io::Result<()> {
         libc::prctl(
             libc::PR_CAP_AMBIENT,
             libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
-            0, 0, 0,
+            0,
+            0,
+            0,
         )
     };
     if rc != 0 {
@@ -147,23 +160,35 @@ pub fn apply_setuid(p: &PosixIdentity) -> io::Result<()> {
     // not expose a typed wrapper. _LINUX_CAPABILITY_VERSION_3 takes two
     // 32-bit data slots covering the 64-bit cap mask.
     #[repr(C)]
-    struct CapHeader { version: u32, pid: i32 }
+    struct CapHeader {
+        version: u32,
+        pid: i32,
+    }
     #[repr(C)]
-    struct CapData { effective: u32, permitted: u32, inheritable: u32 }
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
     const LINUX_CAPABILITY_VERSION_3: u32 = 0x20080522;
 
-    let header = CapHeader { version: LINUX_CAPABILITY_VERSION_3, pid: 0 };
-    let data: [CapData; 2] = [
-        CapData { effective: 0, permitted: 0, inheritable: 0 },
-        CapData { effective: 0, permitted: 0, inheritable: 0 },
-    ];
-    let rc = unsafe {
-        libc::syscall(
-            libc::SYS_capset,
-            &header as *const CapHeader,
-            data.as_ptr(),
-        )
+    let header = CapHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
     };
+    let data: [CapData; 2] = [
+        CapData {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        },
+        CapData {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        },
+    ];
+    let rc = unsafe { libc::syscall(libc::SYS_capset, &header as *const CapHeader, data.as_ptr()) };
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -230,7 +255,9 @@ mod tests {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
         header.kid = Some(TEST_KID.into());
         header.typ = Some("p9n-posix-mapping-bundle".into());
-        jsonwebtoken::encode(&header, payload, &key).unwrap().into_bytes()
+        jsonwebtoken::encode(&header, payload, &key)
+            .unwrap()
+            .into_bytes()
     }
 
     fn payload_with(entries: Vec<BundleEntry>) -> BundlePayload {

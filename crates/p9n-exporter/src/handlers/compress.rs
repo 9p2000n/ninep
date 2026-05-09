@@ -13,7 +13,11 @@ pub fn handle<H: Send + Sync + 'static>(_session: &Session<H>, fc: Fcall) -> Han
     tracing::debug!(tag, requested_algo = algo, level, "Tcompress received");
 
     // Accept zstd if requested, otherwise respond with algo=0 (none)
-    let accepted = if algo == COMPRESS_ZSTD { COMPRESS_ZSTD } else { 0 };
+    let accepted = if algo == COMPRESS_ZSTD {
+        COMPRESS_ZSTD
+    } else {
+        0
+    };
 
     tracing::info!(
         tag,
@@ -23,5 +27,10 @@ pub fn handle<H: Send + Sync + 'static>(_session: &Session<H>, fc: Fcall) -> Han
         "Tcompress negotiated",
     );
 
-    Ok(Fcall { size: 0, msg_type: MsgType::Rcompress, tag, msg: Msg::Rcompress { algo: accepted } })
+    Ok(Fcall {
+        size: 0,
+        msg_type: MsgType::Rcompress,
+        tag,
+        msg: Msg::Rcompress { algo: accepted },
+    })
 }

@@ -273,8 +273,8 @@ impl LocalBackend {
     }
 
     pub fn make_statfs(path: &Path) -> io::Result<StatFs> {
-        let svfs = nix::sys::statvfs::statvfs(path)
-            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
+        let svfs =
+            nix::sys::statvfs::statvfs(path).map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         Ok(StatFs {
             fs_type: 0x01021997,
             bsize: svfs.block_size() as u32,
@@ -306,7 +306,10 @@ impl Backend for LocalBackend {
                 if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
                     let canonical_parent = parent.canonicalize()?;
                     if !canonical_parent.starts_with(&self.root) {
-                        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "path escape"));
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "path escape",
+                        ));
                     }
                     return Ok(canonical_parent.join(name));
                 }
@@ -318,14 +321,22 @@ impl Backend for LocalBackend {
             if canonical.starts_with(&self.root) {
                 return Ok(canonical);
             }
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "path escape"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "path escape",
+            ));
         }
 
         // Non-existent path (creation) — canonicalize parent + append name.
         if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
-            let canonical_parent = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+            let canonical_parent = parent
+                .canonicalize()
+                .unwrap_or_else(|_| parent.to_path_buf());
             if !canonical_parent.starts_with(&self.root) {
-                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "path escape"));
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "path escape",
+                ));
             }
             return Ok(canonical_parent.join(name));
         }
@@ -375,7 +386,10 @@ impl Backend for LocalBackend {
     // ── Open ──
 
     fn open(&self, path: &Path, flags: u32, is_dir: bool) -> io::Result<(OwnedFd, Qid)> {
-        tracing::trace!("backend open: {} flags={flags:#x} is_dir={is_dir}", path.display());
+        tracing::trace!(
+            "backend open: {} flags={flags:#x} is_dir={is_dir}",
+            path.display()
+        );
         // Two-step atomic open:
         //   1. resolve_path → O_PATH | O_NOFOLLOW fd via openat2 with
         //      RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS. The kernel
@@ -397,8 +411,12 @@ impl Backend for LocalBackend {
                 2 => oflags |= OFlag::O_RDWR,
                 _ => oflags |= OFlag::O_RDONLY,
             }
-            if flags & 0o1000 != 0 { oflags |= OFlag::O_TRUNC; }
-            if flags & 0o2000 != 0 { oflags |= OFlag::O_APPEND; }
+            if flags & 0o1000 != 0 {
+                oflags |= OFlag::O_TRUNC;
+            }
+            if flags & 0o2000 != 0 {
+                oflags |= OFlag::O_APPEND;
+            }
         }
         let proc_path = format!("/proc/self/fd/{}", opath.as_raw_fd());
         let fd = nix::fcntl::open(proc_path.as_str(), oflags, Mode::empty())
@@ -440,8 +458,7 @@ impl Backend for LocalBackend {
 
     fn fsync(&self, handle: &OwnedFd) -> io::Result<()> {
         tracing::trace!("backend fsync");
-        nix::unistd::fsync(handle.as_raw_fd())
-            .map_err(|e| io::Error::from_raw_os_error(e as i32))
+        nix::unistd::fsync(handle.as_raw_fd()).map_err(|e| io::Error::from_raw_os_error(e as i32))
     }
 
     // ── Create ──
@@ -453,7 +470,10 @@ impl Backend for LocalBackend {
         flags: u32,
         mode: u32,
     ) -> io::Result<(OwnedFd, Qid, PathBuf)> {
-        tracing::trace!("backend lcreate: dir={} name={name} flags={flags:#x} mode={mode:#o}", dir.display());
+        tracing::trace!(
+            "backend lcreate: dir={} name={name} flags={flags:#x} mode={mode:#o}",
+            dir.display()
+        );
         validate_name(name)?;
         // Atomic create: resolve parent dir to an O_PATH dirfd, then
         // openat under that dirfd. Even if the parent is concurrently
@@ -468,9 +488,15 @@ impl Backend for LocalBackend {
             2 => oflags |= OFlag::O_RDWR,
             _ => oflags |= OFlag::O_RDONLY,
         }
-        if flags & 0o1000 != 0 { oflags |= OFlag::O_TRUNC; }
-        if flags & 0o2000 != 0 { oflags |= OFlag::O_APPEND; }
-        if flags & 0o200 != 0 { oflags |= OFlag::O_EXCL; }
+        if flags & 0o1000 != 0 {
+            oflags |= OFlag::O_TRUNC;
+        }
+        if flags & 0o2000 != 0 {
+            oflags |= OFlag::O_APPEND;
+        }
+        if flags & 0o200 != 0 {
+            oflags |= OFlag::O_EXCL;
+        }
         let nix_mode = Mode::from_bits_truncate(mode as nix::sys::stat::mode_t);
         let fd = nix::fcntl::openat(Some(parent_fd.as_raw_fd()), name, oflags, nix_mode)
             .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
@@ -482,7 +508,10 @@ impl Backend for LocalBackend {
     }
 
     fn symlink(&self, dir: &Path, name: &str, target: &str) -> io::Result<(Qid, PathBuf)> {
-        tracing::trace!("backend symlink: dir={} name={name} target={target}", dir.display());
+        tracing::trace!(
+            "backend symlink: dir={} name={name} target={target}",
+            dir.display()
+        );
         validate_name(name)?;
         // Validate the symlink target: an absolute target or one that
         // contains `..` traversal can plant a "landmine" — even if read-side
@@ -506,7 +535,11 @@ impl Backend for LocalBackend {
     }
 
     fn link(&self, target: &Path, dir: &Path, name: &str) -> io::Result<()> {
-        tracing::trace!("backend link: target={} dir={} name={name}", target.display(), dir.display());
+        tracing::trace!(
+            "backend link: target={} dir={} name={name}",
+            target.display(),
+            dir.display()
+        );
         validate_name(name)?;
         // Resolve both source-parent and dest-parent dirs atomically.
         // linkat with the dirfds + leaf names produces a new hard link
@@ -528,14 +561,22 @@ impl Backend for LocalBackend {
     }
 
     fn mkdir(&self, parent: &Path, name: &str, mode: u32) -> io::Result<(Qid, PathBuf)> {
-        tracing::trace!("backend mkdir: parent={} name={name} mode={mode:#o}", parent.display());
+        tracing::trace!(
+            "backend mkdir: parent={} name={name} mode={mode:#o}",
+            parent.display()
+        );
         validate_name(name)?;
         let parent_fd = self.resolve_dir(parent)?;
         let nix_mode = Mode::from_bits_truncate(mode as nix::sys::stat::mode_t);
         // nix doesn't expose mkdirat; call libc directly.
-        let name_c = CString::new(name).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let name_c =
+            CString::new(name).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         let rc = unsafe {
-            libc::mkdirat(parent_fd.as_raw_fd(), name_c.as_ptr(), nix_mode.bits() as libc::mode_t)
+            libc::mkdirat(
+                parent_fd.as_raw_fd(),
+                name_c.as_ptr(),
+                nix_mode.bits() as libc::mode_t,
+            )
         };
         if rc != 0 {
             return Err(io::Error::last_os_error());
@@ -565,7 +606,10 @@ impl Backend for LocalBackend {
         major: u32,
         minor: u32,
     ) -> io::Result<(Qid, PathBuf)> {
-        tracing::trace!("backend mknod: parent={} name={name} mode={mode:#o}", parent.display());
+        tracing::trace!(
+            "backend mknod: parent={} name={name} mode={mode:#o}",
+            parent.display()
+        );
         validate_name(name)?;
         let parent_fd = self.resolve_dir(parent)?;
         let dev = nix::sys::stat::makedev(major as u64, minor as u64);
@@ -578,7 +622,8 @@ impl Backend for LocalBackend {
             _ => nix::sys::stat::SFlag::S_IFREG,
         };
         // mknodat — nix doesn't expose it, fall through to libc.
-        let name_c = CString::new(name).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let name_c =
+            CString::new(name).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         let rc = unsafe {
             libc::mknodat(
                 parent_fd.as_raw_fd(),
@@ -608,7 +653,10 @@ impl Backend for LocalBackend {
         let fd = self.resolve_path(path)?;
         let stat = nix::sys::stat::fstat(fd.as_raw_fd())
             .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
-        Ok((Self::make_stat_from_libc(&stat), Self::make_qid_from_libc(&stat)))
+        Ok((
+            Self::make_stat_from_libc(&stat),
+            Self::make_qid_from_libc(&stat),
+        ))
     }
 
     fn setattr(&self, path: &Path, attr: &SetAttr) -> io::Result<()> {
@@ -651,8 +699,16 @@ impl Backend for LocalBackend {
         }
 
         if attr.valid & (P9_SETATTR_UID | P9_SETATTR_GID) != 0 {
-            let uid = if attr.valid & P9_SETATTR_UID != 0 { attr.uid } else { u32::MAX };
-            let gid = if attr.valid & P9_SETATTR_GID != 0 { attr.gid } else { u32::MAX };
+            let uid = if attr.valid & P9_SETATTR_UID != 0 {
+                attr.uid
+            } else {
+                u32::MAX
+            };
+            let gid = if attr.valid & P9_SETATTR_GID != 0 {
+                attr.gid
+            } else {
+                u32::MAX
+            };
             // fchownat with empty path + AT_EMPTY_PATH would need an
             // O_PATH fd to the leaf; we already have parent_fd + leaf
             // so we go through the (parent, leaf) variant.
@@ -703,8 +759,8 @@ impl Backend for LocalBackend {
         tracing::trace!("backend statfs: {}", path.display());
         // fstatvfs on a fd pinned by openat2 — TOCTOU-free.
         let fd = self.resolve_path(path)?;
-        let svfs = nix::sys::statvfs::fstatvfs(&fd)
-            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
+        let svfs =
+            nix::sys::statvfs::fstatvfs(&fd).map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         Ok(StatFs {
             fs_type: 0x01021997, // V9FS_MAGIC
             bsize: svfs.block_size() as u32,
@@ -729,7 +785,10 @@ impl Backend for LocalBackend {
     // ── Directory listing ──
 
     fn readdir(&self, path: &Path, offset: u64, count: u32) -> io::Result<Vec<u8>> {
-        tracing::trace!("backend readdir: {} offset={offset} count={count}", path.display());
+        tracing::trace!(
+            "backend readdir: {} offset={offset} count={count}",
+            path.display()
+        );
         // Open the directory atomically via openat2; re-open via
         // /proc/self/fd/N for read-iteration access (std::fs::read_dir
         // wants a path, not a fd; nix::dir::Dir::from_fd works but the
@@ -828,33 +887,45 @@ impl Backend for LocalBackend {
     fn xattr_get(&self, path: &Path, name: &str) -> io::Result<Vec<u8>> {
         tracing::trace!("backend xattr_get: {} name={name}", path.display());
         let fd = self.resolve_path(path)?;
-        let c_name = CString::new(name)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-        let mut size = unsafe {
-            libc::fgetxattr(fd.as_raw_fd(), c_name.as_ptr(), std::ptr::null_mut(), 0)
-        };
+        let c_name =
+            CString::new(name).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let mut size =
+            unsafe { libc::fgetxattr(fd.as_raw_fd(), c_name.as_ptr(), std::ptr::null_mut(), 0) };
         // Older kernels: O_PATH not supported by fgetxattr → EBADF.
         // Fall back to /proc/self/fd/N + getxattr (follows the magic
         // link to the pinned inode).
-        let proc_fd: Option<OwnedFd> = if size < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF) {
-            let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
-            let pfd = nix::fcntl::open(proc_path.as_str(), OFlag::O_RDONLY | OFlag::O_CLOEXEC, Mode::empty())
+        let proc_fd: Option<OwnedFd> =
+            if size < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF) {
+                let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
+                let pfd = nix::fcntl::open(
+                    proc_path.as_str(),
+                    OFlag::O_RDONLY | OFlag::O_CLOEXEC,
+                    Mode::empty(),
+                )
                 .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
-            let owned = unsafe { OwnedFd::from_raw_fd(pfd) };
-            size = unsafe {
-                libc::fgetxattr(owned.as_raw_fd(), c_name.as_ptr(), std::ptr::null_mut(), 0)
+                let owned = unsafe { OwnedFd::from_raw_fd(pfd) };
+                size = unsafe {
+                    libc::fgetxattr(owned.as_raw_fd(), c_name.as_ptr(), std::ptr::null_mut(), 0)
+                };
+                Some(owned)
+            } else {
+                None
             };
-            Some(owned)
-        } else {
-            None
-        };
         if size < 0 {
             return Err(io::Error::last_os_error());
         }
-        let read_fd = proc_fd.as_ref().map(|f| f.as_raw_fd()).unwrap_or_else(|| fd.as_raw_fd());
+        let read_fd = proc_fd
+            .as_ref()
+            .map(|f| f.as_raw_fd())
+            .unwrap_or_else(|| fd.as_raw_fd());
         let mut buf = vec![0u8; size as usize];
         let n = unsafe {
-            libc::fgetxattr(read_fd, c_name.as_ptr(), buf.as_mut_ptr() as *mut _, buf.len())
+            libc::fgetxattr(
+                read_fd,
+                c_name.as_ptr(),
+                buf.as_mut_ptr() as *mut _,
+                buf.len(),
+            )
         };
         if n < 0 {
             return Err(io::Error::last_os_error());
@@ -868,23 +939,33 @@ impl Backend for LocalBackend {
         // setxattr through O_PATH may EBADF on older kernels; re-open
         // for write through /proc/self/fd/N as the fallback path.
         let fd = self.resolve_path(path)?;
-        let c_name = CString::new(name)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let c_name =
+            CString::new(name).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         let mut rc = unsafe {
             libc::fsetxattr(
-                fd.as_raw_fd(), c_name.as_ptr(),
-                data.as_ptr() as *const _, data.len(), flags as i32,
+                fd.as_raw_fd(),
+                c_name.as_ptr(),
+                data.as_ptr() as *const _,
+                data.len(),
+                flags as i32,
             )
         };
         if rc < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF) {
             let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
-            let pfd = nix::fcntl::open(proc_path.as_str(), OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())
-                .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
+            let pfd = nix::fcntl::open(
+                proc_path.as_str(),
+                OFlag::O_RDWR | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
             let owned = unsafe { OwnedFd::from_raw_fd(pfd) };
             rc = unsafe {
                 libc::fsetxattr(
-                    owned.as_raw_fd(), c_name.as_ptr(),
-                    data.as_ptr() as *const _, data.len(), flags as i32,
+                    owned.as_raw_fd(),
+                    c_name.as_ptr(),
+                    data.as_ptr() as *const _,
+                    data.len(),
+                    flags as i32,
                 )
             };
         }
@@ -898,23 +979,31 @@ impl Backend for LocalBackend {
         tracing::trace!("backend xattr_list: {}", path.display());
         let fd = self.resolve_path(path)?;
         let mut size = unsafe { libc::flistxattr(fd.as_raw_fd(), std::ptr::null_mut(), 0) };
-        let proc_fd: Option<OwnedFd> = if size < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF) {
-            let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
-            let pfd = nix::fcntl::open(proc_path.as_str(), OFlag::O_RDONLY | OFlag::O_CLOEXEC, Mode::empty())
+        let proc_fd: Option<OwnedFd> =
+            if size < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF) {
+                let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
+                let pfd = nix::fcntl::open(
+                    proc_path.as_str(),
+                    OFlag::O_RDONLY | OFlag::O_CLOEXEC,
+                    Mode::empty(),
+                )
                 .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
-            let owned = unsafe { OwnedFd::from_raw_fd(pfd) };
-            size = unsafe { libc::flistxattr(owned.as_raw_fd(), std::ptr::null_mut(), 0) };
-            Some(owned)
-        } else {
-            None
-        };
+                let owned = unsafe { OwnedFd::from_raw_fd(pfd) };
+                size = unsafe { libc::flistxattr(owned.as_raw_fd(), std::ptr::null_mut(), 0) };
+                Some(owned)
+            } else {
+                None
+            };
         if size < 0 {
             return Err(io::Error::last_os_error());
         }
         if size == 0 {
             return Ok(Vec::new());
         }
-        let read_fd = proc_fd.as_ref().map(|f| f.as_raw_fd()).unwrap_or_else(|| fd.as_raw_fd());
+        let read_fd = proc_fd
+            .as_ref()
+            .map(|f| f.as_raw_fd())
+            .unwrap_or_else(|| fd.as_raw_fd());
         let mut buf = vec![0u8; size as usize];
         let n = unsafe { libc::flistxattr(read_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
         if n < 0 {
@@ -927,15 +1016,22 @@ impl Backend for LocalBackend {
     fn xattr_size(&self, path: &Path, name: &str) -> io::Result<u64> {
         tracing::trace!("backend xattr_size: {} name={name}", path.display());
         let fd = self.resolve_path(path)?;
-        let c_name = CString::new(name)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-        let mut size = unsafe { libc::fgetxattr(fd.as_raw_fd(), c_name.as_ptr(), std::ptr::null_mut(), 0) };
+        let c_name =
+            CString::new(name).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let mut size =
+            unsafe { libc::fgetxattr(fd.as_raw_fd(), c_name.as_ptr(), std::ptr::null_mut(), 0) };
         if size < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF) {
             let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
-            let pfd = nix::fcntl::open(proc_path.as_str(), OFlag::O_RDONLY | OFlag::O_CLOEXEC, Mode::empty())
-                .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
+            let pfd = nix::fcntl::open(
+                proc_path.as_str(),
+                OFlag::O_RDONLY | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
             let owned = unsafe { OwnedFd::from_raw_fd(pfd) };
-            size = unsafe { libc::fgetxattr(owned.as_raw_fd(), c_name.as_ptr(), std::ptr::null_mut(), 0) };
+            size = unsafe {
+                libc::fgetxattr(owned.as_raw_fd(), c_name.as_ptr(), std::ptr::null_mut(), 0)
+            };
         }
         if size < 0 {
             return Err(io::Error::last_os_error());
@@ -949,8 +1045,12 @@ impl Backend for LocalBackend {
         let mut size = unsafe { libc::flistxattr(fd.as_raw_fd(), std::ptr::null_mut(), 0) };
         if size < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF) {
             let proc_path = format!("/proc/self/fd/{}", fd.as_raw_fd());
-            let pfd = nix::fcntl::open(proc_path.as_str(), OFlag::O_RDONLY | OFlag::O_CLOEXEC, Mode::empty())
-                .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
+            let pfd = nix::fcntl::open(
+                proc_path.as_str(),
+                OFlag::O_RDONLY | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
             let owned = unsafe { OwnedFd::from_raw_fd(pfd) };
             size = unsafe { libc::flistxattr(owned.as_raw_fd(), std::ptr::null_mut(), 0) };
         }
@@ -971,7 +1071,9 @@ impl Backend for LocalBackend {
         length: u64,
         proc_id: u32,
     ) -> io::Result<u8> {
-        tracing::trace!("backend lock: type={lock_type} flags={flags} start={start} length={length}");
+        tracing::trace!(
+            "backend lock: type={lock_type} flags={flags} start={start} length={length}"
+        );
         let l_type = match lock_type {
             0 => libc::F_RDLCK as i16,
             1 => libc::F_WRLCK as i16,
@@ -986,12 +1088,15 @@ impl Backend for LocalBackend {
             l_pid: proc_id as i32,
         };
         let blocking = flags & P9_LOCK_FLAGS_BLOCK != 0;
-        let cmd = if blocking { libc::F_SETLKW } else { libc::F_SETLK };
+        let cmd = if blocking {
+            libc::F_SETLKW
+        } else {
+            libc::F_SETLK
+        };
         let rc = unsafe { libc::fcntl(handle.as_raw_fd(), cmd, &mut flock) };
         if rc < 0 {
             let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EAGAIN)
-                || err.raw_os_error() == Some(libc::EACCES)
+            if err.raw_os_error() == Some(libc::EAGAIN) || err.raw_os_error() == Some(libc::EACCES)
             {
                 return Ok(P9_LOCK_BLOCKED);
             }
@@ -1030,7 +1135,12 @@ impl Backend for LocalBackend {
             libc::F_WRLCK => 1,
             _ => 2, // UNLCK
         };
-        Ok((out_type, flock.l_start as u64, flock.l_len as u64, flock.l_pid as u32))
+        Ok((
+            out_type,
+            flock.l_start as u64,
+            flock.l_len as u64,
+            flock.l_pid as u32,
+        ))
     }
 
     // ── Advanced I/O ──
@@ -1044,7 +1154,9 @@ impl Backend for LocalBackend {
         count: u64,
         flags: u32,
     ) -> io::Result<usize> {
-        tracing::trace!("backend copy_range: src_off={src_off} dst_off={dst_off} count={count} flags={flags}");
+        tracing::trace!(
+            "backend copy_range: src_off={src_off} dst_off={dst_off} count={count} flags={flags}"
+        );
         use std::os::fd::BorrowedFd;
 
         if flags & COPY_REFLINK != 0 {
@@ -1119,26 +1231,14 @@ impl Backend for LocalBackend {
         }
     }
 
-    fn allocate(
-        &self,
-        handle: &OwnedFd,
-        mode: u32,
-        offset: u64,
-        length: u64,
-    ) -> io::Result<()> {
+    fn allocate(&self, handle: &OwnedFd, mode: u32, offset: u64, length: u64) -> io::Result<()> {
         tracing::trace!("backend allocate: mode={mode} offset={offset} length={length}");
         let flags = nix::fcntl::FallocateFlags::from_bits_truncate(mode as i32);
         nix::fcntl::fallocate(handle.as_raw_fd(), flags, offset as i64, length as i64)
             .map_err(|e| io::Error::from_raw_os_error(e as i32))
     }
 
-    fn hash(
-        &self,
-        handle: &OwnedFd,
-        algo: u8,
-        offset: u64,
-        length: u64,
-    ) -> io::Result<Vec<u8>> {
+    fn hash(&self, handle: &OwnedFd, algo: u8, offset: u64, length: u64) -> io::Result<Vec<u8>> {
         tracing::trace!("backend hash: algo={algo} offset={offset} length={length}");
         if algo != HASH_BLAKE3 {
             return Err(io::Error::new(
@@ -1283,7 +1383,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let backend = LocalBackend::new(dir.path().to_string_lossy().into_owned()).unwrap();
         backend.symlink(dir.path(), "link", "real.txt").unwrap();
-        assert!(dir.path().join("link").exists() || dir.path().join("link").symlink_metadata().is_ok());
+        assert!(
+            dir.path().join("link").exists() || dir.path().join("link").symlink_metadata().is_ok()
+        );
     }
 
     #[test]
@@ -1339,11 +1441,13 @@ mod tests {
         // its uid.
         let outside_meta_after = std::fs::metadata(&outside_path).unwrap();
         assert_eq!(
-            outside_meta_before.uid(), outside_meta_after.uid(),
+            outside_meta_before.uid(),
+            outside_meta_after.uid(),
             "chown followed symlink to file outside export root!"
         );
         assert_eq!(
-            outside_meta_before.gid(), outside_meta_after.gid(),
+            outside_meta_before.gid(),
+            outside_meta_after.gid(),
             "chown followed symlink to file outside export root!"
         );
     }
@@ -1356,7 +1460,9 @@ mod tests {
         // RESOLVE_BENEATH. The kernel returns EXDEV for such attempts.
         let escape = Path::new("../");
         let err = backend.resolve_dir(escape).unwrap_err();
-        assert!(matches!(err.raw_os_error(), Some(e) if e == libc::EXDEV || e == libc::ENOENT),
-            "unexpected error: {err:?}");
+        assert!(
+            matches!(err.raw_os_error(), Some(e) if e == libc::EXDEV || e == libc::ENOENT),
+            "unexpected error: {err:?}"
+        );
     }
 }

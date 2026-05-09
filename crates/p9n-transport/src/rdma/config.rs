@@ -18,8 +18,7 @@ use tracing::debug;
 
 use super::mr_pool::MrPool;
 use super::verbs::{
-    CompletionChannel, CompletionQueue, ProtectionDomain, QpEndpoint, QueuePair,
-    RdmaContext,
+    CompletionChannel, CompletionQueue, ProtectionDomain, QpEndpoint, QueuePair, RdmaContext,
 };
 use crate::error::TransportError;
 
@@ -74,9 +73,7 @@ fn decode_endpoint(buf: &[u8; 26]) -> QpEndpoint {
 
 /// Server-side: create a TCP listener for RDMA bootstrap connections.
 pub async fn server_listener(addr: SocketAddr) -> Result<TcpListener, TransportError> {
-    TcpListener::bind(addr)
-        .await
-        .map_err(TransportError::Io)
+    TcpListener::bind(addr).await.map_err(TransportError::Io)
 }
 
 /// Server-side: accept one RDMA connection.
@@ -91,9 +88,10 @@ pub async fn accept(
     let peer = tcp_stream.peer_addr().map_err(TransportError::Io)?;
     debug!(?peer, "RDMA bootstrap: accepting TLS");
 
-    let mut tls = tls_acceptor.accept(tcp_stream).await.map_err(|e| {
-        TransportError::Rdma(format!("TLS accept failed: {e}"))
-    })?;
+    let mut tls = tls_acceptor
+        .accept(tcp_stream)
+        .await
+        .map_err(|e| TransportError::Rdma(format!("TLS accept failed: {e}")))?;
 
     // Extract peer certificates and session key before the TLS stream
     // is consumed. The certificates are needed for SPIFFE ID extraction.
@@ -119,7 +117,9 @@ pub async fn accept(
 
     // Read the client's QP endpoint.
     let mut their_ep_buf = [0u8; 26];
-    tls.read_exact(&mut their_ep_buf).await.map_err(TransportError::Io)?;
+    tls.read_exact(&mut their_ep_buf)
+        .await
+        .map_err(TransportError::Io)?;
     let remote = decode_endpoint(&their_ep_buf);
 
     // Transition QP: INIT → RTR → RTS.
@@ -128,7 +128,9 @@ pub async fn accept(
 
     // Pre-post receive buffers from the recv pool.
     for _ in 0..DEFAULT_RECV_POOL_COUNT {
-        let slot = conn.recv_pool.checkout()
+        let slot = conn
+            .recv_pool
+            .checkout()
             .ok_or_else(|| TransportError::Rdma("recv pool exhausted on init".into()))?;
         slot.post_recv(&conn.qp)?;
         slot.leak(); // Leased to the QP; returned on CQ completion.
@@ -152,9 +154,10 @@ pub async fn client_connect(
     debug!(?addr, "RDMA bootstrap: connecting");
 
     let tcp = TcpStream::connect(addr).await.map_err(TransportError::Io)?;
-    let mut tls = tls_connector.connect(server_name, tcp).await.map_err(|e| {
-        TransportError::Rdma(format!("TLS connect failed: {e}"))
-    })?;
+    let mut tls = tls_connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| TransportError::Rdma(format!("TLS connect failed: {e}")))?;
 
     // Derive session key.
     let session_key = {
@@ -171,7 +174,9 @@ pub async fn client_connect(
 
     // Read server's QP endpoint.
     let mut their_ep_buf = [0u8; 26];
-    tls.read_exact(&mut their_ep_buf).await.map_err(TransportError::Io)?;
+    tls.read_exact(&mut their_ep_buf)
+        .await
+        .map_err(TransportError::Io)?;
     let remote = decode_endpoint(&their_ep_buf);
 
     // Send our QP endpoint to the server.
@@ -184,7 +189,9 @@ pub async fn client_connect(
 
     // Pre-post receive buffers from the recv pool.
     for _ in 0..DEFAULT_RECV_POOL_COUNT {
-        let slot = conn.recv_pool.checkout()
+        let slot = conn
+            .recv_pool
+            .checkout()
             .ok_or_else(|| TransportError::Rdma("recv pool exhausted on init".into()))?;
         slot.post_recv(&conn.qp)?;
         slot.leak(); // Leased to the QP; returned on CQ completion.

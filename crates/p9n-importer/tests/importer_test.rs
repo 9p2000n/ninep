@@ -1,20 +1,39 @@
 //! Unit tests for p9n-importer: InodeMap, FidPool, AttrCache, LeaseMap, RpcError.
 
-use p9n_proto::wire::{Qid, Stat};
 use p9n_proto::types::*;
+use p9n_proto::wire::{Qid, Stat};
 use std::time::Duration;
 
 fn make_qid(qtype: u8, path: u64) -> Qid {
-    Qid { qtype, version: 1, path }
+    Qid {
+        qtype,
+        version: 1,
+        path,
+    }
 }
 
 fn make_stat(qid: Qid, size: u64) -> Stat {
     Stat {
-        valid: P9_GETATTR_BASIC, qid, mode: 0o644, uid: 1000, gid: 1000,
-        nlink: 1, rdev: 0, size, blksize: 4096, blocks: (size + 511) / 512,
-        atime_sec: 0, atime_nsec: 0, mtime_sec: 0, mtime_nsec: 0,
-        ctime_sec: 0, ctime_nsec: 0, btime_sec: 0, btime_nsec: 0,
-        gen: 0, data_version: 0,
+        valid: P9_GETATTR_BASIC,
+        qid,
+        mode: 0o644,
+        uid: 1000,
+        gid: 1000,
+        nlink: 1,
+        rdev: 0,
+        size,
+        blksize: 4096,
+        blocks: (size + 511) / 512,
+        atime_sec: 0,
+        atime_nsec: 0,
+        mtime_sec: 0,
+        mtime_nsec: 0,
+        ctime_sec: 0,
+        ctime_nsec: 0,
+        btime_sec: 0,
+        btime_nsec: 0,
+        gen: 0,
+        data_version: 0,
     }
 }
 
@@ -149,7 +168,10 @@ mod fid_pool_tests {
                 (0..100).map(|_| p.alloc()).collect::<Vec<_>>()
             }));
         }
-        let mut all: Vec<u32> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        let mut all: Vec<u32> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
         all.sort();
         all.dedup();
         assert_eq!(all.len(), 400, "all fids should be unique across threads");
@@ -259,7 +281,7 @@ mod lease_map_tests {
         let map = LeaseMap::new();
         map.grant(1, 1000, 100);
         map.break_lease(1000); // server broke it
-        // Client release should return None (already broken, no ack needed)
+                               // Client release should return None (already broken, no ack needed)
         assert_eq!(map.release_by_fh(1), None);
     }
 
@@ -305,11 +327,7 @@ mod dir_cache_tests {
     }
 
     fn three_entries() -> Vec<DirectoryEntry> {
-        vec![
-            entry(10, "a", 1),
-            entry(11, "b", 2),
-            entry(12, "c", 3),
-        ]
+        vec![entry(10, "a", 1), entry(11, "b", 2), entry(12, "c", 3)]
     }
 
     #[test]
@@ -398,7 +416,9 @@ mod rpc_error_tests {
         let e1 = RpcError::NineP { ecode: 13 };
         assert_eq!(format!("{e1}"), "9P error: errno=13");
 
-        let e2 = RpcError::NinePString { ename: "permission denied".into() };
+        let e2 = RpcError::NinePString {
+            ename: "permission denied".into(),
+        };
         assert_eq!(format!("{e2}"), "9P error: permission denied");
 
         let e3 = RpcError::from("timeout");

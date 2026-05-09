@@ -2,10 +2,10 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::*;
 use std::sync::Arc;
-use crate::util::{join_err, unknown_fid};
 
 pub async fn handle_getattr<B: Backend>(
     session: &Session<B::Handle>,
@@ -16,21 +16,28 @@ pub async fn handle_getattr<B: Backend>(
         return Err("expected Getattr message".into());
     };
     let tag = fc.tag;
-    tracing::trace!(tag, fid, mask = format_args!("{:#x}", mask), "Tgetattr received");
+    tracing::trace!(
+        tag,
+        fid,
+        mask = format_args!("{:#x}", mask),
+        "Tgetattr received"
+    );
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tgetattr"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tgetattr"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
     let ctx = ctx.clone();
-    let (stat, qid) = tokio::task::spawn_blocking(move || {
-        ctx.backend.getattr(&path)
-    })
-    .await
-    .map_err(join_err)??;
+    let (stat, qid) = tokio::task::spawn_blocking(move || ctx.backend.getattr(&path))
+        .await
+        .map_err(join_err)??;
 
     tracing::trace!(
-        tag, fid,
+        tag,
+        fid,
         valid = format_args!("{:#x}", stat.valid),
         qid_path = qid.path,
         size = stat.size,
@@ -65,13 +72,17 @@ pub async fn handle_setattr<B: Backend>(
     let valid = attr.valid;
     let touches_owner = attr.valid & (P9_SETATTR_UID | P9_SETATTR_GID) != 0;
     tracing::debug!(
-        tag, fid,
+        tag,
+        fid,
         valid = format_args!("{:#x}", valid),
         touches_owner,
         "Tsetattr received",
     );
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tsetattr"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tsetattr"))?;
     let path = fid_state.path.clone();
     let qid_path = fid_state.qid.path;
     drop(fid_state);
@@ -92,14 +103,14 @@ pub async fn handle_setattr<B: Backend>(
     }
 
     let ctx = ctx.clone();
-    tokio::task::spawn_blocking(move || {
-        ctx.backend.setattr(&path, &attr)
-    })
-    .await
-    .map_err(join_err)??;
+    tokio::task::spawn_blocking(move || ctx.backend.setattr(&path, &attr))
+        .await
+        .map_err(join_err)??;
 
     tracing::debug!(
-        tag, fid, qid_path,
+        tag,
+        fid,
+        qid_path,
         valid = format_args!("{:#x}", valid),
         "Tsetattr result",
     );
@@ -123,19 +134,21 @@ pub async fn handle_statfs<B: Backend>(
     let tag = fc.tag;
     tracing::trace!(tag, fid, "Tstatfs received");
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tstatfs"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tstatfs"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
     let ctx = ctx.clone();
-    let stat = tokio::task::spawn_blocking(move || {
-        ctx.backend.statfs(&path)
-    })
-    .await
-    .map_err(join_err)??;
+    let stat = tokio::task::spawn_blocking(move || ctx.backend.statfs(&path))
+        .await
+        .map_err(join_err)??;
 
     tracing::trace!(
-        tag, fid,
+        tag,
+        fid,
         bsize = stat.bsize,
         blocks = stat.blocks,
         bfree = stat.bfree,

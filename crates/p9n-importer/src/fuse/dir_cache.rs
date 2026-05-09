@@ -6,8 +6,8 @@
 
 use fuse3::raw::prelude::DirectoryEntry;
 use lru::LruCache;
-use std::num::NonZeroUsize;
 use parking_lot::Mutex;
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 pub struct DirCache {
@@ -36,7 +36,13 @@ impl DirCache {
         if offset == 0 {
             return Some(entries.clone());
         }
-        Some(entries.iter().filter(|e| e.offset > offset).cloned().collect())
+        Some(
+            entries
+                .iter()
+                .filter(|e| e.offset > offset)
+                .cloned()
+                .collect(),
+        )
     }
 
     /// Store the full entry list for `ino`. Call only with the entries

@@ -130,7 +130,8 @@ async fn start_exporter_with_config(
                     config,
                     posix_mapping: None,
                 });
-                let mut handler = p9n_exporter::quic_connection::QuicConnectionHandler::new(conn, ctx);
+                let mut handler =
+                    p9n_exporter::quic_connection::QuicConnectionHandler::new(conn, ctx);
                 let _ = handler.run().await;
             });
         }
@@ -146,7 +147,12 @@ async fn rpc(
     tag: u16,
     msg: Msg,
 ) -> Result<Fcall, Box<dyn std::error::Error + Send + Sync>> {
-    let fc = Fcall { size: 0, msg_type, tag, msg };
+    let fc = Fcall {
+        size: 0,
+        msg_type,
+        tag,
+        msg,
+    };
     let mut buf = Buf::new(256);
     codec::marshal(&mut buf, &fc)?;
     let wire = buf.into_vec();
@@ -206,15 +212,33 @@ async fn setup(
     let conn = connect(addr, &certs).await;
 
     // Version
-    let r = rpc(&conn, MsgType::Tversion, 0, Msg::Version {
-        msize: 65536, version: VERSION_9P2000_N.into(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tversion,
+        0,
+        Msg::Version {
+            msize: 65536,
+            version: VERSION_9P2000_N.into(),
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r.msg, Msg::Version { .. }));
 
     // Attach
-    let r = rpc(&conn, MsgType::Tattach, 1, Msg::Attach {
-        fid: 0, afid: NO_FID, uname: "test".into(), aname: "".into(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tattach,
+        1,
+        Msg::Attach {
+            fid: 0,
+            afid: NO_FID,
+            uname: "test".into(),
+            aname: "".into(),
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r.msg, Msg::Rattach { .. }));
 
     (conn, certs)
@@ -290,13 +314,31 @@ async fn setup_conn(
     certs: &[rustls::pki_types::CertificateDer<'static>],
 ) -> quinn::Connection {
     let conn = connect(addr, certs).await;
-    let r = rpc(&conn, MsgType::Tversion, 0, Msg::Version {
-        msize: 65536, version: VERSION_9P2000_N.into(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tversion,
+        0,
+        Msg::Version {
+            msize: 65536,
+            version: VERSION_9P2000_N.into(),
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r.msg, Msg::Version { .. }));
-    let r = rpc(&conn, MsgType::Tattach, 1, Msg::Attach {
-        fid: 0, afid: NO_FID, uname: "test".into(), aname: "".into(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tattach,
+        1,
+        Msg::Attach {
+            fid: 0,
+            afid: NO_FID,
+            uname: "test".into(),
+            aname: "".into(),
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r.msg, Msg::Rattach { .. }));
     conn
 }
@@ -310,9 +352,17 @@ async fn test_version_negotiation() {
     let conn = connect(addr, &certs).await;
 
     // 9P2000.N
-    let r = rpc(&conn, MsgType::Tversion, 0, Msg::Version {
-        msize: 65536, version: "9P2000.N".into(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tversion,
+        0,
+        Msg::Version {
+            msize: 65536,
+            version: "9P2000.N".into(),
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Version { msize, version } => {
             assert_eq!(version, "9P2000.N");
@@ -322,9 +372,17 @@ async fn test_version_negotiation() {
     }
 
     // Non-9P2000.N version is rejected
-    let r = rpc(&conn, MsgType::Tversion, 0, Msg::Version {
-        msize: 8192, version: "9P2000.L".into(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tversion,
+        0,
+        Msg::Version {
+            msize: 8192,
+            version: "9P2000.L".into(),
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Version { version, .. } => assert_eq!(version, "unknown"),
         _ => panic!("expected Version"),
@@ -337,9 +395,18 @@ async fn test_walk_and_getattr() {
     std::fs::write(dir.path().join("test.txt"), "content").unwrap();
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
-    let r = rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["test.txt".into()],
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["test.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
     match &r.msg {
         Msg::Rwalk { qids } => {
             assert_eq!(qids.len(), 1);
@@ -348,9 +415,17 @@ async fn test_walk_and_getattr() {
         _ => panic!("expected Rwalk"),
     }
 
-    let r = rpc(&conn, MsgType::Tgetattr, 3, Msg::Getattr {
-        fid: 1, mask: P9_GETATTR_ALL,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tgetattr,
+        3,
+        Msg::Getattr {
+            fid: 1,
+            mask: P9_GETATTR_ALL,
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rgetattr { stat, .. } => assert_eq!(stat.size, 7),
         _ => panic!("expected Rgetattr"),
@@ -364,23 +439,52 @@ async fn test_read_file() {
     std::fs::write(dir.path().join("hello.txt"), content).unwrap();
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["hello.txt".into()],
-    }).await.unwrap();
-    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: 0 }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["hello.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: 0 })
+        .await
+        .unwrap();
 
-    let r = rpc(&conn, MsgType::Tread, 4, Msg::Read {
-        fid: 1, offset: 0, count: 4096,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tread,
+        4,
+        Msg::Read {
+            fid: 1,
+            offset: 0,
+            count: 4096,
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rread { data } => assert_eq!(data, content.to_vec()),
         _ => panic!("expected Rread"),
     }
 
     // Read at offset
-    let r = rpc(&conn, MsgType::Tread, 5, Msg::Read {
-        fid: 1, offset: 7, count: 8,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tread,
+        5,
+        Msg::Read {
+            fid: 1,
+            offset: 7,
+            count: 8,
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rread { data } => assert_eq!(data, b"9P2000.N"),
         _ => panic!("expected Rread"),
@@ -392,21 +496,46 @@ async fn test_write_file() {
     let dir = tempfile::tempdir().unwrap();
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
-    rpc(&conn, MsgType::Tlcreate, 2, Msg::Lcreate {
-        fid: 0, name: "new.txt".into(), flags: L_O_RDWR | L_O_CREAT, mode: 0o644, gid: test_gid(),
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Tlcreate,
+        2,
+        Msg::Lcreate {
+            fid: 0,
+            name: "new.txt".into(),
+            flags: L_O_RDWR | L_O_CREAT,
+            mode: 0o644,
+            gid: test_gid(),
+        },
+    )
+    .await
+    .unwrap();
 
     let data = b"written by test".to_vec();
-    let r = rpc(&conn, MsgType::Twrite, 3, Msg::Write {
-        fid: 0, offset: 0, data: data.clone(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Twrite,
+        3,
+        Msg::Write {
+            fid: 0,
+            offset: 0,
+            data: data.clone(),
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rwrite { count } => assert_eq!(count, data.len() as u32),
         _ => panic!("expected Rwrite"),
     }
 
-    rpc(&conn, MsgType::Tclunk, 4, Msg::Clunk { fid: 0 }).await.unwrap();
-    assert_eq!(std::fs::read(dir.path().join("new.txt")).unwrap(), b"written by test");
+    rpc(&conn, MsgType::Tclunk, 4, Msg::Clunk { fid: 0 })
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("new.txt")).unwrap(),
+        b"written by test"
+    );
 }
 
 #[tokio::test]
@@ -416,23 +545,69 @@ async fn test_mkdir_and_readdir() {
     std::fs::write(dir.path().join("b.txt"), "b").unwrap();
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
-    rpc(&conn, MsgType::Tmkdir, 2, Msg::Mkdir {
-        dfid: 0, name: "sub".into(), mode: 0o755, gid: test_gid(),
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Tmkdir,
+        2,
+        Msg::Mkdir {
+            dfid: 0,
+            name: "sub".into(),
+            mode: 0o755,
+            gid: test_gid(),
+        },
+    )
+    .await
+    .unwrap();
     assert!(dir.path().join("sub").is_dir());
 
     // Clone fid, open, readdir
-    rpc(&conn, MsgType::Twalk, 3, Msg::Walk { fid: 0, newfid: 10, wnames: vec![] }).await.unwrap();
-    rpc(&conn, MsgType::Tlopen, 4, Msg::Lopen { fid: 10, flags: L_O_RDONLY }).await.unwrap();
-    let r = rpc(&conn, MsgType::Treaddir, 5, Msg::Readdir {
-        fid: 10, offset: 0, count: 65536,
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        3,
+        Msg::Walk {
+            fid: 0,
+            newfid: 10,
+            wnames: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(
+        &conn,
+        MsgType::Tlopen,
+        4,
+        Msg::Lopen {
+            fid: 10,
+            flags: L_O_RDONLY,
+        },
+    )
+    .await
+    .unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Treaddir,
+        5,
+        Msg::Readdir {
+            fid: 10,
+            offset: 0,
+            count: 65536,
+        },
+    )
+    .await
+    .unwrap();
 
     match r.msg {
         Msg::Rreaddir { data } => {
             let names = extract_names(&data);
-            assert!(names.contains(&"a.txt".into()), "missing a.txt in {names:?}");
-            assert!(names.contains(&"b.txt".into()), "missing b.txt in {names:?}");
+            assert!(
+                names.contains(&"a.txt".into()),
+                "missing a.txt in {names:?}"
+            );
+            assert!(
+                names.contains(&"b.txt".into()),
+                "missing b.txt in {names:?}"
+            );
             assert!(names.contains(&"sub".into()), "missing sub in {names:?}");
         }
         _ => panic!("expected Rreaddir"),
@@ -446,14 +621,33 @@ async fn test_unlink_and_rename() {
     std::fs::write(dir.path().join("old.txt"), "move").unwrap();
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
-    rpc(&conn, MsgType::Tunlinkat, 2, Msg::Unlinkat {
-        dirfid: 0, name: "del.txt".into(), flags: 0,
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Tunlinkat,
+        2,
+        Msg::Unlinkat {
+            dirfid: 0,
+            name: "del.txt".into(),
+            flags: 0,
+        },
+    )
+    .await
+    .unwrap();
     assert!(!dir.path().join("del.txt").exists());
 
-    rpc(&conn, MsgType::Trenameat, 3, Msg::Renameat {
-        olddirfid: 0, oldname: "old.txt".into(), newdirfid: 0, newname: "new.txt".into(),
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Trenameat,
+        3,
+        Msg::Renameat {
+            olddirfid: 0,
+            oldname: "old.txt".into(),
+            newdirfid: 0,
+            newname: "new.txt".into(),
+        },
+    )
+    .await
+    .unwrap();
     assert!(!dir.path().join("old.txt").exists());
     assert_eq!(std::fs::read(dir.path().join("new.txt")).unwrap(), b"move");
 }
@@ -463,9 +657,17 @@ async fn test_walk_nonexistent() {
     let dir = tempfile::tempdir().unwrap();
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
-    let r = rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["nonexistent".into()],
-    }).await;
+    let r = rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["nonexistent".into()],
+        },
+    )
+    .await;
     assert!(r.is_err());
 }
 
@@ -474,7 +676,9 @@ async fn test_statfs() {
     let dir = tempfile::tempdir().unwrap();
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
-    let r = rpc(&conn, MsgType::Tstatfs, 2, Msg::Statfs { fid: 0 }).await.unwrap();
+    let r = rpc(&conn, MsgType::Tstatfs, 2, Msg::Statfs { fid: 0 })
+        .await
+        .unwrap();
     match r.msg {
         Msg::Rstatfs { stat } => {
             assert!(stat.blocks > 0);
@@ -499,21 +703,50 @@ async fn test_concurrent_reads() {
         handles.push(tokio::spawn(async move {
             let fid = 10 + i;
             let tag_base = (i * 10 + 100) as u16;
-            rpc(&conn, MsgType::Twalk, tag_base, Msg::Walk {
-                fid: 0, newfid: fid, wnames: vec![format!("f{i}.txt")],
-            }).await.unwrap();
-            rpc(&conn, MsgType::Tlopen, tag_base + 1, Msg::Lopen { fid, flags: 0 }).await.unwrap();
-            let r = rpc(&conn, MsgType::Tread, tag_base + 2, Msg::Read {
-                fid, offset: 0, count: 4096,
-            }).await.unwrap();
+            rpc(
+                &conn,
+                MsgType::Twalk,
+                tag_base,
+                Msg::Walk {
+                    fid: 0,
+                    newfid: fid,
+                    wnames: vec![format!("f{i}.txt")],
+                },
+            )
+            .await
+            .unwrap();
+            rpc(
+                &conn,
+                MsgType::Tlopen,
+                tag_base + 1,
+                Msg::Lopen { fid, flags: 0 },
+            )
+            .await
+            .unwrap();
+            let r = rpc(
+                &conn,
+                MsgType::Tread,
+                tag_base + 2,
+                Msg::Read {
+                    fid,
+                    offset: 0,
+                    count: 4096,
+                },
+            )
+            .await
+            .unwrap();
             match r.msg {
                 Msg::Rread { data } => assert_eq!(data, format!("data{i}").into_bytes()),
                 _ => panic!("concurrent read {i} failed"),
             }
-            rpc(&conn, MsgType::Tclunk, tag_base + 3, Msg::Clunk { fid }).await.unwrap();
+            rpc(&conn, MsgType::Tclunk, tag_base + 3, Msg::Clunk { fid })
+                .await
+                .unwrap();
         }));
     }
-    for h in handles { h.await.unwrap(); }
+    for h in handles {
+        h.await.unwrap();
+    }
 }
 
 // ═══════════════════ New Tests ═══════════════════
@@ -525,23 +758,46 @@ async fn test_symlink_and_readlink() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Create symlink with relative target path
-    let r = rpc(&conn, MsgType::Tsymlink, 2, Msg::Symlink {
-        fid: 0, name: "link.txt".into(),
-        symtgt: "target.txt".to_string(), gid: test_gid(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tsymlink,
+        2,
+        Msg::Symlink {
+            fid: 0,
+            name: "link.txt".into(),
+            symtgt: "target.txt".to_string(),
+            gid: test_gid(),
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r.msg, Msg::Rsymlink { .. }));
     assert!(dir.path().join("link.txt").is_symlink());
 
     // Walk to symlink — should give a fid for the symlink itself, not the target
-    rpc(&conn, MsgType::Twalk, 3, Msg::Walk {
-        fid: 0, newfid: 2, wnames: vec!["link.txt".into()],
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        3,
+        Msg::Walk {
+            fid: 0,
+            newfid: 2,
+            wnames: vec!["link.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
 
     // Readlink
-    let r = rpc(&conn, MsgType::Treadlink, 4, Msg::Readlink { fid: 2 }).await.unwrap();
+    let r = rpc(&conn, MsgType::Treadlink, 4, Msg::Readlink { fid: 2 })
+        .await
+        .unwrap();
     match r.msg {
         Msg::Rreadlink { target } => {
-            assert_eq!(target, "target.txt", "readlink should return symlink target");
+            assert_eq!(
+                target, "target.txt",
+                "readlink should return symlink target"
+            );
         }
         _ => panic!("expected Rreadlink"),
     }
@@ -554,17 +810,37 @@ async fn test_remove() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Walk to file
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["victim.txt".into()],
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["victim.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
 
     // Tremove: removes file AND clunks fid
-    let r = rpc(&conn, MsgType::Tremove, 3, Msg::Remove { fid: 1 }).await.unwrap();
+    let r = rpc(&conn, MsgType::Tremove, 3, Msg::Remove { fid: 1 })
+        .await
+        .unwrap();
     assert!(matches!(r.msg, Msg::Empty));
     assert!(!dir.path().join("victim.txt").exists());
 
     // fid should be clunked — using it again should fail
-    let r = rpc(&conn, MsgType::Tgetattr, 4, Msg::Getattr { fid: 1, mask: P9_GETATTR_ALL }).await;
+    let r = rpc(
+        &conn,
+        MsgType::Tgetattr,
+        4,
+        Msg::Getattr {
+            fid: 1,
+            mask: P9_GETATTR_ALL,
+        },
+    )
+    .await;
     assert!(r.is_err(), "fid should be clunked after Tremove");
 }
 
@@ -574,9 +850,16 @@ async fn test_session_zero_key_rejected() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Zero key should be rejected
-    let r = rpc(&conn, MsgType::Tsession, 2, Msg::Session {
-        key: [0u8; 16], flags: SESSION_FIDS,
-    }).await;
+    let r = rpc(
+        &conn,
+        MsgType::Tsession,
+        2,
+        Msg::Session {
+            key: [0u8; 16],
+            flags: SESSION_FIDS,
+        },
+    )
+    .await;
     assert!(r.is_err(), "zero session key should be rejected");
 }
 
@@ -586,15 +869,30 @@ async fn test_session_duplicate_rejected() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // First Tsession should succeed
-    let r = rpc(&conn, MsgType::Tsession, 2, Msg::Session {
-        key: [0x42u8; 16], flags: SESSION_FIDS,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tsession,
+        2,
+        Msg::Session {
+            key: [0x42u8; 16],
+            flags: SESSION_FIDS,
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r.msg, Msg::Rsession { .. }));
 
     // Second Tsession on same connection should fail
-    let r = rpc(&conn, MsgType::Tsession, 3, Msg::Session {
-        key: [0x99u8; 16], flags: SESSION_FIDS,
-    }).await;
+    let r = rpc(
+        &conn,
+        MsgType::Tsession,
+        3,
+        Msg::Session {
+            key: [0x99u8; 16],
+            flags: SESSION_FIDS,
+        },
+    )
+    .await;
     assert!(r.is_err(), "duplicate Tsession should be rejected");
 }
 
@@ -604,25 +902,44 @@ async fn test_caps_negotiation() {
     let (addr, certs) = start_exporter(dir.path().to_str().unwrap()).await;
     let conn = connect(addr, &certs).await;
 
-    rpc(&conn, MsgType::Tversion, 0, Msg::Version {
-        msize: 65536, version: VERSION_9P2000_N.into(),
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Tversion,
+        0,
+        Msg::Version {
+            msize: 65536,
+            version: VERSION_9P2000_N.into(),
+        },
+    )
+    .await
+    .unwrap();
 
     // Negotiate caps
-    let r = rpc(&conn, MsgType::Tcaps, 1, Msg::Caps {
-        caps: vec![
-            CAP_SPIFFE.into(), CAP_WATCH.into(), CAP_SESSION.into(),
-            "nonexistent.feature".into(),
-        ],
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tcaps,
+        1,
+        Msg::Caps {
+            caps: vec![
+                CAP_SPIFFE.into(),
+                CAP_WATCH.into(),
+                CAP_SESSION.into(),
+                "nonexistent.feature".into(),
+            ],
+        },
+    )
+    .await
+    .unwrap();
 
     match r.msg {
         Msg::Caps { caps } => {
             assert!(caps.contains(&CAP_SPIFFE.to_string()));
             assert!(caps.contains(&CAP_SESSION.to_string()));
             assert!(caps.contains(&CAP_WATCH.to_string()));
-            assert!(!caps.contains(&"nonexistent.feature".to_string()),
-                "unknown caps should be filtered out");
+            assert!(
+                !caps.contains(&"nonexistent.feature".to_string()),
+                "unknown caps should be filtered out"
+            );
         }
         _ => panic!("expected Rcaps"),
     }
@@ -638,27 +955,55 @@ async fn test_compound_walk_getattr() {
     use p9n_proto::wire::SubOp;
 
     // SubOp 1: Twalk { fid:0, newfid:5, wnames:["comp.txt"] }
-    let walk_fc = Fcall { size: 0, msg_type: MsgType::Twalk, tag: 0,
-        msg: Msg::Walk { fid: 0, newfid: 5, wnames: vec!["comp.txt".into()] } };
+    let walk_fc = Fcall {
+        size: 0,
+        msg_type: MsgType::Twalk,
+        tag: 0,
+        msg: Msg::Walk {
+            fid: 0,
+            newfid: 5,
+            wnames: vec!["comp.txt".into()],
+        },
+    };
     let mut walk_buf = Buf::new(64);
     codec::marshal(&mut walk_buf, &walk_fc).unwrap();
     let walk_wire = walk_buf.into_vec();
     let walk_payload = walk_wire[HEADER_SIZE..].to_vec();
 
     // SubOp 2: Tgetattr { fid:5, mask:ALL }
-    let attr_fc = Fcall { size: 0, msg_type: MsgType::Tgetattr, tag: 0,
-        msg: Msg::Getattr { fid: 5, mask: P9_GETATTR_ALL } };
+    let attr_fc = Fcall {
+        size: 0,
+        msg_type: MsgType::Tgetattr,
+        tag: 0,
+        msg: Msg::Getattr {
+            fid: 5,
+            mask: P9_GETATTR_ALL,
+        },
+    };
     let mut attr_buf = Buf::new(64);
     codec::marshal(&mut attr_buf, &attr_fc).unwrap();
     let attr_wire = attr_buf.into_vec();
     let attr_payload = attr_wire[HEADER_SIZE..].to_vec();
 
-    let r = rpc(&conn, MsgType::Tcompound, 2, Msg::Compound {
-        ops: vec![
-            SubOp { msg_type: MsgType::Twalk, payload: walk_payload },
-            SubOp { msg_type: MsgType::Tgetattr, payload: attr_payload },
-        ],
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tcompound,
+        2,
+        Msg::Compound {
+            ops: vec![
+                SubOp {
+                    msg_type: MsgType::Twalk,
+                    payload: walk_payload,
+                },
+                SubOp {
+                    msg_type: MsgType::Tgetattr,
+                    payload: attr_payload,
+                },
+            ],
+        },
+    )
+    .await
+    .unwrap();
 
     match r.msg {
         Msg::Rcompound { results } => {
@@ -676,15 +1021,36 @@ async fn test_hash_blake3() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Walk + open
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["hashme.txt".into()],
-    }).await.unwrap();
-    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: 0 }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["hashme.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: 0 })
+        .await
+        .unwrap();
 
     // Hash
-    let r = rpc(&conn, MsgType::Thash, 4, Msg::Hash {
-        fid: 1, algo: HASH_BLAKE3, offset: 0, length: 0,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Thash,
+        4,
+        Msg::Hash {
+            fid: 1,
+            algo: HASH_BLAKE3,
+            offset: 0,
+            length: 0,
+        },
+    )
+    .await
+    .unwrap();
 
     match r.msg {
         Msg::Rhash { algo, hash } => {
@@ -707,16 +1073,38 @@ async fn test_lease_lifecycle() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Walk to file
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["leased.txt".into()],
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["leased.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
 
     // Grant lease
-    let r = rpc(&conn, MsgType::Tlease, 3, Msg::Lease {
-        fid: 1, lease_type: 1, duration: 60,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tlease,
+        3,
+        Msg::Lease {
+            fid: 1,
+            lease_type: 1,
+            duration: 60,
+        },
+    )
+    .await
+    .unwrap();
     let lease_id = match r.msg {
-        Msg::Rlease { lease_id, lease_type, duration } => {
+        Msg::Rlease {
+            lease_id,
+            lease_type,
+            duration,
+        } => {
             assert_eq!(lease_type, 1);
             assert!(duration <= 300);
             lease_id
@@ -725,22 +1113,39 @@ async fn test_lease_lifecycle() {
     };
 
     // Renew lease
-    let r = rpc(&conn, MsgType::Tleaserenew, 4, Msg::Leaserenew {
-        lease_id, duration: 120,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tleaserenew,
+        4,
+        Msg::Leaserenew {
+            lease_id,
+            duration: 120,
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rleaserenew { duration } => assert!(duration <= 300),
         _ => panic!("expected Rleaserenew"),
     }
 
     // Renew nonexistent lease should fail
-    let r = rpc(&conn, MsgType::Tleaserenew, 5, Msg::Leaserenew {
-        lease_id: 99999, duration: 60,
-    }).await;
+    let r = rpc(
+        &conn,
+        MsgType::Tleaserenew,
+        5,
+        Msg::Leaserenew {
+            lease_id: 99999,
+            duration: 60,
+        },
+    )
+    .await;
     assert!(r.is_err(), "renewing nonexistent lease should fail");
 
     // Ack (release) lease
-    let r = rpc(&conn, MsgType::Tleaseack, 6, Msg::Leaseack { lease_id }).await.unwrap();
+    let r = rpc(&conn, MsgType::Tleaseack, 6, Msg::Leaseack { lease_id })
+        .await
+        .unwrap();
     assert!(matches!(r.msg, Msg::Empty));
 }
 
@@ -751,17 +1156,35 @@ async fn test_stale_fid_rejected() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Walk to file
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["file.txt".into()],
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["file.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
 
     // Clunk fid 1
-    rpc(&conn, MsgType::Tclunk, 3, Msg::Clunk { fid: 1 }).await.unwrap();
+    rpc(&conn, MsgType::Tclunk, 3, Msg::Clunk { fid: 1 })
+        .await
+        .unwrap();
 
     // Using stale fid should fail
-    let r = rpc(&conn, MsgType::Tgetattr, 4, Msg::Getattr {
-        fid: 1, mask: P9_GETATTR_ALL,
-    }).await;
+    let r = rpc(
+        &conn,
+        MsgType::Tgetattr,
+        4,
+        Msg::Getattr {
+            fid: 1,
+            mask: P9_GETATTR_ALL,
+        },
+    )
+    .await;
     assert!(r.is_err(), "stale fid should be rejected");
 }
 
@@ -771,18 +1194,27 @@ async fn test_consistency_invalid_level() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Valid level
-    let r = rpc(&conn, MsgType::Tconsistency, 2, Msg::Consistency {
-        fid: 0, level: 2,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tconsistency,
+        2,
+        Msg::Consistency { fid: 0, level: 2 },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rconsistency { level } => assert_eq!(level, 3), // single node = linearizable
         _ => panic!("expected Rconsistency"),
     }
 
     // Invalid level (>3) should fail
-    let r = rpc(&conn, MsgType::Tconsistency, 3, Msg::Consistency {
-        fid: 0, level: 99,
-    }).await;
+    let r = rpc(
+        &conn,
+        MsgType::Tconsistency,
+        3,
+        Msg::Consistency { fid: 0, level: 99 },
+    )
+    .await;
     assert!(r.is_err(), "level > 3 should be rejected");
 }
 
@@ -793,15 +1225,34 @@ async fn test_serverstats() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Walk to create a fid
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["a.txt".into()],
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["a.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
 
-    let r = rpc(&conn, MsgType::Tserverstats, 3, Msg::ServerstatsReq { mask: 0 })
-        .await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tserverstats,
+        3,
+        Msg::ServerstatsReq { mask: 0 },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rserverstats { stats } => {
-            assert!(stats.len() >= 3, "should have at least 3 stats, got {}", stats.len());
+            assert!(
+                stats.len() >= 3,
+                "should have at least 3 stats, got {}",
+                stats.len()
+            );
             let names: Vec<&str> = stats.iter().map(|s| s.name.as_str()).collect();
             assert!(names.contains(&"uptime_sec"), "missing uptime: {names:?}");
             assert!(names.contains(&"fids_open"), "missing fids_open: {names:?}");
@@ -821,30 +1272,79 @@ async fn test_lock_and_getlock() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Walk + open
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["lockme.txt".into()],
-    }).await.unwrap();
-    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: 2 }).await.unwrap(); // O_RDWR
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["lockme.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: 2 })
+        .await
+        .unwrap(); // O_RDWR
 
     // Lock (non-blocking write lock)
-    let r = rpc(&conn, MsgType::Tlock, 4, Msg::Lock {
-        fid: 1, lock_type: 1, flags: 0, start: 0, length: 0, proc_id: 1, client_id: "test".into(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tlock,
+        4,
+        Msg::Lock {
+            fid: 1,
+            lock_type: 1,
+            flags: 0,
+            start: 0,
+            length: 0,
+            proc_id: 1,
+            client_id: "test".into(),
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rlock { status } => assert_eq!(status, P9_LOCK_SUCCESS),
         _ => panic!("expected Rlock"),
     }
 
     // Getlock should show no conflicting lock (our own lock)
-    let r = rpc(&conn, MsgType::Tgetlock, 5, Msg::GetlockReq {
-        fid: 1, lock_type: 1, start: 0, length: 0, proc_id: 1, client_id: "test".into(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tgetlock,
+        5,
+        Msg::GetlockReq {
+            fid: 1,
+            lock_type: 1,
+            start: 0,
+            length: 0,
+            proc_id: 1,
+            client_id: "test".into(),
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r.msg, Msg::RgetlockResp { .. }));
 
     // Unlock
-    let r = rpc(&conn, MsgType::Tlock, 6, Msg::Lock {
-        fid: 1, lock_type: 2, flags: 0, start: 0, length: 0, proc_id: 1, client_id: "test".into(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tlock,
+        6,
+        Msg::Lock {
+            fid: 1,
+            lock_type: 2,
+            flags: 0,
+            start: 0,
+            length: 0,
+            proc_id: 1,
+            client_id: "test".into(),
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rlock { status } => assert_eq!(status, P9_LOCK_SUCCESS),
         _ => panic!("expected Rlock unlock"),
@@ -857,14 +1357,35 @@ async fn test_stream_write() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Create and open a file for writing
-    rpc(&conn, MsgType::Tlcreate, 2, Msg::Lcreate {
-        fid: 0, name: "streamed.txt".into(), flags: L_O_RDWR | L_O_CREAT, mode: 0o644, gid: test_gid(),
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Tlcreate,
+        2,
+        Msg::Lcreate {
+            fid: 0,
+            name: "streamed.txt".into(),
+            flags: L_O_RDWR | L_O_CREAT,
+            mode: 0o644,
+            gid: test_gid(),
+        },
+    )
+    .await
+    .unwrap();
 
     // Open a write stream on the file (direction=1 is write, offset=0)
-    let r = rpc(&conn, MsgType::Tstreamopen, 3, Msg::Streamopen {
-        fid: 0, direction: 1, offset: 0, count: 0,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tstreamopen,
+        3,
+        Msg::Streamopen {
+            fid: 0,
+            direction: 1,
+            offset: 0,
+            count: 0,
+        },
+    )
+    .await
+    .unwrap();
     let stream_id = match r.msg {
         Msg::Rstreamopen { stream_id } => stream_id,
         _ => panic!("expected Rstreamopen"),
@@ -872,11 +1393,24 @@ async fn test_stream_write() {
 
     // Write three chunks sequentially
     for (seq, chunk) in ["Hello, ", "streaming ", "world!"].iter().enumerate() {
-        let r = rpc(&conn, MsgType::Tstreamdata, 10 + seq as u16, Msg::Streamdata {
-            stream_id, seq: seq as u32, data: chunk.as_bytes().to_vec(),
-        }).await.unwrap();
+        let r = rpc(
+            &conn,
+            MsgType::Tstreamdata,
+            10 + seq as u16,
+            Msg::Streamdata {
+                stream_id,
+                seq: seq as u32,
+                data: chunk.as_bytes().to_vec(),
+            },
+        )
+        .await
+        .unwrap();
         match r.msg {
-            Msg::Streamdata { stream_id: sid, seq: s, data } => {
+            Msg::Streamdata {
+                stream_id: sid,
+                seq: s,
+                data,
+            } => {
                 assert_eq!(sid, stream_id);
                 assert_eq!(s, seq as u32);
                 assert!(data.is_empty(), "write ack should have empty data");
@@ -886,11 +1420,20 @@ async fn test_stream_write() {
     }
 
     // Close the stream (triggers fsync for write streams)
-    let r = rpc(&conn, MsgType::Tstreamclose, 20, Msg::Streamclose { stream_id }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tstreamclose,
+        20,
+        Msg::Streamclose { stream_id },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r.msg, Msg::Empty));
 
     // Verify file contents
-    rpc(&conn, MsgType::Tclunk, 21, Msg::Clunk { fid: 0 }).await.unwrap();
+    rpc(&conn, MsgType::Tclunk, 21, Msg::Clunk { fid: 0 })
+        .await
+        .unwrap();
     assert_eq!(
         std::fs::read(dir.path().join("streamed.txt")).unwrap(),
         b"Hello, streaming world!"
@@ -905,24 +1448,54 @@ async fn test_stream_read() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Walk + open
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["readable.txt".into()],
-    }).await.unwrap();
-    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: 0 }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["readable.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: 0 })
+        .await
+        .unwrap();
 
     // Open a read stream (direction=0 is read, offset=0)
-    let r = rpc(&conn, MsgType::Tstreamopen, 4, Msg::Streamopen {
-        fid: 1, direction: 0, offset: 0, count: 0,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tstreamopen,
+        4,
+        Msg::Streamopen {
+            fid: 1,
+            direction: 0,
+            offset: 0,
+            count: 0,
+        },
+    )
+    .await
+    .unwrap();
     let stream_id = match r.msg {
         Msg::Rstreamopen { stream_id } => stream_id,
         _ => panic!("expected Rstreamopen"),
     };
 
     // Read first chunk
-    let r = rpc(&conn, MsgType::Tstreamdata, 5, Msg::Streamdata {
-        stream_id, seq: 0, data: Vec::new(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tstreamdata,
+        5,
+        Msg::Streamdata {
+            stream_id,
+            seq: 0,
+            data: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
     let data = match r.msg {
         Msg::Streamdata { data, .. } => data,
         _ => panic!("expected Rstreamdata"),
@@ -930,16 +1503,32 @@ async fn test_stream_read() {
     assert_eq!(data, content.to_vec());
 
     // Second read should return empty (EOF)
-    let r = rpc(&conn, MsgType::Tstreamdata, 6, Msg::Streamdata {
-        stream_id, seq: 1, data: Vec::new(),
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tstreamdata,
+        6,
+        Msg::Streamdata {
+            stream_id,
+            seq: 1,
+            data: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Streamdata { data, .. } => assert!(data.is_empty(), "should be EOF"),
         _ => panic!("expected Rstreamdata"),
     }
 
     // Close stream
-    rpc(&conn, MsgType::Tstreamclose, 7, Msg::Streamclose { stream_id }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Tstreamclose,
+        7,
+        Msg::Streamclose { stream_id },
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -951,29 +1540,65 @@ async fn test_rate_limit_throttles_reads() {
     // Start exporter with rate limiting enabled: 10 IOPS, unlimited BPS.
     let mut config = test_config();
     config.enable_rate_limit = true;
-    let (addr, certs) = start_exporter_with_config(
-        dir.path().to_str().unwrap(), config,
-    ).await;
+    let (addr, certs) = start_exporter_with_config(dir.path().to_str().unwrap(), config).await;
     let conn = connect(addr, &certs).await;
 
     // Version + Attach
-    rpc(&conn, MsgType::Tversion, 0, Msg::Version {
-        msize: 65536, version: VERSION_9P2000_N.into(),
-    }).await.unwrap();
-    rpc(&conn, MsgType::Tattach, 1, Msg::Attach {
-        fid: 0, afid: NO_FID, uname: "test".into(), aname: "".into(),
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Tversion,
+        0,
+        Msg::Version {
+            msize: 65536,
+            version: VERSION_9P2000_N.into(),
+        },
+    )
+    .await
+    .unwrap();
+    rpc(
+        &conn,
+        MsgType::Tattach,
+        1,
+        Msg::Attach {
+            fid: 0,
+            afid: NO_FID,
+            uname: "test".into(),
+            aname: "".into(),
+        },
+    )
+    .await
+    .unwrap();
 
     // Walk + open
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["data.bin".into()],
-    }).await.unwrap();
-    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: 0 }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["data.bin".into()],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: 0 })
+        .await
+        .unwrap();
 
     // Set rate limit: 10 IOPS on fid 1
-    let r = rpc(&conn, MsgType::Tratelimit, 4, Msg::Ratelimit {
-        fid: 1, iops: 10, bps: 0,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tratelimit,
+        4,
+        Msg::Ratelimit {
+            fid: 1,
+            iops: 10,
+            bps: 0,
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rratelimit { iops, .. } => assert_eq!(iops, 10),
         _ => panic!("expected Rratelimit"),
@@ -981,9 +1606,18 @@ async fn test_rate_limit_throttles_reads() {
 
     // First read should succeed immediately (bucket starts full).
     let start = std::time::Instant::now();
-    let r = rpc(&conn, MsgType::Tread, 5, Msg::Read {
-        fid: 1, offset: 0, count: 1024,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tread,
+        5,
+        Msg::Read {
+            fid: 1,
+            offset: 0,
+            count: 1024,
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Rread { data } => assert_eq!(data.len(), 1024),
         _ => panic!("expected Rread"),
@@ -992,16 +1626,34 @@ async fn test_rate_limit_throttles_reads() {
 
     // Drain the IOPS bucket: 9 more rapid reads (bucket had 10 tokens).
     for i in 0..9u16 {
-        rpc(&conn, MsgType::Tread, 10 + i, Msg::Read {
-            fid: 1, offset: 0, count: 64,
-        }).await.unwrap();
+        rpc(
+            &conn,
+            MsgType::Tread,
+            10 + i,
+            Msg::Read {
+                fid: 1,
+                offset: 0,
+                count: 64,
+            },
+        )
+        .await
+        .unwrap();
     }
 
     // 11th read should be delayed (~100ms at 10 IOPS).
     let before = std::time::Instant::now();
-    rpc(&conn, MsgType::Tread, 30, Msg::Read {
-        fid: 1, offset: 0, count: 64,
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Tread,
+        30,
+        Msg::Read {
+            fid: 1,
+            offset: 0,
+            count: 64,
+        },
+    )
+    .await
+    .unwrap();
     let delay = before.elapsed();
 
     assert!(
@@ -1019,12 +1671,18 @@ fn extract_names(data: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
     let mut pos = 0;
     while pos < data.len() {
-        if pos + 24 > data.len() { break; }
+        if pos + 24 > data.len() {
+            break;
+        }
         pos += 13 + 8 + 1; // qid + offset + dtype
-        if pos + 2 > data.len() { break; }
+        if pos + 2 > data.len() {
+            break;
+        }
         let nl = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
         pos += 2;
-        if pos + nl > data.len() { break; }
+        if pos + nl > data.len() {
+            break;
+        }
         names.push(String::from_utf8_lossy(&data[pos..pos + nl]).into());
         pos += nl;
     }
@@ -1042,30 +1700,83 @@ async fn test_copyrange_basic() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Walk + open src
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["src.txt".into()],
-    }).await.unwrap();
-    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: L_O_RDONLY }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["src.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(
+        &conn,
+        MsgType::Tlopen,
+        3,
+        Msg::Lopen {
+            fid: 1,
+            flags: L_O_RDONLY,
+        },
+    )
+    .await
+    .unwrap();
 
     // Walk + open dst
-    rpc(&conn, MsgType::Twalk, 4, Msg::Walk {
-        fid: 0, newfid: 2, wnames: vec!["dst.txt".into()],
-    }).await.unwrap();
-    rpc(&conn, MsgType::Tlopen, 5, Msg::Lopen { fid: 2, flags: L_O_WRONLY }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        4,
+        Msg::Walk {
+            fid: 0,
+            newfid: 2,
+            wnames: vec!["dst.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(
+        &conn,
+        MsgType::Tlopen,
+        5,
+        Msg::Lopen {
+            fid: 2,
+            flags: L_O_WRONLY,
+        },
+    )
+    .await
+    .unwrap();
 
     // Copy range (flags=0 → copy_file_range)
-    let r = rpc(&conn, MsgType::Tcopyrange, 6, Msg::Copyrange {
-        src_fid: 1, src_off: 0, dst_fid: 2, dst_off: 0,
-        count: src_data.len() as u64, flags: 0,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tcopyrange,
+        6,
+        Msg::Copyrange {
+            src_fid: 1,
+            src_off: 0,
+            dst_fid: 2,
+            dst_off: 0,
+            count: src_data.len() as u64,
+            flags: 0,
+        },
+    )
+    .await
+    .unwrap();
 
     match r.msg {
         Msg::Rcopyrange { count } => assert_eq!(count, src_data.len() as u64),
         _ => panic!("expected Rcopyrange"),
     }
 
-    rpc(&conn, MsgType::Tclunk, 7, Msg::Clunk { fid: 1 }).await.unwrap();
-    rpc(&conn, MsgType::Tclunk, 8, Msg::Clunk { fid: 2 }).await.unwrap();
+    rpc(&conn, MsgType::Tclunk, 7, Msg::Clunk { fid: 1 })
+        .await
+        .unwrap();
+    rpc(&conn, MsgType::Tclunk, 8, Msg::Clunk { fid: 2 })
+        .await
+        .unwrap();
 
     // Verify on disk
     let dst_content = std::fs::read(dir.path().join("dst.txt")).unwrap();
@@ -1080,28 +1791,81 @@ async fn test_copyrange_partial_offset() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     // Walk + open both
-    rpc(&conn, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["src.txt".into()],
-    }).await.unwrap();
-    rpc(&conn, MsgType::Tlopen, 3, Msg::Lopen { fid: 1, flags: L_O_RDONLY }).await.unwrap();
-    rpc(&conn, MsgType::Twalk, 4, Msg::Walk {
-        fid: 0, newfid: 2, wnames: vec!["dst.txt".into()],
-    }).await.unwrap();
-    rpc(&conn, MsgType::Tlopen, 5, Msg::Lopen { fid: 2, flags: L_O_RDWR }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["src.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(
+        &conn,
+        MsgType::Tlopen,
+        3,
+        Msg::Lopen {
+            fid: 1,
+            flags: L_O_RDONLY,
+        },
+    )
+    .await
+    .unwrap();
+    rpc(
+        &conn,
+        MsgType::Twalk,
+        4,
+        Msg::Walk {
+            fid: 0,
+            newfid: 2,
+            wnames: vec!["dst.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(
+        &conn,
+        MsgType::Tlopen,
+        5,
+        Msg::Lopen {
+            fid: 2,
+            flags: L_O_RDWR,
+        },
+    )
+    .await
+    .unwrap();
 
     // Copy 5 bytes from offset 3 in src to offset 2 in dst
-    let r = rpc(&conn, MsgType::Tcopyrange, 6, Msg::Copyrange {
-        src_fid: 1, src_off: 3, dst_fid: 2, dst_off: 2,
-        count: 5, flags: 0,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tcopyrange,
+        6,
+        Msg::Copyrange {
+            src_fid: 1,
+            src_off: 3,
+            dst_fid: 2,
+            dst_off: 2,
+            count: 5,
+            flags: 0,
+        },
+    )
+    .await
+    .unwrap();
 
     match r.msg {
         Msg::Rcopyrange { count } => assert_eq!(count, 5),
         _ => panic!("expected Rcopyrange"),
     }
 
-    rpc(&conn, MsgType::Tclunk, 7, Msg::Clunk { fid: 1 }).await.unwrap();
-    rpc(&conn, MsgType::Tclunk, 8, Msg::Clunk { fid: 2 }).await.unwrap();
+    rpc(&conn, MsgType::Tclunk, 7, Msg::Clunk { fid: 1 })
+        .await
+        .unwrap();
+    rpc(&conn, MsgType::Tclunk, 8, Msg::Clunk { fid: 2 })
+        .await
+        .unwrap();
 
     // dst should be: "aa34567aaa"
     let dst = std::fs::read(dir.path().join("dst.txt")).unwrap();
@@ -1114,27 +1878,62 @@ async fn test_copyrange_partial_offset() {
 async fn test_read_lease_coexist() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "data").unwrap();
-    let (addr, certs) =
-        start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
+    let (addr, certs) = start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
     let conn1 = setup_conn(addr, &certs).await;
     let conn2 = setup_conn(addr, &certs).await;
 
     // conn1: walk + get READ lease
-    rpc(&conn1, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
-    }).await.unwrap();
-    let r1 = rpc(&conn1, MsgType::Tlease, 3, Msg::Lease {
-        fid: 1, lease_type: 1, duration: 60,
-    }).await.unwrap();
+    rpc(
+        &conn1,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["f.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let r1 = rpc(
+        &conn1,
+        MsgType::Tlease,
+        3,
+        Msg::Lease {
+            fid: 1,
+            lease_type: 1,
+            duration: 60,
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r1.msg, Msg::Rlease { lease_type: 1, .. }));
 
     // conn2: walk + get READ lease — should coexist
-    rpc(&conn2, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
-    }).await.unwrap();
-    let r2 = rpc(&conn2, MsgType::Tlease, 3, Msg::Lease {
-        fid: 1, lease_type: 1, duration: 60,
-    }).await.unwrap();
+    rpc(
+        &conn2,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["f.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let r2 = rpc(
+        &conn2,
+        MsgType::Tlease,
+        3,
+        Msg::Lease {
+            fid: 1,
+            lease_type: 1,
+            duration: 60,
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r2.msg, Msg::Rlease { lease_type: 1, .. }));
 }
 
@@ -1142,55 +1941,127 @@ async fn test_read_lease_coexist() {
 async fn test_write_lease_conflict() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "data").unwrap();
-    let (addr, certs) =
-        start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
+    let (addr, certs) = start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
     let conn1 = setup_conn(addr, &certs).await;
     let conn2 = setup_conn(addr, &certs).await;
 
     // conn1: walk + get WRITE lease
-    rpc(&conn1, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
-    }).await.unwrap();
-    let r1 = rpc(&conn1, MsgType::Tlease, 3, Msg::Lease {
-        fid: 1, lease_type: 2, duration: 60,
-    }).await.unwrap();
+    rpc(
+        &conn1,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["f.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let r1 = rpc(
+        &conn1,
+        MsgType::Tlease,
+        3,
+        Msg::Lease {
+            fid: 1,
+            lease_type: 2,
+            duration: 60,
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r1.msg, Msg::Rlease { lease_type: 2, .. }));
 
     // conn2: walk + request WRITE lease — should be rejected (EAGAIN)
-    rpc(&conn2, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
-    }).await.unwrap();
-    let r2 = rpc(&conn2, MsgType::Tlease, 3, Msg::Lease {
-        fid: 1, lease_type: 2, duration: 60,
-    }).await;
-    assert!(r2.is_err(), "WRITE vs WRITE from different connections should conflict");
+    rpc(
+        &conn2,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["f.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let r2 = rpc(
+        &conn2,
+        MsgType::Tlease,
+        3,
+        Msg::Lease {
+            fid: 1,
+            lease_type: 2,
+            duration: 60,
+        },
+    )
+    .await;
+    assert!(
+        r2.is_err(),
+        "WRITE vs WRITE from different connections should conflict"
+    );
 }
 
 #[tokio::test]
 async fn test_write_lease_breaks_read() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "data").unwrap();
-    let (addr, certs) =
-        start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
+    let (addr, certs) = start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
     let conn1 = setup_conn(addr, &certs).await;
     let conn2 = setup_conn(addr, &certs).await;
 
     // conn1: walk + get READ lease
-    rpc(&conn1, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
-    }).await.unwrap();
-    let r1 = rpc(&conn1, MsgType::Tlease, 3, Msg::Lease {
-        fid: 1, lease_type: 1, duration: 60,
-    }).await.unwrap();
+    rpc(
+        &conn1,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["f.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let r1 = rpc(
+        &conn1,
+        MsgType::Tlease,
+        3,
+        Msg::Lease {
+            fid: 1,
+            lease_type: 1,
+            duration: 60,
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r1.msg, Msg::Rlease { lease_type: 1, .. }));
 
     // conn2: walk + request WRITE lease — should succeed (breaks conn1's READ)
-    rpc(&conn2, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
-    }).await.unwrap();
-    let r2 = rpc(&conn2, MsgType::Tlease, 3, Msg::Lease {
-        fid: 1, lease_type: 2, duration: 60,
-    }).await.unwrap();
+    rpc(
+        &conn2,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["f.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let r2 = rpc(
+        &conn2,
+        MsgType::Tlease,
+        3,
+        Msg::Lease {
+            fid: 1,
+            lease_type: 2,
+            duration: 60,
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(r2.msg, Msg::Rlease { lease_type: 2, .. }));
 }
 
@@ -1198,26 +2069,60 @@ async fn test_write_lease_breaks_read() {
 async fn test_read_vs_write_conflict() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "data").unwrap();
-    let (addr, certs) =
-        start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
+    let (addr, certs) = start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
     let conn1 = setup_conn(addr, &certs).await;
     let conn2 = setup_conn(addr, &certs).await;
 
     // conn1: walk + get WRITE lease
-    rpc(&conn1, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
-    }).await.unwrap();
-    rpc(&conn1, MsgType::Tlease, 3, Msg::Lease {
-        fid: 1, lease_type: 2, duration: 60,
-    }).await.unwrap();
+    rpc(
+        &conn1,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["f.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    rpc(
+        &conn1,
+        MsgType::Tlease,
+        3,
+        Msg::Lease {
+            fid: 1,
+            lease_type: 2,
+            duration: 60,
+        },
+    )
+    .await
+    .unwrap();
 
     // conn2: walk + request READ lease — should be rejected (EAGAIN)
-    rpc(&conn2, MsgType::Twalk, 2, Msg::Walk {
-        fid: 0, newfid: 1, wnames: vec!["f.txt".into()],
-    }).await.unwrap();
-    let r2 = rpc(&conn2, MsgType::Tlease, 3, Msg::Lease {
-        fid: 1, lease_type: 1, duration: 60,
-    }).await;
+    rpc(
+        &conn2,
+        MsgType::Twalk,
+        2,
+        Msg::Walk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec!["f.txt".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let r2 = rpc(
+        &conn2,
+        MsgType::Tlease,
+        3,
+        Msg::Lease {
+            fid: 1,
+            lease_type: 1,
+            duration: 60,
+        },
+    )
+    .await;
     assert!(r2.is_err(), "READ vs other's WRITE should conflict");
 }
 
@@ -1225,13 +2130,13 @@ async fn test_read_vs_write_conflict() {
 
 /// Like `rpc()` but does NOT translate `Rlerror` into a Rust error, so
 /// tests can assert on the returned errno directly.
-async fn rpc_raw(
-    conn: &quinn::Connection,
-    msg_type: MsgType,
-    tag: u16,
-    msg: Msg,
-) -> Fcall {
-    let fc = Fcall { size: 0, msg_type, tag, msg };
+async fn rpc_raw(conn: &quinn::Connection, msg_type: MsgType, tag: u16, msg: Msg) -> Fcall {
+    let fc = Fcall {
+        size: 0,
+        msg_type,
+        tag,
+        msg,
+    };
     let mut buf = Buf::new(256);
     codec::marshal(&mut buf, &fc).unwrap();
     let wire = buf.into_vec();
@@ -1255,15 +2160,28 @@ async fn rpc_raw(
 /// return the negotiated cap list. Convenience for quicstream tests that
 /// need the cap to be in the session's negotiated set before sending
 /// Tquicstream.
-async fn negotiate_for_quicstream(
-    conn: &quinn::Connection,
-) -> Vec<String> {
-    let _ = rpc(conn, MsgType::Tversion, 0, Msg::Version {
-        msize: 65536, version: VERSION_9P2000_N.into(),
-    }).await.unwrap();
-    let r = rpc(conn, MsgType::Tcaps, 1, Msg::Caps {
-        caps: vec![CAP_QUIC_MULTI.to_string()],
-    }).await.unwrap();
+async fn negotiate_for_quicstream(conn: &quinn::Connection) -> Vec<String> {
+    let _ = rpc(
+        conn,
+        MsgType::Tversion,
+        0,
+        Msg::Version {
+            msize: 65536,
+            version: VERSION_9P2000_N.into(),
+        },
+    )
+    .await
+    .unwrap();
+    let r = rpc(
+        conn,
+        MsgType::Tcaps,
+        1,
+        Msg::Caps {
+            caps: vec![CAP_QUIC_MULTI.to_string()],
+        },
+    )
+    .await
+    .unwrap();
     match r.msg {
         Msg::Caps { caps } => caps,
         other => panic!("expected Rcaps, got {other:?}"),
@@ -1290,9 +2208,17 @@ async fn test_quicstream_bind_push_happy_path() {
     let conn = connect(addr, &certs).await;
     negotiate_for_quicstream(&conn).await;
 
-    let r = rpc(&conn, MsgType::Tquicstream, 2, Msg::Quicstream {
-        stream_type: 2, stream_id: 0,
-    }).await.expect("Tquicstream(push) should succeed");
+    let r = rpc(
+        &conn,
+        MsgType::Tquicstream,
+        2,
+        Msg::Quicstream {
+            stream_type: 2,
+            stream_id: 0,
+        },
+    )
+    .await
+    .expect("Tquicstream(push) should succeed");
 
     match r.msg {
         Msg::Rquicstream { stream_id } => {
@@ -1310,14 +2236,29 @@ async fn test_quicstream_ebusy_on_rebind() {
     negotiate_for_quicstream(&conn).await;
 
     // First bind should succeed.
-    let _ = rpc(&conn, MsgType::Tquicstream, 2, Msg::Quicstream {
-        stream_type: 2, stream_id: 0,
-    }).await.unwrap();
+    let _ = rpc(
+        &conn,
+        MsgType::Tquicstream,
+        2,
+        Msg::Quicstream {
+            stream_type: 2,
+            stream_id: 0,
+        },
+    )
+    .await
+    .unwrap();
 
     // Second bind must return EBUSY.
-    let r = rpc_raw(&conn, MsgType::Tquicstream, 3, Msg::Quicstream {
-        stream_type: 2, stream_id: 0,
-    }).await;
+    let r = rpc_raw(
+        &conn,
+        MsgType::Tquicstream,
+        3,
+        Msg::Quicstream {
+            stream_type: 2,
+            stream_id: 0,
+        },
+    )
+    .await;
     match r.msg {
         Msg::Lerror { ecode } => {
             assert_eq!(ecode, libc::EBUSY as u32, "rebind should return EBUSY");
@@ -1336,13 +2277,21 @@ async fn test_quicstream_einval_nonzero_stream_id() {
     // Push binding requests must carry stream_id=0; any other value
     // is a protocol error. See docs/QUICSTREAM.md §3.3.
     for bad_id in [1u64, 42, 0xDEAD_BEEF, u64::MAX] {
-        let r = rpc_raw(&conn, MsgType::Tquicstream, 10, Msg::Quicstream {
-            stream_type: 2, stream_id: bad_id,
-        }).await;
+        let r = rpc_raw(
+            &conn,
+            MsgType::Tquicstream,
+            10,
+            Msg::Quicstream {
+                stream_type: 2,
+                stream_id: bad_id,
+            },
+        )
+        .await;
         match r.msg {
             Msg::Lerror { ecode } => {
                 assert_eq!(
-                    ecode, libc::EINVAL as u32,
+                    ecode,
+                    libc::EINVAL as u32,
                     "stream_id={bad_id} should return EINVAL",
                 );
             }
@@ -1352,9 +2301,17 @@ async fn test_quicstream_einval_nonzero_stream_id() {
 
     // After rejections the binding slot must still be empty — the
     // happy-path bind should still work.
-    let r = rpc(&conn, MsgType::Tquicstream, 11, Msg::Quicstream {
-        stream_type: 2, stream_id: 0,
-    }).await.expect("zero stream_id should succeed after EINVALs");
+    let r = rpc(
+        &conn,
+        MsgType::Tquicstream,
+        11,
+        Msg::Quicstream {
+            stream_type: 2,
+            stream_id: 0,
+        },
+    )
+    .await
+    .expect("zero stream_id should succeed after EINVALs");
     assert!(matches!(r.msg, Msg::Rquicstream { stream_id } if stream_id != 0));
 }
 
@@ -1366,13 +2323,21 @@ async fn test_quicstream_eopnotsupp_wrong_type() {
     negotiate_for_quicstream(&conn).await;
 
     for bad_type in [0u8, 1, 3, 99] {
-        let r = rpc_raw(&conn, MsgType::Tquicstream, 10 + bad_type as u16, Msg::Quicstream {
-            stream_type: bad_type, stream_id: 0,
-        }).await;
+        let r = rpc_raw(
+            &conn,
+            MsgType::Tquicstream,
+            10 + bad_type as u16,
+            Msg::Quicstream {
+                stream_type: bad_type,
+                stream_id: 0,
+            },
+        )
+        .await;
         match r.msg {
             Msg::Lerror { ecode } => {
                 assert_eq!(
-                    ecode, libc::EOPNOTSUPP as u32,
+                    ecode,
+                    libc::EOPNOTSUPP as u32,
                     "stream_type={bad_type} should return EOPNOTSUPP",
                 );
             }
@@ -1401,12 +2366,27 @@ async fn test_quicstream_push_persistence_via_twatch() {
     let conn = connect(addr, &certs).await;
 
     // Negotiate version + caps (need WATCH and QUIC_MULTI) + attach root.
-    let _ = rpc(&conn, MsgType::Tversion, 0, Msg::Version {
-        msize: 65536, version: VERSION_9P2000_N.into(),
-    }).await.unwrap();
-    let caps = rpc(&conn, MsgType::Tcaps, 1, Msg::Caps {
-        caps: vec![CAP_WATCH.to_string(), CAP_QUIC_MULTI.to_string()],
-    }).await.unwrap();
+    let _ = rpc(
+        &conn,
+        MsgType::Tversion,
+        0,
+        Msg::Version {
+            msize: 65536,
+            version: VERSION_9P2000_N.into(),
+        },
+    )
+    .await
+    .unwrap();
+    let caps = rpc(
+        &conn,
+        MsgType::Tcaps,
+        1,
+        Msg::Caps {
+            caps: vec![CAP_WATCH.to_string(), CAP_QUIC_MULTI.to_string()],
+        },
+    )
+    .await
+    .unwrap();
     match caps.msg {
         Msg::Caps { caps } => {
             assert!(caps.iter().any(|c| c == CAP_WATCH));
@@ -1414,14 +2394,32 @@ async fn test_quicstream_push_persistence_via_twatch() {
         }
         _ => panic!("expected Rcaps"),
     }
-    let _ = rpc(&conn, MsgType::Tattach, 2, Msg::Attach {
-        fid: 0, afid: NO_FID, uname: "test".into(), aname: "".into(),
-    }).await.unwrap();
+    let _ = rpc(
+        &conn,
+        MsgType::Tattach,
+        2,
+        Msg::Attach {
+            fid: 0,
+            afid: NO_FID,
+            uname: "test".into(),
+            aname: "".into(),
+        },
+    )
+    .await
+    .unwrap();
 
     // Bind persistent push stream.
-    let r = rpc(&conn, MsgType::Tquicstream, 3, Msg::Quicstream {
-        stream_type: 2, stream_id: 0,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Tquicstream,
+        3,
+        Msg::Quicstream {
+            stream_type: 2,
+            stream_id: 0,
+        },
+    )
+    .await
+    .unwrap();
     let alias = match r.msg {
         Msg::Rquicstream { stream_id } => stream_id,
         other => panic!("expected Rquicstream, got {other:?}"),
@@ -1431,11 +2429,18 @@ async fn test_quicstream_push_persistence_via_twatch() {
     // Register a watch on the root (fid=0 points at the export root, i.e.
     // the tempdir). Non-recursive is fine — we create files directly in
     // the watched dir.
-    let r = rpc(&conn, MsgType::Twatch, 4, Msg::Watch {
-        fid: 0,
-        mask: WATCH_CREATE | WATCH_MODIFY,
-        flags: 0,
-    }).await.unwrap();
+    let r = rpc(
+        &conn,
+        MsgType::Twatch,
+        4,
+        Msg::Watch {
+            fid: 0,
+            mask: WATCH_CREATE | WATCH_MODIFY,
+            flags: 0,
+        },
+    )
+    .await
+    .unwrap();
     let watch_id = match r.msg {
         Msg::Rwatch { watch_id } => watch_id,
         other => panic!("expected Rwatch, got {other:?}"),
@@ -1453,10 +2458,10 @@ async fn test_quicstream_push_persistence_via_twatch() {
     // Tquicstream bind, but quinn typically surfaces it to the peer only
     // after the first STREAM frame is sent — so we trigger an event
     // first. Cap the wait at a few seconds in case inotify is lagging.
-    let mut recv = tokio::time::timeout(
-        Duration::from_secs(5),
-        conn.accept_uni(),
-    ).await.expect("accept_uni timed out").expect("accept_uni errored");
+    let mut recv = tokio::time::timeout(Duration::from_secs(5), conn.accept_uni())
+        .await
+        .expect("accept_uni timed out")
+        .expect("accept_uni errored");
 
     // The accepted stream must be the one Tquicstream bound to.
     assert_eq!(
@@ -1466,10 +2471,9 @@ async fn test_quicstream_push_persistence_via_twatch() {
     );
 
     // Read the first Rnotify.
-    let fc1 = tokio::time::timeout(
-        Duration::from_secs(2),
-        read_push_frame(&mut recv),
-    ).await.expect("first push read timed out");
+    let fc1 = tokio::time::timeout(Duration::from_secs(2), read_push_frame(&mut recv))
+        .await
+        .expect("first push read timed out");
     match fc1.msg {
         Msg::Notify { watch_id: wid, .. } => {
             assert_eq!(wid, watch_id, "first Rnotify carries our watch_id");
@@ -1482,10 +2486,9 @@ async fn test_quicstream_push_persistence_via_twatch() {
     // read_exact would block forever (nothing arrives on this stream),
     // so the timeout is what proves persistence.
     std::fs::File::create(dir.path().join("second.txt")).unwrap();
-    let fc2 = tokio::time::timeout(
-        Duration::from_secs(5),
-        read_push_frame(&mut recv),
-    ).await.expect("second push did not arrive on the persistent stream");
+    let fc2 = tokio::time::timeout(Duration::from_secs(5), read_push_frame(&mut recv))
+        .await
+        .expect("second push did not arrive on the persistent stream");
     match fc2.msg {
         Msg::Notify { watch_id: wid, .. } => {
             assert_eq!(wid, watch_id, "second Rnotify carries our watch_id");
@@ -1502,14 +2505,31 @@ async fn test_quicstream_eopnotsupp_without_cap() {
 
     // Complete Tversion but negotiate an empty cap list — the server
     // must NOT include CAP_QUIC_MULTI in the session's negotiated set.
-    let _ = rpc(&conn, MsgType::Tversion, 0, Msg::Version {
-        msize: 65536, version: VERSION_9P2000_N.into(),
-    }).await.unwrap();
-    let _ = rpc(&conn, MsgType::Tcaps, 1, Msg::Caps { caps: vec![] }).await.unwrap();
+    let _ = rpc(
+        &conn,
+        MsgType::Tversion,
+        0,
+        Msg::Version {
+            msize: 65536,
+            version: VERSION_9P2000_N.into(),
+        },
+    )
+    .await
+    .unwrap();
+    let _ = rpc(&conn, MsgType::Tcaps, 1, Msg::Caps { caps: vec![] })
+        .await
+        .unwrap();
 
-    let r = rpc_raw(&conn, MsgType::Tquicstream, 2, Msg::Quicstream {
-        stream_type: 2, stream_id: 0,
-    }).await;
+    let r = rpc_raw(
+        &conn,
+        MsgType::Tquicstream,
+        2,
+        Msg::Quicstream {
+            stream_type: 2,
+            stream_id: 0,
+        },
+    )
+    .await;
     match r.msg {
         Msg::Lerror { ecode } => {
             assert_eq!(ecode, libc::EOPNOTSUPP as u32);
@@ -1531,23 +2551,41 @@ async fn test_attach_rejects_anonymous_when_strict() {
         allow_anonymous_attach: false,
         ..test_config()
     };
-    let (addr, certs) = start_exporter_with_config(
-        dir.path().to_str().unwrap(),
-        strict_config,
-    ).await;
+    let (addr, certs) =
+        start_exporter_with_config(dir.path().to_str().unwrap(), strict_config).await;
     let conn = connect(addr, &certs).await;
 
-    rpc(&conn, MsgType::Tversion, 0, Msg::Version {
-        msize: 65536,
-        version: VERSION_9P2000_N.into(),
-    }).await.unwrap();
+    rpc(
+        &conn,
+        MsgType::Tversion,
+        0,
+        Msg::Version {
+            msize: 65536,
+            version: VERSION_9P2000_N.into(),
+        },
+    )
+    .await
+    .unwrap();
 
-    let r = rpc_raw(&conn, MsgType::Tattach, 1, Msg::Attach {
-        fid: 0, afid: NO_FID, uname: "anon".into(), aname: "".into(),
-    }).await;
+    let r = rpc_raw(
+        &conn,
+        MsgType::Tattach,
+        1,
+        Msg::Attach {
+            fid: 0,
+            afid: NO_FID,
+            uname: "anon".into(),
+            aname: "".into(),
+        },
+    )
+    .await;
     match r.msg {
         Msg::Lerror { ecode } => {
-            assert_eq!(ecode, libc::EACCES as u32, "expected EACCES, got errno={ecode}");
+            assert_eq!(
+                ecode,
+                libc::EACCES as u32,
+                "expected EACCES, got errno={ecode}"
+            );
         }
         other => panic!("expected Rlerror(EACCES), got {other:?}"),
     }

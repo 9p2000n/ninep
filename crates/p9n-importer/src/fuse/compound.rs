@@ -53,15 +53,10 @@ pub fn decode_subop(op: &SubOp) -> Result<Fcall, RpcError> {
 }
 
 /// Send a Tcompound and return the response SubOps.
-pub async fn send_compound(
-    rpc: &RpcClient,
-    ops: Vec<SubOp>,
-) -> Result<Vec<SubOp>, RpcError> {
+pub async fn send_compound(rpc: &RpcClient, ops: Vec<SubOp>) -> Result<Vec<SubOp>, RpcError> {
     let nops = ops.len();
     tracing::trace!(nops, "compound send");
-    let resp = rpc
-        .call(MsgType::Tcompound, Msg::Compound { ops })
-        .await?;
+    let resp = rpc.call(MsgType::Tcompound, Msg::Compound { ops }).await?;
     match resp.msg {
         Msg::Rcompound { results } => {
             tracing::trace!(nops, nresults = results.len(), "compound recv");

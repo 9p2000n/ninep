@@ -8,11 +8,11 @@ use dashmap::DashMap;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use p9n_proto::types::*;
 use p9n_proto::wire::Qid;
+use parking_lot::Mutex;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 /// Counters shared between the manager and the OS-watcher callback.
@@ -90,18 +90,16 @@ pub struct WatchManager {
 
 impl WatchManager {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let path_watches: Arc<DashMap<PathBuf, Vec<WatchRegistration>>> =
-            Arc::new(DashMap::new());
+        let path_watches: Arc<DashMap<PathBuf, Vec<WatchRegistration>>> = Arc::new(DashMap::new());
         let counters = Arc::new(WatchCounters::default());
 
         let pw_clone = path_watches.clone();
         let cnt_clone = counters.clone();
-        let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            match res {
+        let watcher =
+            notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
                 Ok(event) => dispatch_event(&pw_clone, &cnt_clone, &event),
                 Err(e) => tracing::warn!(error = %e, "notify watcher reported error"),
-            }
-        })?;
+            })?;
 
         Ok(Self {
             path_watches,
@@ -141,11 +139,7 @@ impl WatchManager {
         self.path_watches
             .entry(canonical.clone())
             .or_default()
-            .push(WatchRegistration {
-                watch_id,
-                mask,
-                tx,
-            });
+            .push(WatchRegistration { watch_id, mask, tx });
 
         self.id_to_path.insert(watch_id, canonical.clone());
 
@@ -244,7 +238,10 @@ impl WatchManager {
             let _ = self.remove_watch(watch_id);
         }
         if n > 0 {
-            tracing::debug!(removed = n, "watch remove_all_for_sender (connection cleanup)");
+            tracing::debug!(
+                removed = n,
+                "watch remove_all_for_sender (connection cleanup)"
+            );
         }
     }
 }

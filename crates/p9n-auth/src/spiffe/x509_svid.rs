@@ -1,16 +1,16 @@
 //! X.509-SVID loading and SPIFFE ID extraction.
 //! SVID rotation is handled by cert_resolver.rs + workload_api.rs FileWatch.
 
-use crate::error::AuthError;
 use super::SpiffeIdentity;
+use crate::error::AuthError;
 use std::fs;
 
 /// Load an X.509-SVID from PEM cert + key files.
 pub fn load_svid(cert_path: &str, key_path: &str) -> Result<SpiffeIdentity, AuthError> {
-    let cert_pem = fs::read(cert_path)
-        .map_err(|e| AuthError::CertificateLoad(format!("{cert_path}: {e}")))?;
-    let key_pem = fs::read(key_path)
-        .map_err(|e| AuthError::CertificateLoad(format!("{key_path}: {e}")))?;
+    let cert_pem =
+        fs::read(cert_path).map_err(|e| AuthError::CertificateLoad(format!("{cert_path}: {e}")))?;
+    let key_pem =
+        fs::read(key_path).map_err(|e| AuthError::CertificateLoad(format!("{key_path}: {e}")))?;
 
     // Parse certificate chain
     let certs: Vec<Vec<u8>> = rustls_pemfile::certs(&mut &cert_pem[..])

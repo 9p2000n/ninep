@@ -116,21 +116,24 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // the listening sockets.
     let mapping_state = load_posix_mapping(&args, &identity)?;
 
-    let mut exporter = p9n_exporter::exporter::Exporter::with_config(
-        args.listen, args.export, auth, config,
-    )?;
+    let mut exporter =
+        p9n_exporter::exporter::Exporter::with_config(args.listen, args.export, auth, config)?;
 
     if let Some(state) = mapping_state {
         exporter.set_posix_mapping(std::sync::Arc::new(state));
     }
 
     if let Some(tcp_addr) = args.tcp_listen {
-        exporter.enable_tcp(tcp_addr, &identity, &trust_store).await?;
+        exporter
+            .enable_tcp(tcp_addr, &identity, &trust_store)
+            .await?;
     }
 
     #[cfg(feature = "rdma")]
     if let Some(rdma_addr) = args.rdma_listen {
-        exporter.enable_rdma(rdma_addr, &identity, &trust_store, args.rdma_device).await?;
+        exporter
+            .enable_rdma(rdma_addr, &identity, &trust_store, args.rdma_device)
+            .await?;
     }
 
     tracing::info!(
@@ -152,16 +155,17 @@ fn init() {
 
 // ── Authentication ──
 
-async fn load_auth(
-    args: &Args,
-) -> Result<p9n_auth::SpiffeAuth, Box<dyn std::error::Error>> {
+async fn load_auth(args: &Args) -> Result<p9n_auth::SpiffeAuth, Box<dyn std::error::Error>> {
     #[cfg(feature = "workload-api")]
     if let Some(ref socket) = args.spiffe_agent_socket {
-        return Ok(p9n_auth::SpiffeAuth::from_workload_api(socket).await
+        return Ok(p9n_auth::SpiffeAuth::from_workload_api(socket)
+            .await
             .map_err(|e| format!("workload API: {e}"))?);
     }
-    Ok(p9n_auth::SpiffeAuth::from_pem_files(&args.cert, &args.key, &args.ca)
-        .map_err(|e| format!("auth: {e}"))?)
+    Ok(
+        p9n_auth::SpiffeAuth::from_pem_files(&args.cert, &args.key, &args.ca)
+            .map_err(|e| format!("auth: {e}"))?,
+    )
 }
 
 // ── JWT trust bundles ──
@@ -175,9 +179,9 @@ fn load_posix_mapping(
 {
     match (&args.posix_mapping_bundle, &args.posix_mapping_jwks) {
         (None, None) => Ok(None),
-        (Some(_), None) | (None, Some(_)) => Err(
-            "--posix-mapping-bundle and --posix-mapping-jwks must be set together".into(),
-        ),
+        (Some(_), None) | (None, Some(_)) => {
+            Err("--posix-mapping-bundle and --posix-mapping-jwks must be set together".into())
+        }
         (Some(bundle), Some(jwks)) => {
             let state = p9n_exporter::posix_mapping_state::PosixMappingState::load_from_files(
                 std::path::Path::new(bundle),
@@ -198,8 +202,7 @@ fn load_jwt_keys(
         let (domain, path) = entry
             .split_once('=')
             .ok_or_else(|| format!("invalid --jwt-keys format: {entry} (expected domain=path)"))?;
-        let json = std::fs::read(path)
-            .map_err(|e| format!("read JWK file {path}: {e}"))?;
+        let json = std::fs::read(path).map_err(|e| format!("read JWK file {path}: {e}"))?;
         let jwk_set = p9n_auth::spiffe::jwt_svid::JwkSet::from_json(&json)
             .map_err(|e| format!("parse JWK file {path}: {e}"))?;
         auth.trust_store.set_jwt_keys(domain, jwk_set);

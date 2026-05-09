@@ -13,9 +13,9 @@ use dashmap::DashMap;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::tag::TagAllocator;
 use p9n_proto::types::MsgType;
+use p9n_transport::rdma::config::RdmaConnection;
 use p9n_transport::rdma::mr_pool::{LeasedSlot, MrPool};
 use p9n_transport::rdma::RdmaTransport;
-use p9n_transport::rdma::config::RdmaConnection;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -77,11 +77,7 @@ impl RdmaRpcClient {
     ///
     /// For Twrite: if an RDMA write token is registered, data is copied
     /// into the local RDMA buffer and the Twrite payload is sent empty.
-    pub async fn call(
-        &self,
-        msg_type: MsgType,
-        msg: Msg,
-    ) -> Result<Fcall, RpcError> {
+    pub async fn call(&self, msg_type: MsgType, msg: Msg) -> Result<Fcall, RpcError> {
         // Phase 3: RDMA-optimized Tread/Twrite.
         match (&msg, msg_type) {
             (Msg::Read { fid, .. }, MsgType::Tread) => {
@@ -102,15 +98,19 @@ impl RdmaRpcClient {
     }
 
     /// Standard RPC call (no RDMA optimization).
-    async fn call_inner(
-        &self,
-        msg_type: MsgType,
-        msg: Msg,
-    ) -> Result<Fcall, RpcError> {
-        let guard = self.tags.alloc_guard().ok_or(RpcError::from("tag pool exhausted"))?;
+    async fn call_inner(&self, msg_type: MsgType, msg: Msg) -> Result<Fcall, RpcError> {
+        let guard = self
+            .tags
+            .alloc_guard()
+            .ok_or(RpcError::from("tag pool exhausted"))?;
         let tag = guard.tag();
 
-        let fc = Fcall { size: 0, msg_type, tag, msg };
+        let fc = Fcall {
+            size: 0,
+            msg_type,
+            tag,
+            msg,
+        };
         let mt_name = msg_type.name();
         let conn_id = self.conn_id;
         tracing::trace!(conn_id, tag, msg_type = mt_name, "rdma rpc send");
@@ -121,7 +121,8 @@ impl RdmaRpcClient {
         })?;
 
         tracing::trace!(
-            conn_id, tag,
+            conn_id,
+            tag,
             msg_type = mt_name,
             resp = response.msg_type.name(),
             "rdma rpc recv",
@@ -130,7 +131,9 @@ impl RdmaRpcClient {
 
         match &response.msg {
             Msg::Lerror { ecode } => Err(RpcError::NineP { ecode: *ecode }),
-            Msg::Error { ename } => Err(RpcError::NinePString { ename: ename.clone() }),
+            Msg::Error { ename } => Err(RpcError::NinePString {
+                ename: ename.clone(),
+            }),
             _ => Ok(response),
         }
     }
@@ -150,7 +153,10 @@ impl RdmaRpcClient {
         };
 
         tracing::debug!(
-            conn_id = self.conn_id, fid, offset, count,
+            conn_id = self.conn_id,
+            fid,
+            offset,
+            count,
             "rdma read (RDMA Write path)",
         );
 
@@ -197,7 +203,9 @@ impl RdmaRpcClient {
         };
 
         tracing::debug!(
-            conn_id = self.conn_id, fid, offset,
+            conn_id = self.conn_id,
+            fid,
+            offset,
             len = data.len(),
             "rdma write (RDMA Read path)",
         );
@@ -209,28 +217,29 @@ impl RdmaRpcClient {
         }
 
         // Send Twrite with empty data — server will RDMA Read.
-        self.call_inner(MsgType::Twrite, Msg::Write {
-            fid,
-            offset,
-            data: Vec::new(),
-        }).await
+        self.call_inner(
+            MsgType::Twrite,
+            Msg::Write {
+                fid,
+                offset,
+                data: Vec::new(),
+            },
+        )
+        .await
     }
 
     /// Register an RDMA token for a fid.
     ///
     /// Allocates a buffer from the data pool and sends Trdmatoken to the
     /// server with the buffer's rkey/addr/length.
-    pub async fn register_rdma_token(
-        &self,
-        fid: u32,
-        direction: u8,
-    ) -> Result<(), RpcError> {
+    pub async fn register_rdma_token(&self, fid: u32, direction: u8) -> Result<(), RpcError> {
         let pool = match &self.data_pool {
             Some(p) => p,
             None => return Ok(()), // No data pool — silently skip.
         };
 
-        let slot = pool.checkout()
+        let slot = pool
+            .checkout()
             .ok_or_else(|| RpcError::from("RDMA data pool exhausted"))?;
 
         let rkey = pool.rkey();
@@ -238,28 +247,39 @@ impl RdmaRpcClient {
         let length = slot.len() as u32;
 
         tracing::debug!(
-            conn_id = self.conn_id, fid, direction, rkey,
-            addr = format_args!("{:#x}", addr), length,
+            conn_id = self.conn_id,
+            fid,
+            direction,
+            rkey,
+            addr = format_args!("{:#x}", addr),
+            length,
             "registering RDMA token",
         );
 
         let leased = slot.leak();
 
         // Send Trdmatoken to the server.
-        let resp = self.call_inner(MsgType::Trdmatoken, Msg::Rdmatoken {
-            fid,
-            direction,
-            rkey,
-            addr,
-            length,
-        }).await?;
+        let resp = self
+            .call_inner(
+                MsgType::Trdmatoken,
+                Msg::Rdmatoken {
+                    fid,
+                    direction,
+                    rkey,
+                    addr,
+                    length,
+                },
+            )
+            .await?;
 
         match resp.msg {
             Msg::Rrdmatoken { .. } => {
                 // Token accepted. Store the buffer mapping.
                 self.fid_buffers.insert(fid, leased);
                 tracing::info!(
-                    conn_id = self.conn_id, fid, direction,
+                    conn_id = self.conn_id,
+                    fid,
+                    direction,
                     active_tokens = self.fid_buffers.len(),
                     "RDMA token registered",
                 );
@@ -268,7 +288,11 @@ impl RdmaRpcClient {
             _ => {
                 // Token rejected. Return the slot.
                 leased.return_to_pool();
-                tracing::warn!(conn_id = self.conn_id, fid, "RDMA token registration rejected");
+                tracing::warn!(
+                    conn_id = self.conn_id,
+                    fid,
+                    "RDMA token registration rejected"
+                );
                 Err(RpcError::from("unexpected Rrdmatoken response"))
             }
         }
@@ -279,7 +303,8 @@ impl RdmaRpcClient {
         if let Some((_, leased)) = self.fid_buffers.remove(&fid) {
             leased.return_to_pool();
             tracing::debug!(
-                conn_id = self.conn_id, fid,
+                conn_id = self.conn_id,
+                fid,
                 active_tokens = self.fid_buffers.len(),
                 "RDMA token deregistered",
             );

@@ -4,12 +4,12 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::unknown_fid;
 use crate::watch_manager::WatchEvent;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use crate::util::unknown_fid;
 
 pub fn handle<B: Backend>(
     session: &Session<B::Handle>,
@@ -27,14 +27,18 @@ pub fn handle<B: Backend>(
             };
 
             tracing::debug!(
-                tag, fid,
+                tag,
+                fid,
                 mask = format_args!("{:#x}", mask),
                 flags = format_args!("{:#x}", flags),
                 "Twatch received",
             );
 
             // Resolve the fid to a filesystem path
-            let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Twatch"))?;
+            let fid_state = session
+                .fids
+                .get(fid)
+                .ok_or_else(|| unknown_fid(fid, "Twatch"))?;
             let path = fid_state.path.clone();
             drop(fid_state);
 
@@ -42,7 +46,9 @@ pub fn handle<B: Backend>(
             let resolved = ctx.backend.resolve(&path)?;
 
             // Register the watch
-            let watch_id = ctx.watch_mgr.add_watch(&resolved, mask, flags, watch_tx.clone())?;
+            let watch_id = ctx
+                .watch_mgr
+                .add_watch(&resolved, mask, flags, watch_tx.clone())?;
             session.add_watch_id(watch_id);
 
             tracing::info!(
@@ -75,7 +81,8 @@ pub fn handle<B: Backend>(
             session.remove_watch_id(watch_id);
 
             tracing::info!(
-                tag, watch_id,
+                tag,
+                watch_id,
                 active_watches = session.watch_id_list().len(),
                 "Tunwatch removed",
             );

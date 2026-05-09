@@ -3,11 +3,11 @@ use crate::fid_table::FidState;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use p9n_proto::wire::Qid;
 use std::sync::Arc;
-use crate::util::{join_err, unknown_fid};
 
 pub async fn handle<B: Backend>(
     session: &Session<B::Handle>,
@@ -37,7 +37,8 @@ pub async fn handle<B: Backend>(
     }
 
     // Check walk depth limit (policy-level)
-    ctx.access.check_depth(session.spiffe_id.as_deref(), wnames.len() as u16)?;
+    ctx.access
+        .check_depth(session.spiffe_id.as_deref(), wnames.len() as u16)?;
 
     // Check cap-bound walk depth and compute the cap to inherit on
     // newfid. Closes audit finding H-2: previously CapToken.depth was
@@ -47,13 +48,19 @@ pub async fn handle<B: Backend>(
     // The cap propagates to newfid with depth reduced by wnames.len().
     let inherit_cap = session.check_walk_cap(fid, wnames.len() as u16)?;
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Twalk"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Twalk"))?;
     let current_path = fid_state.path.clone();
     drop(fid_state);
 
     // Walk with zero names: clone the fid (no I/O needed)
     if wnames.is_empty() {
-        let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Twalk"))?;
+        let fid_state = session
+            .fids
+            .get(fid)
+            .ok_or_else(|| unknown_fid(fid, "Twalk"))?;
         let path = fid_state.path.clone();
         let qid = fid_state.qid.clone();
         let is_dir = fid_state.is_dir;
@@ -108,7 +115,10 @@ pub async fn handle<B: Backend>(
                         i,
                         name.clone(),
                         target,
-                        std::io::Error::new(e.kind(), format!("{}: {e}", current.join(name).display())),
+                        std::io::Error::new(
+                            e.kind(),
+                            format!("{}: {e}", current.join(name).display()),
+                        ),
                     ));
                 }
             }

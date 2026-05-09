@@ -145,7 +145,9 @@ impl MappingBundle {
                 | jsonwebtoken::Algorithm::HS384
                 | jsonwebtoken::Algorithm::HS512
         ) {
-            return Err(invalid("HMAC algorithms are not permitted for mapping bundles"));
+            return Err(invalid(
+                "HMAC algorithms are not permitted for mapping bundles",
+            ));
         }
 
         // Verify signature only; we run our own structural validation.
@@ -171,7 +173,10 @@ impl MappingBundle {
             }
         }
 
-        Ok(MappingBundle { payload, by_spiffe_id })
+        Ok(MappingBundle {
+            payload,
+            by_spiffe_id,
+        })
     }
 
     /// Look up a workload's raw bundle entry.
@@ -192,12 +197,24 @@ impl MappingBundle {
         })
     }
 
-    pub fn serial(&self) -> u64 { self.payload.serial }
-    pub fn issued_at(&self) -> u64 { self.payload.issued_at }
-    pub fn not_after(&self) -> u64 { self.payload.not_after }
-    pub fn trust_domain(&self) -> &str { &self.payload.trust_domain }
-    pub fn entry_count(&self) -> usize { self.payload.entries.len() }
-    pub fn is_expired(&self, now: u64) -> bool { self.payload.not_after <= now }
+    pub fn serial(&self) -> u64 {
+        self.payload.serial
+    }
+    pub fn issued_at(&self) -> u64 {
+        self.payload.issued_at
+    }
+    pub fn not_after(&self) -> u64 {
+        self.payload.not_after
+    }
+    pub fn trust_domain(&self) -> &str {
+        &self.payload.trust_domain
+    }
+    pub fn entry_count(&self) -> usize {
+        self.payload.entries.len()
+    }
+    pub fn is_expired(&self, now: u64) -> bool {
+        self.payload.not_after <= now
+    }
 }
 
 fn validate_payload(
@@ -302,7 +319,9 @@ mod tests {
     }
 
     fn signer_jwk_set(use_: Option<&str>) -> JwkSet {
-        JwkSet { keys: vec![signer_jwk(use_)] }
+        JwkSet {
+            keys: vec![signer_jwk(use_)],
+        }
     }
 
     fn sign(payload: &BundlePayload) -> Vec<u8> {
@@ -373,7 +392,9 @@ mod tests {
             500,
         )
         .unwrap();
-        let alice = bundle.lookup("spiffe://example.com/workloads/alice").unwrap();
+        let alice = bundle
+            .lookup("spiffe://example.com/workloads/alice")
+            .unwrap();
         assert_eq!(alice.uid, 1_048_577);
         assert_eq!(alice.gid, 1_048_577);
         assert_eq!(alice.groups, vec![1_048_577, 2_097_152]);
@@ -453,13 +474,8 @@ mod tests {
     fn rejects_jwk_without_p9n_mapping_use() {
         let p = good_payload();
         let jws = sign(&p);
-        let err = MappingBundle::load_and_verify(
-            &jws,
-            &signer_jwk_set(None),
-            "example.com",
-            500,
-        )
-        .unwrap_err();
+        let err = MappingBundle::load_and_verify(&jws, &signer_jwk_set(None), "example.com", 500)
+            .unwrap_err();
         assert!(err.to_string().contains("not authorized"), "{err}");
     }
 
@@ -467,13 +483,9 @@ mod tests {
     fn rejects_jwk_with_wrong_use() {
         let p = good_payload();
         let jws = sign(&p);
-        let err = MappingBundle::load_and_verify(
-            &jws,
-            &signer_jwk_set(Some("sig")),
-            "example.com",
-            500,
-        )
-        .unwrap_err();
+        let err =
+            MappingBundle::load_and_verify(&jws, &signer_jwk_set(Some("sig")), "example.com", 500)
+                .unwrap_err();
         assert!(err.to_string().contains("not authorized"), "{err}");
     }
 
@@ -639,7 +651,10 @@ mod tests {
             500,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("unsupported bundle version"), "{err}");
+        assert!(
+            err.to_string().contains("unsupported bundle version"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -651,8 +666,7 @@ mod tests {
         let mut bad = signer_jwk_set(Some(BUNDLE_KEY_USE));
         // Corrupt the y coord.
         bad.keys[0].y = Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
-        let err =
-            MappingBundle::load_and_verify(&jws, &bad, "example.com", 500).unwrap_err();
+        let err = MappingBundle::load_and_verify(&jws, &bad, "example.com", 500).unwrap_err();
         assert!(
             err.to_string().contains("signature/payload decode")
                 || err.to_string().contains("EC key"),

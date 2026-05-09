@@ -1,17 +1,17 @@
 use crate::access::AccessControl;
-use crate::backend::Backend;
 use crate::backend::local::LocalBackend;
+use crate::backend::Backend;
 use crate::heartbeat::Heartbeat;
 use crate::lease_manager::LeaseManager;
 use crate::quic_connection::QuicConnectionHandler;
-use crate::tcp_connection::TcpConnectionHandler;
 #[cfg(feature = "rdma")]
 use crate::rdma_connection::RdmaConnectionHandler;
 use crate::session_store::SessionStore;
 use crate::shared::SharedCtx;
+use crate::tcp_connection::TcpConnectionHandler;
 use crate::watch_manager::WatchManager;
-use p9n_auth::SpiffeAuth;
 use p9n_auth::spiffe::tls_config;
+use p9n_auth::SpiffeAuth;
 use p9n_transport::quic::config;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -43,7 +43,12 @@ impl Exporter<LocalBackend> {
         export: String,
         auth: SpiffeAuth,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::with_config(listen, export, auth, crate::config::ExporterConfig::default())
+        Self::with_config(
+            listen,
+            export,
+            auth,
+            crate::config::ExporterConfig::default(),
+        )
     }
 
     /// Create an exporter with the default local filesystem backend and custom config.
@@ -76,8 +81,8 @@ impl<B: Backend> Exporter<B> {
         let server_spiffe_id = auth.identity.spiffe_id.clone();
         let server_trust_domain = auth.identity.trust_domain.clone();
         let trust_store = auth.trust_store.clone();
-        let cap_signing_key = generate_hmac_key()
-            .map_err(|e| format!("HMAC key generation failed: {e}"))?;
+        let cap_signing_key =
+            generate_hmac_key().map_err(|e| format!("HMAC key generation failed: {e}"))?;
 
         let ctx = Arc::new(SharedCtx {
             backend,
@@ -165,8 +170,8 @@ impl<B: Backend> Exporter<B> {
         &mut self,
         state: std::sync::Arc<crate::posix_mapping_state::PosixMappingState>,
     ) {
-        let ctx = Arc::get_mut(&mut self.ctx)
-            .expect("set_posix_mapping called after ctx was shared");
+        let ctx =
+            Arc::get_mut(&mut self.ctx).expect("set_posix_mapping called after ctx was shared");
         tracing::info!(
             trust_domain = %state.trust_domain,
             entries = state.entry_count(),
@@ -210,8 +215,8 @@ impl<B: Backend> Exporter<B> {
         self.spawn_mapping_reload_task();
 
         let mut handlers = JoinSet::new();
-        let mut sigterm = signal(SignalKind::terminate())
-            .expect("failed to register SIGTERM handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
 
         loop {
             tokio::select! {
@@ -298,7 +303,10 @@ impl<B: Backend> Exporter<B> {
         if active > 0 {
             tracing::info!("waiting for {active} connection(s) to drain...");
             let drain = async { while handlers.join_next().await.is_some() {} };
-            if tokio::time::timeout(Duration::from_secs(10), drain).await.is_err() {
+            if tokio::time::timeout(Duration::from_secs(10), drain)
+                .await
+                .is_err()
+            {
                 tracing::warn!("drain timed out after 10s, aborting remaining handlers");
                 handlers.abort_all();
             }
@@ -356,7 +364,9 @@ impl<B: Backend> Exporter<B> {
     /// exporter; that's also fine because §9 makes mid-session re-uid
     /// impossible anyway.
     fn spawn_mapping_reload_task(&self) {
-        let Some(state) = self.ctx.posix_mapping.clone() else { return };
+        let Some(state) = self.ctx.posix_mapping.clone() else {
+            return;
+        };
         if state.source_path.is_none() {
             return;
         }
@@ -455,7 +465,10 @@ async fn tcp_accept(
     listener: &Option<tokio::net::TcpListener>,
     acceptor: &Option<TlsAcceptor>,
 ) -> Result<
-    (tokio_rustls::server::TlsStream<tokio::net::TcpStream>, std::net::SocketAddr),
+    (
+        tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        std::net::SocketAddr,
+    ),
     Box<dyn std::error::Error>,
 > {
     let (listener, acceptor) = match (listener, acceptor) {
@@ -504,8 +517,7 @@ async fn rdma_accept(
     let (rdma_conn, _session_key, peer_certs) =
         p9n_transport::rdma::config::accept(tcp_stream, acceptor, device_name).await?;
 
-    let (spiffe_id, peer_posix) =
-        crate::util::peer_attrs_from_certs(&peer_certs, posix_mapping);
+    let (spiffe_id, peer_posix) = crate::util::peer_attrs_from_certs(&peer_certs, posix_mapping);
 
     Ok((rdma_conn, spiffe_id, peer_posix, addr))
 }
@@ -526,6 +538,9 @@ mod tests {
         let k1 = generate_hmac_key().expect("csprng available");
         let k2 = generate_hmac_key().expect("csprng available");
         assert_ne!(k1, [0u8; 32], "key must not be all zeros");
-        assert_ne!(k1, k2, "successive keys must differ (CSPRNG, not deterministic)");
+        assert_ne!(
+            k1, k2,
+            "successive keys must differ (CSPRNG, not deterministic)"
+        );
     }
 }

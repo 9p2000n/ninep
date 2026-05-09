@@ -71,11 +71,7 @@ impl P9Filesystem {
             leases.clone(),
         );
 
-        let shutdown = ShutdownHandle::new(
-            rpc.clone(),
-            leases.clone(),
-            inodes.clone(),
-        );
+        let shutdown = ShutdownHandle::new(rpc.clone(), leases.clone(), inodes.clone());
 
         let fs = Self {
             rpc,
@@ -145,11 +141,14 @@ async fn walk_to(
     wnames: Vec<String>,
 ) -> Result<Vec<p9n_proto::wire::Qid>, RpcError> {
     let resp = rpc
-        .call(MsgType::Twalk, Msg::Walk {
-            fid: parent_fid,
-            newfid: new_fid,
-            wnames,
-        })
+        .call(
+            MsgType::Twalk,
+            Msg::Walk {
+                fid: parent_fid,
+                newfid: new_fid,
+                wnames,
+            },
+        )
         .await?;
     match resp.msg {
         Msg::Rwalk { qids } => Ok(qids),
@@ -160,13 +159,20 @@ async fn walk_to(
 /// Getattr on a fid, returning the Stat.
 async fn getattr(rpc: &RpcClient, fid: u32) -> Result<Stat, RpcError> {
     let resp = rpc
-        .call(MsgType::Tgetattr, Msg::Getattr {
-            fid,
-            mask: P9_GETATTR_ALL,
-        })
+        .call(
+            MsgType::Tgetattr,
+            Msg::Getattr {
+                fid,
+                mask: P9_GETATTR_ALL,
+            },
+        )
         .await?;
     match resp.msg {
-        Msg::Rgetattr { valid: _, qid: _, stat } => Ok(stat),
+        Msg::Rgetattr {
+            valid: _,
+            qid: _,
+            stat,
+        } => Ok(stat),
         _ => Err(RpcError::from("bad getattr response")),
     }
 }
@@ -180,18 +186,29 @@ async fn compound_setattr_getattr(
     use crate::fuse::compound::{decode_subop, encode_subop, send_compound};
 
     let set_op = encode_subop(MsgType::Tsetattr, &Msg::Setattr { fid, attr })?;
-    let get_op = encode_subop(MsgType::Tgetattr, &Msg::Getattr {
-        fid,
-        mask: P9_GETATTR_ALL,
-    })?;
+    let get_op = encode_subop(
+        MsgType::Tgetattr,
+        &Msg::Getattr {
+            fid,
+            mask: P9_GETATTR_ALL,
+        },
+    )?;
 
     let results = send_compound(rpc, vec![set_op, get_op]).await?;
 
     // First result: Rsetattr (empty on success, or Rlerror)
-    decode_subop(results.get(0).ok_or(RpcError::from("compound: empty results"))?)?;
+    decode_subop(
+        results
+            .get(0)
+            .ok_or(RpcError::from("compound: empty results"))?,
+    )?;
 
     // Second result: Rgetattr
-    let attr_fc = decode_subop(results.get(1).ok_or(RpcError::from("compound: missing getattr result"))?)?;
+    let attr_fc = decode_subop(
+        results
+            .get(1)
+            .ok_or(RpcError::from("compound: missing getattr result"))?,
+    )?;
     match attr_fc.msg {
         Msg::Rgetattr { stat, .. } => Ok(stat),
         _ => Err(RpcError::from("compound: bad getattr response")),
@@ -207,27 +224,41 @@ async fn compound_walk_getattr(
 ) -> Result<(Vec<p9n_proto::wire::Qid>, Stat), RpcError> {
     use crate::fuse::compound::{decode_subop, encode_subop, send_compound};
 
-    let walk_op = encode_subop(MsgType::Twalk, &Msg::Walk {
-        fid: parent_fid,
-        newfid: new_fid,
-        wnames,
-    })?;
-    let attr_op = encode_subop(MsgType::Tgetattr, &Msg::Getattr {
-        fid: new_fid,
-        mask: P9_GETATTR_ALL,
-    })?;
+    let walk_op = encode_subop(
+        MsgType::Twalk,
+        &Msg::Walk {
+            fid: parent_fid,
+            newfid: new_fid,
+            wnames,
+        },
+    )?;
+    let attr_op = encode_subop(
+        MsgType::Tgetattr,
+        &Msg::Getattr {
+            fid: new_fid,
+            mask: P9_GETATTR_ALL,
+        },
+    )?;
 
     let results = send_compound(rpc, vec![walk_op, attr_op]).await?;
 
     // First result: Rwalk (or Rlerror which decode_subop converts to Err)
-    let walk_fc = decode_subop(results.get(0).ok_or(RpcError::from("compound: empty results"))?)?;
+    let walk_fc = decode_subop(
+        results
+            .get(0)
+            .ok_or(RpcError::from("compound: empty results"))?,
+    )?;
     let qids = match walk_fc.msg {
         Msg::Rwalk { qids } => qids,
         _ => return Err(RpcError::from("compound: bad walk response")),
     };
 
     // Second result: Rgetattr
-    let attr_fc = decode_subop(results.get(1).ok_or(RpcError::from("compound: missing getattr result"))?)?;
+    let attr_fc = decode_subop(
+        results
+            .get(1)
+            .ok_or(RpcError::from("compound: missing getattr result"))?,
+    )?;
     let stat = match attr_fc.msg {
         Msg::Rgetattr { stat, .. } => stat,
         _ => return Err(RpcError::from("compound: bad getattr response")),
@@ -237,11 +268,13 @@ async fn compound_walk_getattr(
 }
 
 impl Filesystem for P9Filesystem {
-    type DirEntryStream<'a> = futures_util::stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntry>>>
+    type DirEntryStream<'a>
+        = futures_util::stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntry>>>
     where
         Self: 'a;
 
-    type DirEntryPlusStream<'a> = futures_util::stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntryPlus>>>
+    type DirEntryPlusStream<'a>
+        = futures_util::stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntryPlus>>>
     where
         Self: 'a;
 
@@ -286,22 +319,36 @@ impl Filesystem for P9Filesystem {
         clunk_old_fid(&self.rpc, result.old_fid);
         let attr = stat_to_attr(result.ino, &stat);
         self.attrs.put(result.ino, stat);
-        Ok(ReplyEntry { ttl: TTL, attr, generation: 0 })
+        Ok(ReplyEntry {
+            ttl: TTL,
+            attr,
+            generation: 0,
+        })
     }
 
     async fn getattr(
-        &self, _req: Request, inode: Inode, _fh: Option<u64>, _flags: u32,
+        &self,
+        _req: Request,
+        inode: Inode,
+        _fh: Option<u64>,
+        _flags: u32,
     ) -> FuseResult<ReplyAttr> {
         tracing::trace!(ino = inode, "fuse getattr");
         // If there's an active lease, trust the cache without TTL checks.
         if self.leases.has_lease(inode) {
             if let Some(stat) = self.attrs.get_leased(inode) {
                 tracing::trace!(ino = inode, "fuse getattr: leased cache hit");
-                return Ok(ReplyAttr { ttl: TTL, attr: stat_to_attr(inode, &stat) });
+                return Ok(ReplyAttr {
+                    ttl: TTL,
+                    attr: stat_to_attr(inode, &stat),
+                });
             }
         } else if let Some(stat) = self.attrs.get(inode) {
             tracing::trace!(ino = inode, "fuse getattr: cache hit");
-            return Ok(ReplyAttr { ttl: TTL, attr: stat_to_attr(inode, &stat) });
+            return Ok(ReplyAttr {
+                ttl: TTL,
+                attr: stat_to_attr(inode, &stat),
+            });
         }
         tracing::trace!(ino = inode, "fuse getattr: cache miss, fetching");
 
@@ -311,11 +358,17 @@ impl Filesystem for P9Filesystem {
         })?;
         let stat = getattr(&self.rpc, fid).await.map_err(rpc_err)?;
         self.attrs.put(inode, stat.clone());
-        Ok(ReplyAttr { ttl: TTL, attr: stat_to_attr(inode, &stat) })
+        Ok(ReplyAttr {
+            ttl: TTL,
+            attr: stat_to_attr(inode, &stat),
+        })
     }
 
     async fn setattr(
-        &self, _req: Request, inode: Inode, _fh: Option<u64>,
+        &self,
+        _req: Request,
+        inode: Inode,
+        _fh: Option<u64>,
         set_attr: fuse3::SetAttr,
     ) -> FuseResult<ReplyAttr> {
         tracing::trace!(ino = inode, "fuse setattr");
@@ -387,7 +440,10 @@ impl Filesystem for P9Filesystem {
             size = stat.size,
             "fuse setattr result",
         );
-        Ok(ReplyAttr { ttl: TTL, attr: stat_to_attr(inode, &stat) })
+        Ok(ReplyAttr {
+            ttl: TTL,
+            attr: stat_to_attr(inode, &stat),
+        })
     }
 
     async fn readlink(&self, _req: Request, inode: Inode) -> FuseResult<ReplyData> {
@@ -396,23 +452,34 @@ impl Filesystem for P9Filesystem {
             tracing::debug!(ino = inode, "fuse readlink rejected: unknown inode");
             Errno::from(libc::ENOENT)
         })?;
-        let resp = self.rpc
+        let resp = self
+            .rpc
             .call(MsgType::Treadlink, Msg::Readlink { fid })
             .await
             .map_err(rpc_err)?;
 
         match resp.msg {
-            Msg::Rreadlink { target } => Ok(ReplyData { data: target.into_bytes().into() }),
+            Msg::Rreadlink { target } => Ok(ReplyData {
+                data: target.into_bytes().into(),
+            }),
             _ => {
-                tracing::debug!(ino = inode, fid, "fuse readlink rejected: unexpected response");
+                tracing::debug!(
+                    ino = inode,
+                    fid,
+                    "fuse readlink rejected: unexpected response"
+                );
                 Err(Errno::from(libc::EIO))
             }
         }
     }
 
     async fn mknod(
-        &self, req: Request, parent: Inode, name: &OsStr,
-        mode: u32, rdev: u32,
+        &self,
+        req: Request,
+        parent: Inode,
+        name: &OsStr,
+        mode: u32,
+        rdev: u32,
     ) -> FuseResult<ReplyEntry> {
         let name_str = name.to_string_lossy().to_string();
         tracing::trace!(
@@ -427,15 +494,19 @@ impl Filesystem for P9Filesystem {
             Errno::from(libc::ENOENT)
         })?;
 
-        let resp = self.rpc
-            .call(MsgType::Tmknod, Msg::Mknod {
-                dfid: parent_fid,
-                name: name_str.clone(),
-                mode,
-                major: (rdev >> 8) & 0xFFF,
-                minor: rdev & 0xFF,
-                gid: self.posix_gid.unwrap_or(req.gid),
-            })
+        let resp = self
+            .rpc
+            .call(
+                MsgType::Tmknod,
+                Msg::Mknod {
+                    dfid: parent_fid,
+                    name: name_str.clone(),
+                    mode,
+                    major: (rdev >> 8) & 0xFFF,
+                    minor: rdev & 0xFF,
+                    gid: self.posix_gid.unwrap_or(req.gid),
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
@@ -454,7 +525,11 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn mkdir(
-        &self, req: Request, parent: Inode, name: &OsStr, mode: u32,
+        &self,
+        req: Request,
+        parent: Inode,
+        name: &OsStr,
+        mode: u32,
         _umask: u32,
     ) -> FuseResult<ReplyEntry> {
         let name_str = name.to_string_lossy().to_string();
@@ -470,12 +545,15 @@ impl Filesystem for P9Filesystem {
         })?;
 
         self.rpc
-            .call(MsgType::Tmkdir, Msg::Mkdir {
-                dfid: parent_fid,
-                name: name_str.clone(),
-                mode,
-                gid: self.posix_gid.unwrap_or(req.gid),
-            })
+            .call(
+                MsgType::Tmkdir,
+                Msg::Mkdir {
+                    dfid: parent_fid,
+                    name: name_str.clone(),
+                    mode,
+                    gid: self.posix_gid.unwrap_or(req.gid),
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
@@ -494,11 +572,14 @@ impl Filesystem for P9Filesystem {
         })?;
 
         self.rpc
-            .call(MsgType::Tunlinkat, Msg::Unlinkat {
-                dirfid: parent_fid,
-                name: name_str.clone(),
-                flags: 0,
-            })
+            .call(
+                MsgType::Tunlinkat,
+                Msg::Unlinkat {
+                    dirfid: parent_fid,
+                    name: name_str.clone(),
+                    flags: 0,
+                },
+            )
             .await
             .map_err(rpc_err)?;
         self.dirs.invalidate(parent);
@@ -515,11 +596,14 @@ impl Filesystem for P9Filesystem {
         })?;
 
         self.rpc
-            .call(MsgType::Tunlinkat, Msg::Unlinkat {
-                dirfid: parent_fid,
-                name: name_str.clone(),
-                flags: libc::AT_REMOVEDIR as u32,
-            })
+            .call(
+                MsgType::Tunlinkat,
+                Msg::Unlinkat {
+                    dirfid: parent_fid,
+                    name: name_str.clone(),
+                    flags: libc::AT_REMOVEDIR as u32,
+                },
+            )
             .await
             .map_err(rpc_err)?;
         self.dirs.invalidate(parent);
@@ -528,7 +612,11 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn symlink(
-        &self, req: Request, parent: Inode, name: &OsStr, link: &OsStr,
+        &self,
+        req: Request,
+        parent: Inode,
+        name: &OsStr,
+        link: &OsStr,
     ) -> FuseResult<ReplyEntry> {
         let name_str = name.to_string_lossy().to_string();
         let link_str = link.to_string_lossy().to_string();
@@ -539,12 +627,15 @@ impl Filesystem for P9Filesystem {
         })?;
 
         self.rpc
-            .call(MsgType::Tsymlink, Msg::Symlink {
-                fid: parent_fid,
-                name: name_str.clone(),
-                symtgt: link_str,
-                gid: self.posix_gid.unwrap_or(req.gid),
-            })
+            .call(
+                MsgType::Tsymlink,
+                Msg::Symlink {
+                    fid: parent_fid,
+                    name: name_str.clone(),
+                    symtgt: link_str,
+                    gid: self.posix_gid.unwrap_or(req.gid),
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
@@ -554,8 +645,12 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn rename(
-        &self, _req: Request, parent: Inode, name: &OsStr,
-        new_parent: Inode, new_name: &OsStr,
+        &self,
+        _req: Request,
+        parent: Inode,
+        name: &OsStr,
+        new_parent: Inode,
+        new_name: &OsStr,
     ) -> FuseResult<()> {
         let old_name_str = name.to_string_lossy().to_string();
         let new_name_str = new_name.to_string_lossy().to_string();
@@ -576,12 +671,15 @@ impl Filesystem for P9Filesystem {
         })?;
 
         self.rpc
-            .call(MsgType::Trenameat, Msg::Renameat {
-                olddirfid: old_dirfid,
-                oldname: old_name_str.clone(),
-                newdirfid: new_dirfid,
-                newname: new_name_str.clone(),
-            })
+            .call(
+                MsgType::Trenameat,
+                Msg::Renameat {
+                    olddirfid: old_dirfid,
+                    oldname: old_name_str.clone(),
+                    newdirfid: new_dirfid,
+                    newname: new_name_str.clone(),
+                },
+            )
             .await
             .map_err(rpc_err)?;
         self.dirs.invalidate(parent);
@@ -599,7 +697,11 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn link(
-        &self, req: Request, inode: Inode, new_parent: Inode, new_name: &OsStr,
+        &self,
+        req: Request,
+        inode: Inode,
+        new_parent: Inode,
+        new_name: &OsStr,
     ) -> FuseResult<ReplyEntry> {
         let name_str = new_name.to_string_lossy().to_string();
         tracing::trace!(ino = inode, new_parent, name = %name_str, "fuse link");
@@ -613,11 +715,14 @@ impl Filesystem for P9Filesystem {
         })?;
 
         self.rpc
-            .call(MsgType::Tlink, Msg::Link {
-                dfid,
-                fid,
-                name: name_str.clone(),
-            })
+            .call(
+                MsgType::Tlink,
+                Msg::Link {
+                    dfid,
+                    fid,
+                    name: name_str.clone(),
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
@@ -627,19 +732,28 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn open(&self, _req: Request, inode: Inode, flags: u32) -> FuseResult<ReplyOpen> {
-        tracing::trace!(ino = inode, flags = format_args!("{:#x}", flags), "fuse open");
+        tracing::trace!(
+            ino = inode,
+            flags = format_args!("{:#x}", flags),
+            "fuse open"
+        );
         let fid = self.inodes.get_fid(inode).ok_or_else(|| {
             tracing::debug!(ino = inode, "fuse open rejected: unknown inode");
             Errno::from(libc::ENOENT)
         })?;
         let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
 
-        walk_to(&self.rpc, fid, guard.fid(), vec![]).await.map_err(rpc_err)?;
+        walk_to(&self.rpc, fid, guard.fid(), vec![])
+            .await
+            .map_err(rpc_err)?;
         self.rpc
-            .call(MsgType::Tlopen, Msg::Lopen {
-                fid: guard.fid(),
-                flags,
-            })
+            .call(
+                MsgType::Tlopen,
+                Msg::Lopen {
+                    fid: guard.fid(),
+                    flags,
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
@@ -654,9 +768,18 @@ impl Filesystem for P9Filesystem {
         } else {
             LEASE_READ
         };
-        if let Ok(resp) = self.rpc.call(MsgType::Tlease, Msg::Lease {
-            fid: open_fid, lease_type, duration: 60,
-        }).await {
+        if let Ok(resp) = self
+            .rpc
+            .call(
+                MsgType::Tlease,
+                Msg::Lease {
+                    fid: open_fid,
+                    lease_type,
+                    duration: 60,
+                },
+            )
+            .await
+        {
             if let Msg::Rlease { lease_id, .. } = resp.msg {
                 self.leases.grant(open_fid, lease_id, inode);
             }
@@ -678,20 +801,32 @@ impl Filesystem for P9Filesystem {
             rdma_dir,
             "fuse open result",
         );
-        Ok(ReplyOpen { fh: open_fid as u64, flags: 0 })
+        Ok(ReplyOpen {
+            fh: open_fid as u64,
+            flags: 0,
+        })
     }
 
     async fn read(
-        &self, _req: Request, _inode: Inode, fh: u64, offset: u64, size: u32,
+        &self,
+        _req: Request,
+        _inode: Inode,
+        fh: u64,
+        offset: u64,
+        size: u32,
     ) -> FuseResult<ReplyData> {
         tracing::trace!(fh, offset, size, "fuse read");
         let fid = fh as u32;
-        let resp = self.rpc
-            .call(MsgType::Tread, Msg::Read {
-                fid,
-                offset,
-                count: size,
-            })
+        let resp = self
+            .rpc
+            .call(
+                MsgType::Tread,
+                Msg::Read {
+                    fid,
+                    offset,
+                    count: size,
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
@@ -705,18 +840,28 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn write(
-        &self, _req: Request, _inode: Inode, fh: u64, offset: u64,
-        data: &[u8], _write_flags: u32, _flags: u32,
+        &self,
+        _req: Request,
+        _inode: Inode,
+        fh: u64,
+        offset: u64,
+        data: &[u8],
+        _write_flags: u32,
+        _flags: u32,
     ) -> FuseResult<ReplyWrite> {
         let len = data.len();
         tracing::trace!(fh, offset, len, "fuse write");
         let fid = fh as u32;
-        let resp = self.rpc
-            .call(MsgType::Twrite, Msg::Write {
-                fid,
-                offset,
-                data: data.to_vec(),
-            })
+        let resp = self
+            .rpc
+            .call(
+                MsgType::Twrite,
+                Msg::Write {
+                    fid,
+                    offset,
+                    data: data.to_vec(),
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
@@ -740,8 +885,13 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn release(
-        &self, _req: Request, _inode: Inode, fh: u64, _flags: u32,
-        _lock_owner: u64, _flush: bool,
+        &self,
+        _req: Request,
+        _inode: Inode,
+        fh: u64,
+        _flags: u32,
+        _lock_owner: u64,
+        _flush: bool,
     ) -> FuseResult<()> {
         tracing::trace!(fh, "fuse release");
         let fid = fh as u32;
@@ -750,7 +900,10 @@ impl Filesystem for P9Filesystem {
         // Release lease if one was held (returns None if already broken by server).
         let released_lease = self.leases.release_by_fh(fid);
         if let Some(lease_id) = released_lease {
-            let _ = self.rpc.call(MsgType::Tleaseack, Msg::Leaseack { lease_id }).await;
+            let _ = self
+                .rpc
+                .call(MsgType::Tleaseack, Msg::Leaseack { lease_id })
+                .await;
         }
         let _ = self.rpc.call(MsgType::Tclunk, Msg::Clunk { fid }).await;
         tracing::debug!(fh, released_lease = ?released_lease, "fuse release result");
@@ -758,7 +911,11 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn fsync(
-        &self, _req: Request, _inode: Inode, fh: u64, _datasync: bool,
+        &self,
+        _req: Request,
+        _inode: Inode,
+        fh: u64,
+        _datasync: bool,
     ) -> FuseResult<()> {
         tracing::trace!(fh, "fuse fsync");
         let fid = fh as u32;
@@ -771,8 +928,12 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn create(
-        &self, req: Request, parent: Inode, name: &OsStr,
-        mode: u32, flags: u32,
+        &self,
+        req: Request,
+        parent: Inode,
+        name: &OsStr,
+        mode: u32,
+        flags: u32,
     ) -> FuseResult<ReplyCreated> {
         let name_str = name.to_string_lossy().to_string();
         tracing::trace!(
@@ -789,16 +950,22 @@ impl Filesystem for P9Filesystem {
         let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
 
         // Walk to parent to get a new fid for lcreate
-        walk_to(&self.rpc, parent_fid, guard.fid(), vec![]).await.map_err(rpc_err)?;
+        walk_to(&self.rpc, parent_fid, guard.fid(), vec![])
+            .await
+            .map_err(rpc_err)?;
 
-        let resp = self.rpc
-            .call(MsgType::Tlcreate, Msg::Lcreate {
-                fid: guard.fid(),
-                name: name_str.clone(),
-                flags,
-                mode,
-                gid: self.posix_gid.unwrap_or(req.gid),
-            })
+        let resp = self
+            .rpc
+            .call(
+                MsgType::Tlcreate,
+                Msg::Lcreate {
+                    fid: guard.fid(),
+                    name: name_str.clone(),
+                    flags,
+                    mode,
+                    gid: self.posix_gid.unwrap_or(req.gid),
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
@@ -848,12 +1015,22 @@ impl Filesystem for P9Filesystem {
         Ok(ReplyOpen { fh: 0, flags: 0 })
     }
 
-    async fn releasedir(&self, _req: Request, _inode: Inode, _fh: u64, _flags: u32) -> FuseResult<()> {
+    async fn releasedir(
+        &self,
+        _req: Request,
+        _inode: Inode,
+        _fh: u64,
+        _flags: u32,
+    ) -> FuseResult<()> {
         Ok(())
     }
 
     async fn readdir<'a>(
-        &'a self, _req: Request, parent: Inode, _fh: u64, offset: i64,
+        &'a self,
+        _req: Request,
+        parent: Inode,
+        _fh: u64,
+        offset: i64,
     ) -> FuseResult<ReplyDirectory<Self::DirEntryStream<'a>>> {
         tracing::trace!(parent, offset, "fuse readdir");
         if let Some(cached) = self.dirs.get(parent, offset) {
@@ -870,25 +1047,37 @@ impl Filesystem for P9Filesystem {
         })?;
         let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
 
-        walk_to(&self.rpc, fid, guard.fid(), vec![]).await.map_err(rpc_err)?;
+        walk_to(&self.rpc, fid, guard.fid(), vec![])
+            .await
+            .map_err(rpc_err)?;
         self.rpc
-            .call(MsgType::Tlopen, Msg::Lopen {
-                fid: guard.fid(),
-                flags: L_O_RDONLY,
-            })
+            .call(
+                MsgType::Tlopen,
+                Msg::Lopen {
+                    fid: guard.fid(),
+                    flags: L_O_RDONLY,
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
-        let resp = self.rpc
-            .call(MsgType::Treaddir, Msg::Readdir {
-                fid: guard.fid(),
-                offset: offset as u64,
-                count: 65536,
-            })
+        let resp = self
+            .rpc
+            .call(
+                MsgType::Treaddir,
+                Msg::Readdir {
+                    fid: guard.fid(),
+                    offset: offset as u64,
+                    count: 65536,
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
-        let _ = self.rpc.call(MsgType::Tclunk, Msg::Clunk { fid: guard.fid() }).await;
+        let _ = self
+            .rpc
+            .call(MsgType::Tclunk, Msg::Clunk { fid: guard.fid() })
+            .await;
         let _ = guard.consume();
 
         match resp.msg {
@@ -899,9 +1088,14 @@ impl Filesystem for P9Filesystem {
                 if offset == 0 {
                     self.dirs.put(parent, parsed.clone());
                 }
-                tracing::trace!(parent, offset, n = parsed.len(), cached = offset == 0, "fuse readdir result");
-                let entries: Vec<FuseResult<DirectoryEntry>> =
-                    parsed.into_iter().map(Ok).collect();
+                tracing::trace!(
+                    parent,
+                    offset,
+                    n = parsed.len(),
+                    cached = offset == 0,
+                    "fuse readdir result"
+                );
+                let entries: Vec<FuseResult<DirectoryEntry>> = parsed.into_iter().map(Ok).collect();
                 Ok(ReplyDirectory {
                     entries: futures_util::stream::iter(entries),
                 })
@@ -914,7 +1108,12 @@ impl Filesystem for P9Filesystem {
     }
 
     async fn readdirplus<'a>(
-        &'a self, _req: Request, parent: Inode, _fh: u64, offset: u64, _lock_owner: u64,
+        &'a self,
+        _req: Request,
+        parent: Inode,
+        _fh: u64,
+        offset: u64,
+        _lock_owner: u64,
     ) -> FuseResult<ReplyDirectoryPlus<Self::DirEntryPlusStream<'a>>> {
         tracing::trace!(parent, offset, "fuse readdirplus");
         let fid = self.inodes.get_fid(parent).ok_or_else(|| {
@@ -923,32 +1122,45 @@ impl Filesystem for P9Filesystem {
         })?;
         let guard = FidGuard::new(self.fids.alloc(), self.rpc.clone());
 
-        walk_to(&self.rpc, fid, guard.fid(), vec![]).await.map_err(rpc_err)?;
+        walk_to(&self.rpc, fid, guard.fid(), vec![])
+            .await
+            .map_err(rpc_err)?;
         self.rpc
-            .call(MsgType::Tlopen, Msg::Lopen {
-                fid: guard.fid(),
-                flags: L_O_RDONLY,
-            })
+            .call(
+                MsgType::Tlopen,
+                Msg::Lopen {
+                    fid: guard.fid(),
+                    flags: L_O_RDONLY,
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
-        let resp = self.rpc
-            .call(MsgType::Treaddir, Msg::Readdir {
-                fid: guard.fid(),
-                offset,
-                count: 65536,
-            })
+        let resp = self
+            .rpc
+            .call(
+                MsgType::Treaddir,
+                Msg::Readdir {
+                    fid: guard.fid(),
+                    offset,
+                    count: 65536,
+                },
+            )
             .await
             .map_err(rpc_err)?;
 
         let dir_fid = guard.fid();
-        let _ = self.rpc.call(MsgType::Tclunk, Msg::Clunk { fid: dir_fid }).await;
+        let _ = self
+            .rpc
+            .call(MsgType::Tclunk, Msg::Clunk { fid: dir_fid })
+            .await;
         let _ = guard.consume();
 
         match resp.msg {
             Msg::Rreaddir { data } => {
                 let raw_entries = parse_readdir_entries(&data, offset as i64);
-                let mut plus_entries: Vec<FuseResult<DirectoryEntryPlus>> = Vec::with_capacity(raw_entries.len());
+                let mut plus_entries: Vec<FuseResult<DirectoryEntryPlus>> =
+                    Vec::with_capacity(raw_entries.len());
 
                 for entry in raw_entries {
                     // Walk parent→child and getattr to get full attributes
@@ -956,11 +1168,14 @@ impl Filesystem for P9Filesystem {
                     let name_str = entry.name.to_string_lossy().to_string();
                     let attr_result = async {
                         let qids = walk_to(&self.rpc, fid, child_guard.fid(), vec![name_str])
-                            .await.map_err(rpc_err)?;
+                            .await
+                            .map_err(rpc_err)?;
                         if qids.is_empty() {
                             return Err(Errno::from(libc::ENOENT));
                         }
-                        let stat = getattr(&self.rpc, child_guard.fid()).await.map_err(rpc_err)?;
+                        let stat = getattr(&self.rpc, child_guard.fid())
+                            .await
+                            .map_err(rpc_err)?;
                         let walk_qid = qids[0].clone();
                         let child_fid = child_guard.consume();
                         let result = self.inodes.get_or_insert(child_fid, &walk_qid);
@@ -968,7 +1183,8 @@ impl Filesystem for P9Filesystem {
                         let attr = stat_to_attr(result.ino, &stat);
                         self.attrs.put(result.ino, stat);
                         Ok((result.ino, attr))
-                    }.await;
+                    }
+                    .await;
 
                     if let Ok((ino, attr)) = attr_result {
                         plus_entries.push(Ok(DirectoryEntryPlus {
@@ -986,13 +1202,22 @@ impl Filesystem for P9Filesystem {
                     // separate lookup if it needs them.
                 }
 
-                tracing::trace!(parent, offset, n = plus_entries.len(), "fuse readdirplus result");
+                tracing::trace!(
+                    parent,
+                    offset,
+                    n = plus_entries.len(),
+                    "fuse readdirplus result"
+                );
                 Ok(ReplyDirectoryPlus {
                     entries: futures_util::stream::iter(plus_entries),
                 })
             }
             _ => {
-                tracing::debug!(parent, offset, "fuse readdirplus rejected: unexpected response");
+                tracing::debug!(
+                    parent,
+                    offset,
+                    "fuse readdirplus rejected: unexpected response"
+                );
                 Err(Errno::from(libc::EIO))
             }
         }
@@ -1004,16 +1229,22 @@ impl Filesystem for P9Filesystem {
             tracing::debug!(ino = inode, "fuse statfs rejected: unknown inode");
             Errno::from(libc::ENOENT)
         })?;
-        let resp = self.rpc
+        let resp = self
+            .rpc
             .call(MsgType::Tstatfs, Msg::Statfs { fid })
             .await
             .map_err(rpc_err)?;
 
         match resp.msg {
             Msg::Rstatfs { stat } => Ok(ReplyStatFs {
-                blocks: stat.blocks, bfree: stat.bfree, bavail: stat.bavail,
-                files: stat.files, ffree: stat.ffree,
-                bsize: stat.bsize, namelen: stat.namelen, frsize: stat.bsize,
+                blocks: stat.blocks,
+                bfree: stat.bfree,
+                bavail: stat.bavail,
+                files: stat.files,
+                ffree: stat.ffree,
+                bsize: stat.bsize,
+                namelen: stat.namelen,
+                frsize: stat.bsize,
             }),
             _ => {
                 tracing::debug!(ino = inode, "fuse statfs rejected: unexpected response");
@@ -1030,7 +1261,9 @@ fn parse_readdir_entries(data: &[u8], offset: i64) -> Vec<DirectoryEntry> {
     let mut idx = offset;
 
     while pos < data.len() {
-        if pos + 24 > data.len() { break; }
+        if pos + 24 > data.len() {
+            break;
+        }
         // qid: type[1] version[4] path[8] = 13 bytes
         let ino = u64::from_le_bytes(data[pos + 5..pos + 13].try_into().unwrap_or([0; 8]));
         pos += 13;
@@ -1038,10 +1271,14 @@ fn parse_readdir_entries(data: &[u8], offset: i64) -> Vec<DirectoryEntry> {
         pos += 8;
         let dtype = data[pos];
         pos += 1;
-        if pos + 2 > data.len() { break; }
+        if pos + 2 > data.len() {
+            break;
+        }
         let name_len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
         pos += 2;
-        if pos + name_len > data.len() { break; }
+        if pos + name_len > data.len() {
+            break;
+        }
         let name = String::from_utf8_lossy(&data[pos..pos + name_len]).to_string();
         pos += name_len;
 

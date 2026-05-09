@@ -2,10 +2,10 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{fid_not_open, join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::{fid_not_open, join_err, unknown_fid};
 
 /// Handle Tallocate: preallocate file space via fallocate.
 pub async fn handle<B: Backend>(
@@ -24,13 +24,18 @@ pub async fn handle<B: Backend>(
     };
     let tag = fc.tag;
     tracing::debug!(
-        tag, fid,
+        tag,
+        fid,
         mode = format_args!("{:#x}", mode),
-        offset, length,
+        offset,
+        length,
         "Tallocate received",
     );
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tallocate"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tallocate"))?;
     let handle = fid_state
         .handle
         .as_ref()
@@ -39,11 +44,9 @@ pub async fn handle<B: Backend>(
     drop(fid_state);
 
     let ctx = ctx.clone();
-    tokio::task::spawn_blocking(move || {
-        ctx.backend.allocate(&handle, mode, offset, length)
-    })
-    .await
-    .map_err(join_err)??;
+    tokio::task::spawn_blocking(move || ctx.backend.allocate(&handle, mode, offset, length))
+        .await
+        .map_err(join_err)??;
 
     tracing::debug!(tag, fid, offset, length, "Tallocate result");
 

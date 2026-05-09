@@ -1,8 +1,8 @@
 //! X.509 certificate chain verification against trust bundles.
 
-use crate::error::AuthError;
 use super::trust_bundle::TrustBundleStore;
 use super::x509_svid;
+use crate::error::AuthError;
 use rustls::pki_types::{CertificateDer, UnixTime};
 
 /// Result of a successful X.509 chain verification.

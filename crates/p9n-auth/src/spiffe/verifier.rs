@@ -1,7 +1,7 @@
 //! Custom SPIFFE certificate verifier.
 
-use crate::error::AuthError;
 use super::x509_svid;
+use crate::error::AuthError;
 
 /// Verify that a DER certificate contains a valid SPIFFE ID
 /// and belongs to an expected trust domain.

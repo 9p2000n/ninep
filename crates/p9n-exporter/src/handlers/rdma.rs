@@ -9,10 +9,10 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::{RdmaToken, Session};
 use crate::shared::SharedCtx;
+use crate::util::unknown_fid;
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::unknown_fid;
 
 /// Handle Trdmatoken: register client's RDMA buffer for a fid.
 ///
@@ -37,7 +37,8 @@ pub fn handle<H: Send + Sync + 'static>(
     };
     let tag = fc.tag;
     tracing::debug!(
-        tag, fid,
+        tag,
+        fid,
         direction,
         rkey,
         addr = format_args!("{:#x}", addr),
@@ -47,7 +48,12 @@ pub fn handle<H: Send + Sync + 'static>(
 
     // Validate direction: 0 = READ, 1 = WRITE.
     if direction > 1 {
-        tracing::debug!(tag, fid, direction, "Trdmatoken rejected: invalid direction");
+        tracing::debug!(
+            tag,
+            fid,
+            direction,
+            "Trdmatoken rejected: invalid direction"
+        );
         return Err(format!("invalid RDMA direction: {direction}").into());
     }
 
@@ -68,7 +74,8 @@ pub fn handle<H: Send + Sync + 'static>(
     );
 
     tracing::info!(
-        tag, fid,
+        tag,
+        fid,
         direction,
         rkey,
         addr = format_args!("{:#x}", addr),

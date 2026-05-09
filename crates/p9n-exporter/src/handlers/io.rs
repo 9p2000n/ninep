@@ -2,10 +2,10 @@ use crate::backend::Backend;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{fid_not_open, join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use std::sync::Arc;
-use crate::util::{fid_not_open, join_err, unknown_fid};
 
 /// Handle Tlopen: open a file associated with a fid.
 pub async fn handle_lopen<B: Backend>(
@@ -17,9 +17,17 @@ pub async fn handle_lopen<B: Backend>(
         return Err("expected Lopen message".into());
     };
     let tag = fc.tag;
-    tracing::debug!(tag, fid, flags = format_args!("{:#x}", flags), "Tlopen received");
+    tracing::debug!(
+        tag,
+        fid,
+        flags = format_args!("{:#x}", flags),
+        "Tlopen received"
+    );
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tlopen"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tlopen"))?;
     let path = fid_state.path.clone();
     let is_dir = fid_state.is_dir;
     drop(fid_state);
@@ -27,11 +35,10 @@ pub async fn handle_lopen<B: Backend>(
     let msize = session.get_msize();
 
     let ctx = ctx.clone();
-    let (owned_handle, qid) = tokio::task::spawn_blocking(move || {
-        ctx.backend.open(&path, flags, is_dir)
-    })
-    .await
-    .map_err(join_err)??;
+    let (owned_handle, qid) =
+        tokio::task::spawn_blocking(move || ctx.backend.open(&path, flags, is_dir))
+            .await
+            .map_err(join_err)??;
 
     // Update fid with the opened handle
     if let Some(mut fid_state) = session.fids.get_mut(fid) {
@@ -41,7 +48,9 @@ pub async fn handle_lopen<B: Backend>(
     let iounit = msize - 24;
 
     tracing::debug!(
-        tag, fid, is_dir,
+        tag,
+        fid,
+        is_dir,
         qid_path = qid.path,
         iounit,
         "Tlopen result",
@@ -73,7 +82,10 @@ pub async fn handle_read<B: Backend>(
     let tag = fc.tag;
     tracing::trace!(tag, fid, offset, count, "Tread received");
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tread"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tread"))?;
     let handle = fid_state
         .handle
         .as_ref()
@@ -97,9 +109,9 @@ pub async fn handle_read<B: Backend>(
         let total = buf.len() as u32;
 
         // Back-fill the 9P header in-place
-        buf[0..4].copy_from_slice(&total.to_le_bytes());       // size[4]
-        buf[4] = MsgType::Rread as u8;                         // type[1]
-        buf[5..7].copy_from_slice(&tag.to_le_bytes());         // tag[2]
+        buf[0..4].copy_from_slice(&total.to_le_bytes()); // size[4]
+        buf[4] = MsgType::Rread as u8; // type[1]
+        buf[5..7].copy_from_slice(&tag.to_le_bytes()); // tag[2]
         buf[7..11].copy_from_slice(&(n as u32).to_le_bytes()); // data count[4]
 
         Ok::<_, std::io::Error>(buf)
@@ -131,7 +143,10 @@ pub async fn handle_read_fcall<B: Backend>(
     let tag = fc.tag;
     tracing::trace!(tag, fid, offset, count, "Tread received (fcall path)");
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tread"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tread"))?;
     let handle = fid_state
         .handle
         .as_ref()
@@ -140,11 +155,9 @@ pub async fn handle_read_fcall<B: Backend>(
     drop(fid_state);
 
     let ctx = ctx.clone();
-    let data = tokio::task::spawn_blocking(move || {
-        ctx.backend.read(&handle, offset, count)
-    })
-    .await
-    .map_err(join_err)??;
+    let data = tokio::task::spawn_blocking(move || ctx.backend.read(&handle, offset, count))
+        .await
+        .map_err(join_err)??;
 
     tracing::trace!(tag, fid, n = data.len(), "Tread result (fcall path)");
 
@@ -169,7 +182,10 @@ pub async fn handle_write<B: Backend>(
     let data_len = data.len();
     tracing::debug!(tag, fid, offset, len = data_len, "Twrite received");
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Twrite"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Twrite"))?;
     let handle = fid_state
         .handle
         .as_ref()
@@ -182,14 +198,14 @@ pub async fn handle_write<B: Backend>(
     ctx.lease_mgr.break_for_write(qid_path, session.conn_id);
 
     let ctx = ctx.clone();
-    let n = tokio::task::spawn_blocking(move || {
-        ctx.backend.write(&handle, offset, &data)
-    })
-    .await
-    .map_err(join_err)??;
+    let n = tokio::task::spawn_blocking(move || ctx.backend.write(&handle, offset, &data))
+        .await
+        .map_err(join_err)??;
 
     tracing::debug!(
-        tag, fid, offset,
+        tag,
+        fid,
+        offset,
         requested = data_len,
         n,
         short = (n as usize) < data_len,
@@ -216,16 +232,17 @@ pub async fn handle_readlink<B: Backend>(
     let tag = fc.tag;
     tracing::trace!(tag, fid, "Treadlink received");
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Treadlink"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Treadlink"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
     let ctx = ctx.clone();
-    let target_str = tokio::task::spawn_blocking(move || {
-        ctx.backend.readlink(&path)
-    })
-    .await
-    .map_err(join_err)??;
+    let target_str = tokio::task::spawn_blocking(move || ctx.backend.readlink(&path))
+        .await
+        .map_err(join_err)??;
 
     tracing::trace!(tag, fid, target_len = target_str.len(), "Treadlink result");
 
@@ -233,9 +250,7 @@ pub async fn handle_readlink<B: Backend>(
         size: 0,
         msg_type: MsgType::Rreadlink,
         tag,
-        msg: Msg::Rreadlink {
-            target: target_str,
-        },
+        msg: Msg::Rreadlink { target: target_str },
     })
 }
 
@@ -251,18 +266,19 @@ pub async fn handle_fsync<B: Backend>(
     let tag = fc.tag;
     tracing::debug!(tag, fid, "Tfsync received");
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Tfsync"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Tfsync"))?;
     let handle = fid_state.handle.clone();
     drop(fid_state);
 
     let had_handle = handle.is_some();
     if let Some(handle) = handle {
         let ctx = ctx.clone();
-        tokio::task::spawn_blocking(move || {
-            ctx.backend.fsync(&handle)
-        })
-        .await
-        .map_err(join_err)??;
+        tokio::task::spawn_blocking(move || ctx.backend.fsync(&handle))
+            .await
+            .map_err(join_err)??;
     }
 
     tracing::debug!(tag, fid, had_handle, "Tfsync result");

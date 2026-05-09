@@ -1,15 +1,15 @@
 //! SPIFFE workload identity support.
 
-pub mod x509_svid;
-pub mod trust_bundle;
-pub mod tls_config;
-pub mod verifier;
-pub mod jwt_svid;
-pub mod workload_api;
 pub mod cert_resolver;
 pub mod chain_verifier;
-pub mod server_verifier;
+pub mod jwt_svid;
 pub mod posix_mapping;
+pub mod server_verifier;
+pub mod tls_config;
+pub mod trust_bundle;
+pub mod verifier;
+pub mod workload_api;
+pub mod x509_svid;
 
 #[cfg(feature = "workload-api")]
 pub mod grpc;
@@ -77,7 +77,9 @@ impl SpiffeAuth {
 
         let source = workload_api::SvidSource::workload_api(socket_path).await?;
         let identity = source.identity();
-        let trust_store = source.trust_store().unwrap_or_else(trust_bundle::TrustBundleStore::new);
+        let trust_store = source
+            .trust_store()
+            .unwrap_or_else(trust_bundle::TrustBundleStore::new);
 
         let resolver = Arc::new(cert_resolver::SpiffeCertResolver::new(&identity)?);
 

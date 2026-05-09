@@ -8,12 +8,12 @@ use crate::fid_table::FidState;
 use crate::handlers::HandlerResult;
 use crate::session::Session;
 use crate::shared::SharedCtx;
+use crate::util::{join_err, unknown_fid};
 use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::MsgType;
 use p9n_proto::wire::Qid;
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::util::{join_err, unknown_fid};
 
 /// Handle Txattrwalk: create a fid representing an xattr value.
 /// If name is empty, returns the total size of all xattr names (for listxattr).
@@ -34,7 +34,10 @@ pub async fn handle_xattrwalk<B: Backend>(
         "Txattrwalk received",
     );
 
-    let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Txattrwalk"))?;
+    let fid_state = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Txattrwalk"))?;
     let path = fid_state.path.clone();
     drop(fid_state);
 
@@ -48,15 +51,24 @@ pub async fn handle_xattrwalk<B: Backend>(
             // Get mode: return size of specific xattr
             ctx.backend.xattr_size(&path, &xattr_name)
         }
-    }).await.map_err(join_err)??;
+    })
+    .await
+    .map_err(join_err)??;
 
     // Create the new fid as a placeholder for the xattr
-    session.fids.insert(newfid, FidState {
-        path: PathBuf::from(format!("__xattr__:{}", name)),
-        qid: Qid { qtype: 0, version: 0, path: newfid as u64 },
-        handle: None,
-        is_dir: false,
-    });
+    session.fids.insert(
+        newfid,
+        FidState {
+            path: PathBuf::from(format!("__xattr__:{}", name)),
+            qid: Qid {
+                qtype: 0,
+                version: 0,
+                path: newfid as u64,
+            },
+            handle: None,
+            is_dir: false,
+        },
+    );
 
     tracing::debug!(
         tag, fid, newfid,
@@ -67,7 +79,9 @@ pub async fn handle_xattrwalk<B: Backend>(
     );
 
     Ok(Fcall {
-        size: 0, msg_type: MsgType::Rxattrwalk, tag,
+        size: 0,
+        msg_type: MsgType::Rxattrwalk,
+        tag,
         msg: Msg::Rxattrwalk { size: xattr_size },
     })
 }
@@ -77,7 +91,13 @@ pub fn handle_xattrcreate<H: Send + Sync + 'static>(
     session: &Session<H>,
     fc: Fcall,
 ) -> HandlerResult {
-    let Msg::Xattrcreate { fid, name, attr_size, flags } = fc.msg else {
+    let Msg::Xattrcreate {
+        fid,
+        name,
+        attr_size,
+        flags,
+    } = fc.msg
+    else {
         return Err("expected Xattrcreate".into());
     };
     let tag = fc.tag;
@@ -90,13 +110,18 @@ pub fn handle_xattrcreate<H: Send + Sync + 'static>(
     );
 
     // Verify fid exists
-    let _ = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Txattrcreate"))?;
+    let _ = session
+        .fids
+        .get(fid)
+        .ok_or_else(|| unknown_fid(fid, "Txattrcreate"))?;
 
     // The actual xattr write happens via subsequent Twrite + Tclunk.
     // For now, return success (the fid is already set up).
 
     Ok(Fcall {
-        size: 0, msg_type: MsgType::Rxattrcreate, tag,
+        size: 0,
+        msg_type: MsgType::Rxattrcreate,
+        tag,
         msg: Msg::Empty,
     })
 }

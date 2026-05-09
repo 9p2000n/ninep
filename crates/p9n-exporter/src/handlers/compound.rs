@@ -57,7 +57,10 @@ pub async fn handle<B: Backend>(
 
         // Dispatch through normal handler pipeline
         // Box::pin to avoid infinite-sized future from recursive async dispatch
-        let sub_result = Box::pin(crate::handlers::dispatch(session, ctx, watch_tx, push_tx, bind_tx, sub_fc)).await;
+        let sub_result = Box::pin(crate::handlers::dispatch(
+            session, ctx, watch_tx, push_tx, bind_tx, sub_fc,
+        ))
+        .await;
 
         match sub_result {
             Ok(response) => {
@@ -83,7 +86,9 @@ pub async fn handle<B: Backend>(
                     size: 0,
                     msg_type: MsgType::Rlerror,
                     tag: 0,
-                    msg: Msg::Lerror { ecode: crate::util::map_io_error(&*e) },
+                    msg: Msg::Lerror {
+                        ecode: crate::util::map_io_error(&*e),
+                    },
                 };
                 if let Ok(err_op) = encode_subop(&err_fc) {
                     results.push(err_op);
@@ -115,7 +120,10 @@ pub async fn handle<B: Backend>(
 ///
 /// SubOp wire: opsize[4] type[1] payload[opsize-5]
 /// We need to wrap it as: size[4] type[1] tag[2] payload
-fn decode_subop(op: &SubOp, parent_tag: u16) -> Result<Fcall, Box<dyn std::error::Error + Send + Sync>> {
+fn decode_subop(
+    op: &SubOp,
+    parent_tag: u16,
+) -> Result<Fcall, Box<dyn std::error::Error + Send + Sync>> {
     // Build a wire-format message from the SubOp
     let mut buf = Buf::new(HEADER_SIZE + op.payload.len());
     let total_size = (HEADER_SIZE + op.payload.len()) as u32;

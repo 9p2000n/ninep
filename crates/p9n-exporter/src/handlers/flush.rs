@@ -19,7 +19,11 @@ pub fn handle<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) -> Hand
         tag = fc.tag,
         oldtag,
         cancelled,
-        reason = if cancelled { "in-flight cancelled" } else { "already completed or unknown" },
+        reason = if cancelled {
+            "in-flight cancelled"
+        } else {
+            "already completed or unknown"
+        },
         "Tflush",
     );
 
