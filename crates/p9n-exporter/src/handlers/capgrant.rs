@@ -138,7 +138,13 @@ pub fn handle_capuse<B: Backend>(
     })?;
 
     let rights = result.p9n_rights.unwrap_or(0);
-    let depth = result.p9n_depth.unwrap_or(0);
+    // p9n_depth: None or Some(0) → unlimited (preserves the historical
+    // capgrant default). Some(n>0) → n walks remaining from this fid.
+    // See session::CapToken::depth for the full semantics.
+    let depth = match result.p9n_depth {
+        Some(0) | None => None,
+        Some(n) => Some(n),
+    };
     let expiry = result.expiry;
 
     // Store the active capability in the session

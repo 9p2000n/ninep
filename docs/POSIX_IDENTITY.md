@@ -102,12 +102,18 @@ vehicle — both already in the critical path for authentication.
 
 ### 3.1 OID
 
-An Object Identifier under a Private Enterprise Number (PEN) arc
-reserved for the ninep project. The arc is **TBD**: production use
-requires registering a PEN with IANA and allocating a sub-arc
-(e.g., `1.3.6.1.4.1.<pen>.1.1 = p9nPosixIdentity`). Development and
-test builds may use a placeholder OID within the experimental range
-`2.25.*` (UUID-derived, collision-free but unregistered).
+The 9P2000.N project holds IANA Private Enterprise Number **65588**.
+The OID layout used by ninep is:
+
+| OID | Name |
+|---|---|
+| `1.3.6.1.4.1.65588` | PEN root for the project |
+| `1.3.6.1.4.1.65588.1` | sub-arc for X.509 extensions used with SPIFFE SVIDs |
+| `1.3.6.1.4.1.65588.1.1` | `p9nPosixIdentity` |
+
+Future ninep extensions allocate sequentially from
+`1.3.6.1.4.1.65588.1.x`; a registry MUST be maintained alongside the
+OID-to-name constants in `p9n-auth`.
 
 Implementations MUST reject certificates that carry an OID the
 runtime does not recognize — a future v2 extension is expected to use
@@ -218,12 +224,16 @@ Process starts as root (or with the minimal cap set below)
   │     trustDomain is present and disagrees with the SPIFFE URI SAN.
   │
   ├─► setgroups(groups)
-  ├─► setgid(gid)
-  ├─► setuid(uid)          ◄── irreversible; any subsequent setuid
-  │                             attempt within the process fails
+  ├─► setresgid(gid, gid, gid)
+  ├─► setresuid(uid, uid, uid)  ◄── irreversible; any subsequent setuid
+  │                                  attempt within the process fails
+  ├─► prctl(PR_CAP_AMBIENT_CLEAR_ALL)   ◄── explicit ambient drop
+  ├─► capset(0, 0, 0)                   ◄── explicit eff/perm/inh drop
+  │   These two close the file-capability and ambient-set startup
+  │   modes that wouldn't otherwise have their caps auto-cleared by
+  │   setresuid (which only auto-clears when starting as real root).
+  │
   ├─► prctl(PR_SET_NO_NEW_PRIVS, 1)
-  ├─► Drop the capabilities that were only needed for the above
-  │   (CAP_SETUID, CAP_SETGID, CAP_CHOWN, CAP_DAC_OVERRIDE)
   │
   ├─► Mount FUSE
   │     fuse3's `unprivileged` feature delegates to the setuid-root
@@ -279,13 +289,148 @@ wire translation is needed. `Stat.uid/gid` in `Rgetattr` responses
 carry raw numeric values that are meaningful on both sides. The
 importer no longer needs a squashing layer.
 
-The `gid` field in `Tlcreate`/`Tmkdir`/`Tmknod`/`Tsymlink` is currently
-ignored by the exporter. Under this design it continues to be ignored
-when `peer_posix` is present (the authoritative gid comes from the
-extension, not from the message), and continues to be ignored when
-`peer_posix` is absent (the fallback path uses `Policy.gid`). The
-field stays on the wire for protocol compatibility but has no new
-semantics.
+### 5.4 Wire `gid` validation in create operations
+
+The `gid` field in `Tlcreate`/`Tmkdir`/`Tmknod`/`Tsymlink` is
+overconstrained once `peer_posix` is in effect: the authoritative gid
+is already fixed by the SVID, so the wire value cannot be a free
+parameter without contradicting the mapping. We resolve this by
+treating wire `gid` as a *replication* of the authoritative value
+rather than as a hint:
+
+- `peer_posix.is_some()`: wire `gid` MUST equal `peer_posix.gid`.
+  Otherwise the exporter returns `Rlerror` with `EPERM`.
+- `peer_posix.is_none()` and `Policy.gid != 0`: wire `gid` MUST equal
+  `Policy.gid`. Otherwise the exporter returns `Rlerror` with `EPERM`.
+- `peer_posix.is_none()` and `Policy.gid == 0` (no explicit mapping
+  configured for this peer): the exporter has no authoritative
+  reference, so the create operation MUST fail with `Rlerror` `EPERM`.
+  Silently accepting an unverifiable wire value here would re-open
+  the trust gap that the extension is designed to close. Operators
+  who run a single-tenant deployment without `p9nPosixIdentity` MUST
+  configure an explicit static `Policy` (non-zero `uid`/`gid`) to
+  authorize create operations.
+
+The field stays on the wire only for 9P2000.L compatibility. Clients
+MUST replicate the authoritative gid; they MUST NOT vary it. Phase-
+fallback importers are responsible for filling wire `gid` with the
+SVID-derived value when the importer's own `p9nPosixIdentity` is
+present, regardless of the local FUSE caller's process gid — this
+keeps the strict server check passing even when the importer process
+itself has not been `setuid`-ed (i.e., `--setuid-from-svid` is off).
+
+A client that genuinely wants to create a file under a non-primary
+supplementary group MUST do so via `Tsetattr` chgrp after creation,
+not by varying the wire `gid` on the create message. This is
+deliberate: identity flows from the SVID, and the wire is the data
+layer, not the policy layer.
+
+`Tsetattr.uid/gid` are not subject to the strict equality rule —
+chown is by nature a request to *change* ownership — but a separate
+**set-membership and range** rule applies (see §5.5). `Tattach.uname`
+stays unconstrained: it's a free-form human label with no
+operational consequence.
+
+### 5.5 Tsetattr owner validation
+
+When `peer_posix` is in effect, the values carried in
+`Tsetattr.uid/gid` (gated by their respective `valid` bits) are
+constrained as follows:
+
+- `SETATTR_UID` set: `attr.uid` MUST satisfy
+  - `attr.uid == peer_posix.uid` (chown to self / no-op), OR
+  - the caller has `PERM_ADMIN` AND `attr.uid` lies in
+    `[SPIFFE_UID_MIN, SPIFFE_UID_MAX]`.
+- `SETATTR_GID` set: `attr.gid` MUST satisfy
+  - `attr.gid ∈ {peer_posix.gid} ∪ peer_posix.groups` (a group the
+    workload already belongs to — POSIX `chgrp` semantics), OR
+  - the caller has `PERM_ADMIN` AND `attr.gid` lies in the SPIFFE
+    range.
+
+Otherwise the exporter returns `Rlerror` with `EPERM`.
+
+The range guard is the dual of the create-side equality guard
+(§5.4): together they guarantee that no file under a SPIFFE-derived
+deployment can come to be owned by a uid or gid outside the trust
+domain's namespace, even when an admin-privileged client issues an
+explicit chown. This closes the wire-vs-extension range asymmetry
+that would otherwise let a `Tsetattr` carrying `uid=500` slip through
+into a SPIFFE deployment.
+
+When `peer_posix` is absent, the rule is:
+
+- If `Policy` carries an explicit static mapping (`Policy.uid != 0`
+  OR `Policy.gid != 0`): the existing `PERM_ADMIN` gate applies; no
+  range check, preserving compatibility with deployments that
+  intentionally use non-SPIFFE uids.
+- If `Policy` is at its default (`uid == gid == 0`, no static
+  mapping configured): the operation MUST fail with `EPERM`
+  regardless of `PERM_ADMIN`. There is no authoritative reference
+  for what target uids/gids are admissible, and rubber-stamping
+  through `PERM_ADMIN` would re-open the same trust gap the
+  create-side rule (§5.4) closes.
+
+### 5.6 Architectural role: identity label, not access control
+
+It is important to be explicit about what `p9nPosixIdentity` does and
+does not do, because the distinction shapes which threats this design
+defends against and which it leaves to other layers.
+
+**Primary access control boundary: per-workload root.** 9P2000.N's
+access control between workloads is established at the *path* level,
+not the *uid* level. Each workload attaches to a root derived from its
+SPIFFE ID (see `AccessControl::resolve_root` and the `enable_isolation`
+helper). A fid created in workload A's session can never resolve to a
+file in workload B's tree, because every path operation is rooted at
+A's subdirectory and `resolve()` rejects any canonicalised result that
+escapes it. Two workloads sharing the same export simply do not see
+each other's files.
+
+This is a strict invariant. Production deployments MUST configure
+per-workload roots; deployments that share a single root across
+workloads forfeit cross-tenant isolation and SHOULD be treated as
+single-tenant.
+
+**Role of `p9nPosixIdentity`.** Within that path-level boundary, the
+extension supplies a *label*:
+
+- `chown`-on-create writes `peer_posix.uid/gid` into the file's
+  metadata so subsequent `stat` calls return values that are
+  meaningful on both ends of the connection (the original motivation,
+  §1.1).
+- `Tsetattr.uid/gid` is constrained against `peer_posix` (§5.5) so a
+  workload cannot relabel its own files outside the SPIFFE namespace.
+- `Tlcreate/Tmkdir/Tmknod/Tsymlink.gid` is constrained against the
+  authoritative gid (§5.4) so the wire field cannot be a free
+  parameter contradicting the SVID-derived mapping.
+
+What the extension does *not* do is gate per-request read/write
+operations against peer_posix. The exporter process opens files with
+its own credentials; the kernel's POSIX permission check is bypassed
+in the same way any privileged user-space filesystem server bypasses
+it. This is acceptable because the path-level boundary above already
+prevents a workload from ever obtaining a fid that points at another
+workload's file. peer_posix is the label on the file, not the lock.
+
+**Operator responsibilities under this model:**
+
+1. Per-workload roots MUST be strict — derived deterministically from
+   SPIFFE ID, never shared between workloads.
+2. Each workload's root MUST be exclusively populated by the workload
+   itself (or by an operator pre-seed of files owned by that workload's
+   uid). Pre-populating one workload's root with files owned by a
+   different uid would bypass the protection model.
+3. Anonymous attach (no SPIFFE ID on the peer) MUST be refused; an
+   anonymous peer would otherwise resolve to the export root rather
+   than to any specific subdirectory and see the union of all
+   workloads' trees.
+
+Stating this architectural split explicitly avoids a common
+misreading: a future reader looking at the read/write path and seeing
+no per-uid enforcement might conclude `p9nPosixIdentity` is "not
+really enforced." Under the model above, that observation is correct
+but irrelevant — the enforcement happens one layer earlier, at fid
+resolution.
 
 ## 6. Interaction with Existing Access Control
 
@@ -539,12 +684,6 @@ a phase "preferred" importer and vice versa.
 
 ### 11.1 Risks
 
-- **OID allocation**: production use requires a registered PEN. Using
-  a placeholder OID in the meantime creates a migration obligation
-  when the real OID is allocated. Mitigation: the parser reads the
-  OID from a `const` in p9n-auth, so a single-line change plus a
-  release note suffices.
-
 - **SPIRE plugin availability**: the feature is only useful in
   deployments that can configure the SVID-issuance chain. Sites
   using vanilla SPIRE without a custom plugin cannot produce the
@@ -564,12 +703,18 @@ a phase "preferred" importer and vice versa.
   `unprivileged` feature is used. Deployments that mount as real
   root must do so before `setuid`.
 
-- **Capability leakage**: if the importer forgets to drop
-  `CAP_SETUID` after the transition, a compromised importer could
-  `setuid` back to root. Mitigation: enforce
-  `prctl(PR_SET_NO_NEW_PRIVS)` and explicit capability drop in the
-  startup path; cover it with a test that reads `/proc/self/status`
-  after transition.
+- **Capability leakage**: if the importer relied on the kernel's
+  auto-clear of permitted/effective/ambient on root→non-root
+  setresuid, a startup mode that begins non-root with file
+  capabilities or systemd `AmbientCapabilities=` would leave caps
+  intact across the transition. Mitigation: `apply_setuid` now calls
+  `prctl(PR_CAP_AMBIENT_CLEAR_ALL)` and `capset(0, 0, 0)` on all
+  three sets explicitly, immediately after `setresuid` and before
+  `prctl(PR_SET_NO_NEW_PRIVS)`. Both calls are unconditionally
+  permitted (dropping caps never requires `CAP_SETPCAP`). A
+  `/proc/self/status`-reading test running in a privileged CI lane
+  is the natural verification but is gated on a user-namespace
+  harness; see §8.1.
 
 - **Test environment `subuid` availability**: the user namespace
   harness depends on `/etc/subuid` entries. CI images that run as
@@ -579,16 +724,7 @@ a phase "preferred" importer and vice versa.
 
 ### 11.2 Open questions
 
-1. **Groups semantics in 9P2000.N messages**: `Tlcreate` and friends
-   carry a `gid` field but no group list. If a client's workload has
-   supplementary groups, the server cannot honor them via the current
-   message schema. Is this a real limitation or do we only care about
-   primary gid for ownership? The design currently punts: the server
-   uses the extension's primary gid for `chown`, and supplementary
-   groups affect only the importer's own `setgroups` call on its
-   local process.
-
-2. **Per-mount identity scope**: can one importer process serve
+1. **Per-mount identity scope**: can one importer process serve
    multiple FUSE mount points for the same SPIFFE identity? The
    current design answers "yes, as long as they all map to the same
    uid". But if different mounts need different identities, it must
@@ -596,14 +732,14 @@ a phase "preferred" importer and vice versa.
    for simplicity; the former may be revisited if operationally
    painful.
 
-3. **Rotation of the uid itself**: if an SVID is re-issued during
+2. **Rotation of the uid itself**: if an SVID is re-issued during
    rotation and the operator accidentally changes the uid, existing
    files on the server retain the old uid and become inaccessible
    to the renamed workload. Should the importer refuse to mount if
    its derived uid differs from the uid recorded in any FUSE mount's
    metadata? The design currently has no such safety check.
 
-4. **Interaction with user namespaces at deployment time**: if the
+3. **Interaction with user namespaces at deployment time**: if the
    importer itself runs inside a user namespace (e.g., a rootless
    container), the `uid=1048577` inside the namespace may not equal
    `uid=1048577` on the host. File ownership visibility depends on
@@ -611,7 +747,7 @@ a phase "preferred" importer and vice versa.
    in the host namespace; rootless container deployments need
    additional documentation.
 
-5. **Trust domain scoping of the range**: the reserved
+4. **Trust domain scoping of the range**: the reserved
    `[1048576, 2^31-1]` range is *per trust domain*, not global. Two
    independent trust domains may both use uid `1048577` for different
    workloads. If a client mounts exports from both domains, uids
@@ -641,7 +777,7 @@ SEQUENCE {
 }
 ```
 
-Hex (placeholder OID `2.25.1` shown for illustration only):
+Hex of the inner `SEQUENCE`:
 
 ```
 30 2e
@@ -654,14 +790,13 @@ Hex (placeholder OID `2.25.1` shown for illustration only):
   0c 0b "example.com"
 ```
 
-Embedded in an X.509 extension with OID TBD:
+Embedded in an X.509 extension with the assigned OID
+`1.3.6.1.4.1.65588.1.1` (DER `06 0A 2B 06 01 04 01 84 80 34 01 01`):
 
 ```
 Extension {
-  extnID: 2.25.1              -- placeholder
+  extnID: 1.3.6.1.4.1.65588.1.1
   critical: FALSE
   extnValue: OCTET STRING { <the SEQUENCE above> }
 }
 ```
-
-Real production use replaces `2.25.1` with the assigned PEN arc OID.

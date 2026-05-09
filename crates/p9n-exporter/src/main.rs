@@ -47,6 +47,16 @@ struct Args {
     #[arg(long)]
     enable_rate_limit: bool,
 
+    /// Allow Tattach from peers without a SPIFFE identity.
+    ///
+    /// By default (and recommended for any multi-tenant deployment),
+    /// anonymous peers are rejected at attach time because per-workload
+    /// root isolation requires a SPIFFE identity to derive the correct
+    /// subtree. Enable only for legacy single-tenant deployments where
+    /// SPIFFE auth is intentionally not used.
+    #[arg(long)]
+    allow_anonymous: bool,
+
     /// Maximum OS threads for blocking filesystem I/O (default: 256).
     /// Each thread uses ~8 MB stack. Tune up for NFS/high-concurrency,
     /// down for memory-constrained environments.
@@ -82,6 +92,7 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = p9n_exporter::config::ExporterConfig::default();
     config.enable_rate_limit = args.enable_rate_limit;
     config.max_blocking_threads = args.blocking_threads;
+    config.allow_anonymous_attach = args.allow_anonymous;
 
     let mut exporter = p9n_exporter::exporter::Exporter::with_config(
         args.listen, args.export, auth, config,

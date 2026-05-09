@@ -22,12 +22,6 @@ pub enum Msg {
     /// Tversion / Rversion
     Version { msize: u32, version: String },
 
-    /// Tauth
-    Auth { afid: u32, uname: String, aname: String },
-
-    /// Rauth
-    Rauth { aqid: Qid },
-
     /// Tattach
     Attach { fid: u32, afid: u32, uname: String, aname: String },
 
@@ -189,12 +183,6 @@ pub enum Msg {
 
     /// Tcaps / Rcaps
     Caps { caps: Vec<String> },
-
-    /// Tauthneg
-    Authneg { mechs: Vec<String> },
-
-    /// Rauthneg
-    Rauthneg { mech: String, challenge: Vec<u8> },
 
     /// Tcapgrant
     Capgrant { fid: u32, rights: u64, expiry: u64, depth: u16 },

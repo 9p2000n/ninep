@@ -1,5 +1,6 @@
 use crate::fid_table::FidTable;
 use dashmap::DashMap;
+use p9n_auth::PosixIdentity;
 use p9n_proto::caps::CapSet;
 use std::collections::HashSet;
 use std::os::unix::io::OwnedFd;
@@ -32,7 +33,16 @@ pub struct QuicBinding {
 #[derive(Debug, Clone)]
 pub struct CapToken {
     pub rights: u64,
-    pub depth: u16,
+    /// Remaining walk depth from the cap-bearing fid.
+    ///
+    /// - `None`: unlimited; the cap propagates to walked fids unchanged.
+    /// - `Some(n)`: `n` walk steps remain. `Twalk` consumes `wnames.len()`
+    ///   steps; if the request would exceed the remaining depth the walk
+    ///   is rejected with EPERM, otherwise the destination fid inherits
+    ///   a cap with `depth = Some(n - wnames.len())`.
+    /// - `Some(0)`: exhausted; the capped fid is still usable for I/O
+    ///   but no further `Twalk` from it is permitted.
+    pub depth: Option<u16>,
     pub expiry: u64,
 }
 
@@ -141,12 +151,15 @@ pub struct Session<H: Send + Sync + 'static = OwnedFd> {
     pub msize: AtomicU32,
     pub caps: Mutex<CapSet>,
     pub spiffe_id: Option<String>,
+    /// POSIX identity from the peer's `p9nPosixIdentity` X.509 extension,
+    /// when present. Drives ownership_for() in `AccessControl`. Absent
+    /// for peers running pre-extension SVIDs (fallback path).
+    pub peer_posix: Option<PosixIdentity>,
     pub session_key: Mutex<Option<[u8; 16]>>,
     pub conn_id: u64,
     pub transport_kind: TransportKind,
     pub fids: FidTable<H>,
     pub watch_ids: Mutex<HashSet<u32>>,
-    authenticated: AtomicBool,
     spiffe_verified: AtomicBool,
     pub active_caps: DashMap<u32, CapToken>,
     /// Active leases: lease_id → (fid, lease_type, expiry_instant, duration_secs)
@@ -192,12 +205,12 @@ impl<H: Send + Sync + 'static> Session<H> {
             msize: AtomicU32::new(8192),
             caps: Mutex::new(CapSet::new()),
             spiffe_id: None,
+            peer_posix: None,
             session_key: Mutex::new(None),
             conn_id,
             transport_kind,
             fids: FidTable::new(),
             watch_ids: Mutex::new(HashSet::new()),
-            authenticated: AtomicBool::new(true),
             spiffe_verified: AtomicBool::new(false),
             active_caps: DashMap::new(),
             active_leases: DashMap::new(),
@@ -239,8 +252,6 @@ impl<H: Send + Sync + 'static> Session<H> {
     pub fn add_watch_id(&self, id: u32) { self.watch_ids.lock().insert(id); }
     pub fn remove_watch_id(&self, id: u32) { self.watch_ids.lock().remove(&id); }
     pub fn watch_id_list(&self) -> Vec<u32> { self.watch_ids.lock().iter().copied().collect() }
-    pub fn is_authenticated(&self) -> bool { self.authenticated.load(Ordering::Relaxed) }
-    pub fn set_authenticated(&self, v: bool) { self.authenticated.store(v, Ordering::Relaxed); }
     pub fn is_spiffe_verified(&self) -> bool { self.spiffe_verified.load(Ordering::Relaxed) }
     pub fn set_spiffe_verified(&self, v: bool) { self.spiffe_verified.store(v, Ordering::Relaxed); }
 
@@ -255,6 +266,42 @@ impl<H: Send + Sync + 'static> Session<H> {
             }
         }
         false
+    }
+
+    /// Check whether a `Twalk` of `wname_len` steps from `src_fid` is
+    /// allowed under any cap bound to that fid, and compute the cap that
+    /// the destination fid should inherit.
+    ///
+    /// Returns:
+    /// - `Ok(None)`: src_fid has no cap; destination fid is uncapped.
+    /// - `Ok(Some(cap))`: destination fid inherits this cap (possibly
+    ///   with reduced depth).
+    /// - `Err(io::Error{EPERM})`: walk would exceed the cap's remaining
+    ///   depth.
+    ///
+    /// Closes the audit finding H-2: previously `cap.depth` was stored
+    /// but never consulted, so a token granted with `p9n_depth=1` could
+    /// be used for walks of arbitrary depth.
+    pub fn check_walk_cap(
+        &self,
+        src_fid: u32,
+        wname_len: u16,
+    ) -> Result<Option<CapToken>, std::io::Error> {
+        let cap = match self.active_caps.get(&src_fid) {
+            Some(c) => c.clone(),
+            None => return Ok(None),
+        };
+        match cap.depth {
+            None => Ok(Some(cap)), // unlimited; propagate unchanged
+            Some(remaining) if wname_len > remaining => Err(
+                std::io::Error::from_raw_os_error(libc::EPERM),
+            ),
+            Some(remaining) => Ok(Some(CapToken {
+                rights: cap.rights,
+                depth: Some(remaining - wname_len),
+                expiry: cap.expiry,
+            })),
+        }
     }
 
     /// Register an in-flight request. Returns a CancellationToken for the handler to check.
@@ -277,5 +324,88 @@ impl<H: Send + Sync + 'static> Session<H> {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::io::OwnedFd;
+
+    fn far_future() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 3600
+    }
+
+    fn make_session() -> Session<OwnedFd> {
+        Session::new(0, TransportKind::Tcp)
+    }
+
+    #[test]
+    fn check_walk_cap_returns_none_for_uncapped_fid() {
+        let s = make_session();
+        let cap = s.check_walk_cap(42, 5).unwrap();
+        assert!(cap.is_none());
+    }
+
+    #[test]
+    fn check_walk_cap_unlimited_propagates_unchanged() {
+        let s = make_session();
+        s.active_caps.insert(42, CapToken { rights: 0xFF, depth: None, expiry: far_future() });
+        let cap = s.check_walk_cap(42, 100).unwrap().unwrap();
+        assert_eq!(cap.depth, None);
+        assert_eq!(cap.rights, 0xFF);
+    }
+
+    #[test]
+    fn check_walk_cap_decrements_finite_depth() {
+        let s = make_session();
+        s.active_caps.insert(42, CapToken { rights: 0x01, depth: Some(5), expiry: far_future() });
+        // Walking 2 steps from depth-5 → child cap has depth-3.
+        let cap = s.check_walk_cap(42, 2).unwrap().unwrap();
+        assert_eq!(cap.depth, Some(3));
+        assert_eq!(cap.rights, 0x01);
+    }
+
+    #[test]
+    fn check_walk_cap_zero_steps_preserves_depth() {
+        // Twalk(0) clones the fid; cap propagates with depth unchanged.
+        let s = make_session();
+        s.active_caps.insert(42, CapToken { rights: 0x01, depth: Some(3), expiry: far_future() });
+        let cap = s.check_walk_cap(42, 0).unwrap().unwrap();
+        assert_eq!(cap.depth, Some(3));
+    }
+
+    #[test]
+    fn check_walk_cap_rejects_beyond_remaining_depth() {
+        let s = make_session();
+        s.active_caps.insert(42, CapToken { rights: 0x01, depth: Some(2), expiry: far_future() });
+        let err = s.check_walk_cap(42, 3).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::EPERM));
+        // Cap is unchanged on the source fid (rejection is non-destructive).
+        assert!(s.active_caps.get(&42).is_some());
+    }
+
+    #[test]
+    fn check_walk_cap_exhausts_to_zero_depth() {
+        // Walking exactly the remaining depth lands on Some(0); the
+        // destination fid's cap permits I/O but no further walks.
+        let s = make_session();
+        s.active_caps.insert(42, CapToken { rights: 0x01, depth: Some(3), expiry: far_future() });
+        let child_cap = s.check_walk_cap(42, 3).unwrap().unwrap();
+        assert_eq!(child_cap.depth, Some(0));
+
+        // Now if we install that child cap on a fid and try to walk
+        // further, it must be rejected.
+        let s2 = make_session();
+        s2.active_caps.insert(7, child_cap);
+        let err = s2.check_walk_cap(7, 1).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::EPERM));
+        // Even Twalk(0) is fine — zero steps never exceed depth.
+        let cap = s2.check_walk_cap(7, 0).unwrap().unwrap();
+        assert_eq!(cap.depth, Some(0));
     }
 }

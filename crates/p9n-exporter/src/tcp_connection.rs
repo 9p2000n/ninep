@@ -42,14 +42,19 @@ impl<B: Backend> TcpConnectionHandler<B> {
         let (watch_tx, watch_rx) = mpsc::channel(256);
         let (push_tx, push_rx) = mpsc::channel(64);
 
-        // Extract SPIFFE ID and remote address before splitting the stream.
-        let spiffe_id = extract_spiffe_id_from_tls(&stream);
+        // Extract SPIFFE ID + posix identity and remote address before splitting the stream.
+        let (spiffe_id, peer_posix) = extract_peer_attrs_from_tls(&stream);
         let remote = stream.get_ref().0.peer_addr().ok();
         let conn_id = lease_manager::next_conn_id();
 
         match (&spiffe_id, &remote) {
             (Some(id), Some(addr)) => {
-                tracing::info!(conn_id, peer = %id, remote = %addr, "tcp peer authenticated");
+                tracing::info!(
+                    conn_id, peer = %id, remote = %addr,
+                    peer_uid = peer_posix.as_ref().map(|p| p.uid),
+                    peer_gid = peer_posix.as_ref().map(|p| p.gid),
+                    "tcp peer authenticated"
+                );
             }
             (Some(id), None) => {
                 tracing::info!(conn_id, peer = %id, "tcp peer authenticated (remote unknown)");
@@ -68,6 +73,7 @@ impl<B: Backend> TcpConnectionHandler<B> {
 
         let mut session = Session::new(conn_id, crate::session::TransportKind::Tcp);
         session.spiffe_id = spiffe_id;
+        session.peer_posix = peer_posix;
 
         Self {
             reader,
@@ -206,9 +212,13 @@ impl<B: Backend> TcpConnectionHandler<B> {
     }
 }
 
-/// Extract SPIFFE ID from a tokio-rustls TLS server stream's peer certificate.
-fn extract_spiffe_id_from_tls(stream: &TlsStream<TcpStream>) -> Option<String> {
+/// Extract SPIFFE ID + p9nPosixIdentity from a tokio-rustls TLS server stream's peer certificate.
+fn extract_peer_attrs_from_tls(
+    stream: &TlsStream<TcpStream>,
+) -> (Option<String>, Option<p9n_auth::PosixIdentity>) {
     let (_, server_conn) = stream.get_ref();
-    let certs = server_conn.peer_certificates()?;
-    crate::util::spiffe_id_from_certs(certs)
+    let Some(certs) = server_conn.peer_certificates() else {
+        return (None, None);
+    };
+    crate::util::peer_attrs_from_certs(certs)
 }

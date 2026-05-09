@@ -382,7 +382,7 @@ ninep/
       src/rdma/mr_pool.rs                [rdma feature] Pre-registered MR pool with lock-free slots
       src/rdma/config.rs                 [rdma feature] TCP+TLS bootstrap, QP parameter exchange
       src/rdma/connection.rs             [rdma feature] RdmaTransport (Send/Recv + RDMA Read/Write)
-      tests/transport_test.rs            framing + router unit tests
+      tests/transport_test.rs            Framing + router unit tests
 
     p9n-exporter/                      File exporter (server)
       src/exporter.rs                    Triple-protocol accept loop (QUIC + TCP + RDMA)
@@ -400,7 +400,7 @@ ninep/
       src/backend/local.rs               Local filesystem backend
       src/util.rs                        Shared join_err/map_io_error/spiffe extraction
       src/rdma_connection.rs             [rdma feature] RDMA connection handler (one-sided I/O intercept)
-      src/handlers/                      Handler modules
+      src/handlers/                      Hndler modules
       src/handlers/rdma.rs               [rdma feature] Trdmatoken handler (client buffer registration)
       tests/integration_test.rs          full-stack integration tests
 

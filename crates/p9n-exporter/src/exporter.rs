@@ -162,7 +162,12 @@ impl<B: Backend> Exporter<B> {
     async fn accept_rdma(
         &self,
     ) -> Result<
-        (p9n_transport::rdma::config::RdmaConnection, Option<String>, std::net::SocketAddr),
+        (
+            p9n_transport::rdma::config::RdmaConnection,
+            Option<String>,
+            Option<p9n_auth::PosixIdentity>,
+            std::net::SocketAddr,
+        ),
         Box<dyn std::error::Error>,
     > {
         rdma_accept(
@@ -230,11 +235,11 @@ impl<B: Backend> Exporter<B> {
                 result = self.accept_rdma() => {
                     #[cfg(feature = "rdma")]
                     match result {
-                        Ok((rdma_conn, spiffe_id, remote)) => {
+                        Ok((rdma_conn, spiffe_id, peer_posix, remote)) => {
                             let ctx = self.ctx.clone();
                             handlers.spawn(async move {
                                 tracing::info!("accepted RDMA connection from {remote}");
-                                let mut handler = RdmaConnectionHandler::new(rdma_conn, ctx, spiffe_id, Some(remote));
+                                let mut handler = RdmaConnectionHandler::new(rdma_conn, ctx, spiffe_id, peer_posix, Some(remote));
                                 if let Err(e) = handler.run().await {
                                     tracing::warn!("RDMA connection {remote} error: {e}");
                                 }
@@ -401,7 +406,12 @@ async fn rdma_accept(
     acceptor: &Option<TlsAcceptor>,
     device_name: Option<&str>,
 ) -> Result<
-    (p9n_transport::rdma::config::RdmaConnection, Option<String>, std::net::SocketAddr),
+    (
+        p9n_transport::rdma::config::RdmaConnection,
+        Option<String>,
+        Option<p9n_auth::PosixIdentity>,
+        std::net::SocketAddr,
+    ),
     Box<dyn std::error::Error>,
 > {
     let (listener, acceptor) = match (listener, acceptor) {
@@ -413,13 +423,13 @@ async fn rdma_accept(
     };
     let (tcp_stream, addr) = listener.accept().await?;
 
-    // Extract SPIFFE ID from the TLS peer certificate during bootstrap.
+    // Extract SPIFFE ID + p9nPosixIdentity from the TLS peer certificate during bootstrap.
     let (rdma_conn, _session_key, peer_certs) =
         p9n_transport::rdma::config::accept(tcp_stream, acceptor, device_name).await?;
 
-    let spiffe_id = crate::util::spiffe_id_from_certs(&peer_certs);
+    let (spiffe_id, peer_posix) = crate::util::peer_attrs_from_certs(&peer_certs);
 
-    Ok((rdma_conn, spiffe_id, addr))
+    Ok((rdma_conn, spiffe_id, peer_posix, addr))
 }
 
 /// Generate a 256-bit HMAC signing key from the OS CSPRNG.

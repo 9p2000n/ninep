@@ -147,12 +147,6 @@ pub const SPIFFE_EXPIRED: u8 = 2;
 pub const SPIFFE_REVOKED: u8 = 3;
 pub const SPIFFE_MISMATCH: u8 = 4;
 
-pub const AUTH_SPIFFE_X509: &str = "SPIFFE-X.509";
-pub const AUTH_SPIFFE_JWT: &str = "SPIFFE-JWT";
-pub const AUTH_SCRAM_SHA256: &str = "SASL-SCRAM-SHA-256";
-pub const AUTH_MTLS: &str = "mTLS";
-pub const AUTH_P9ANY: &str = "P9any";
-
 pub const QSTREAM_CONTROL: u8 = 0;
 pub const QSTREAM_DATA: u8 = 1;
 pub const QSTREAM_PUSH: u8 = 2;
@@ -206,8 +200,6 @@ pub enum MsgType {
     // ── 9P2000 core messages ──
     Tversion = 100,
     Rversion = 101,
-    Tauth = 102,
-    Rauth = 103,
     Tattach = 104,
     Rattach = 105,
     // Terror = 106 — unused
@@ -229,8 +221,6 @@ pub enum MsgType {
     Rcaps = 129,
     Tstartls = 130,
     Rstartls = 131,
-    Tauthneg = 132,
-    Rauthneg = 133,
     Tcapgrant = 134,
     Rcapgrant = 135,
     Tcapuse = 136,
@@ -331,8 +321,8 @@ impl MsgType {
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
             6..=9 | 12..=27 | 30..=33 | 40..=41 | 50..=55 | 70..=77 |
-            100..=109 | 110..=111 | 116..=123 |
-            128..=167 | 180..=213 | 220..=235 | 240..=253 => {
+            100..=101 | 104..=109 | 110..=111 | 116..=123 |
+            128..=131 | 134..=167 | 180..=213 | 220..=235 | 240..=253 => {
                 // SAFETY: repr(u8) and we've verified all valid discriminants
                 Some(unsafe { std::mem::transmute(v) })
             }
@@ -365,7 +355,6 @@ impl MsgType {
             Self::Tunlinkat => "Tunlinkat", Self::Runlinkat => "Runlinkat",
             // 9P2000 core
             Self::Tversion => "Tversion", Self::Rversion => "Rversion",
-            Self::Tauth => "Tauth", Self::Rauth => "Rauth",
             Self::Tattach => "Tattach", Self::Rattach => "Rattach",
             Self::Rerror => "Rerror",
             Self::Tflush => "Tflush", Self::Rflush => "Rflush",
@@ -377,7 +366,6 @@ impl MsgType {
             // 9P2000.N extensions
             Self::Tcaps => "Tcaps", Self::Rcaps => "Rcaps",
             Self::Tstartls => "Tstartls", Self::Rstartls => "Rstartls",
-            Self::Tauthneg => "Tauthneg", Self::Rauthneg => "Rauthneg",
             Self::Tcapgrant => "Tcapgrant", Self::Rcapgrant => "Rcapgrant",
             Self::Tcapuse => "Tcapuse", Self::Rcapuse => "Rcapuse",
             Self::Tauditctl => "Tauditctl", Self::Rauditctl => "Rauditctl",

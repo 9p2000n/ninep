@@ -43,14 +43,6 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
             buf.put_u32(*msize);
             buf.put_str(version);
         }
-        Msg::Auth { afid, uname, aname } => {
-            buf.put_u32(*afid);
-            buf.put_str(uname);
-            buf.put_str(aname);
-        }
-        Msg::Rauth { aqid } => {
-            buf.put_qid(aqid);
-        }
         Msg::Attach { fid, afid, uname, aname } => {
             buf.put_u32(*fid);
             buf.put_u32(*afid);
@@ -285,14 +277,6 @@ pub fn marshal(buf: &mut Buf, fc: &Fcall) -> Result<()> {
         Msg::Caps { caps } => {
             buf.put_u16(caps.len() as u16);
             for c in caps { buf.put_str(c); }
-        }
-        Msg::Authneg { mechs } => {
-            buf.put_u16(mechs.len() as u16);
-            for m in mechs { buf.put_str(m); }
-        }
-        Msg::Rauthneg { mech, challenge } => {
-            buf.put_str(mech);
-            buf.put_data(challenge);
         }
         Msg::Capgrant { fid, rights, expiry, depth } => {
             buf.put_u32(*fid);
@@ -703,12 +687,6 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
         MsgType::Tversion | MsgType::Rversion => {
             Msg::Version { msize: buf.get_u32()?, version: buf.get_str()? }
         }
-        MsgType::Tauth => {
-            Msg::Auth { afid: buf.get_u32()?, uname: buf.get_str()?, aname: buf.get_str()? }
-        }
-        MsgType::Rauth => {
-            Msg::Rauth { aqid: buf.get_qid()? }
-        }
         MsgType::Tattach => {
             Msg::Attach {
                 fid: buf.get_u32()?, afid: buf.get_u32()?,
@@ -950,18 +928,6 @@ pub fn unmarshal(buf: &mut Buf) -> Result<Fcall> {
             let mut caps = Vec::with_capacity(n);
             for _ in 0..n { caps.push(buf.get_str()?); }
             Msg::Caps { caps }
-        }
-        MsgType::Tauthneg => {
-            let n = buf.get_u16()? as usize;
-            if n > MAX_LIST_ELEMS {
-                return Err(WireError::InvalidData(format!("authneg: {n} mechs exceeds limit")));
-            }
-            let mut mechs = Vec::with_capacity(n);
-            for _ in 0..n { mechs.push(buf.get_str()?); }
-            Msg::Authneg { mechs }
-        }
-        MsgType::Rauthneg => {
-            Msg::Rauthneg { mech: buf.get_str()?, challenge: buf.get_data()? }
         }
         MsgType::Tcapgrant => {
             Msg::Capgrant {

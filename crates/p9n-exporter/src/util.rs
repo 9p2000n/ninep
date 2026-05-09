@@ -115,3 +115,31 @@ pub fn spiffe_id_from_certs(certs: &[impl AsRef<[u8]>]) -> Option<String> {
     }
     None
 }
+
+/// Extract both the SPIFFE ID and the optional `p9nPosixIdentity` extension
+/// from the leaf cert in a single pass.
+///
+/// A malformed `p9nPosixIdentity` extension (out of range, trust-domain
+/// mismatch, etc.) is logged at warn level and reported as `None` on the
+/// posix-identity side; the SPIFFE ID is still returned because the
+/// connection can still proceed via the fallback ownership path.
+pub fn peer_attrs_from_certs(
+    certs: &[impl AsRef<[u8]>],
+) -> (Option<String>, Option<p9n_auth::PosixIdentity>) {
+    let spiffe_id = spiffe_id_from_certs(certs);
+    let posix = match certs.first() {
+        Some(leaf) => match p9n_auth::extract_posix_identity(leaf.as_ref()) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    spiffe_id = spiffe_id.as_deref().unwrap_or("anonymous"),
+                    "ignoring malformed p9nPosixIdentity extension; falling back to static policy"
+                );
+                None
+            }
+        },
+        None => None,
+    };
+    (spiffe_id, posix)
+}

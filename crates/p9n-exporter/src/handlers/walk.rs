@@ -36,8 +36,16 @@ pub async fn handle<B: Backend>(
         .into());
     }
 
-    // Check walk depth limit
+    // Check walk depth limit (policy-level)
     ctx.access.check_depth(session.spiffe_id.as_deref(), wnames.len() as u16)?;
+
+    // Check cap-bound walk depth and compute the cap to inherit on
+    // newfid. Closes audit finding H-2: previously CapToken.depth was
+    // stored but never enforced, so a token with p9n_depth=1 silently
+    // permitted walks of arbitrary depth from the bound fid (and from
+    // its descendants, since uncapped walked fids are unconstrained).
+    // The cap propagates to newfid with depth reduced by wnames.len().
+    let inherit_cap = session.check_walk_cap(fid, wnames.len() as u16)?;
 
     let fid_state = session.fids.get(fid).ok_or_else(|| unknown_fid(fid, "Twalk"))?;
     let current_path = fid_state.path.clone();
@@ -66,6 +74,10 @@ pub async fn handle<B: Backend>(
                 is_dir,
             },
         );
+        // Cloned fid inherits the cap unchanged (zero walk steps consumed).
+        if let Some(cap) = inherit_cap {
+            session.active_caps.insert(newfid, cap);
+        }
         return Ok(Fcall {
             size: 0,
             msg_type: MsgType::Rwalk,
@@ -149,6 +161,14 @@ pub async fn handle<B: Backend>(
             is_dir: final_is_dir,
         },
     );
+
+    // Propagate the cap (with reduced depth) to newfid. The walk has
+    // already passed the depth check above; this just records the
+    // inherited cap so subsequent operations on newfid (including
+    // further Twalks) honor the same scope.
+    if let Some(cap) = inherit_cap {
+        session.active_caps.insert(newfid, cap);
+    }
 
     Ok(Fcall {
         size: 0,

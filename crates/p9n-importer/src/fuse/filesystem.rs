@@ -33,6 +33,12 @@ pub struct P9Filesystem {
     leases: Arc<LeaseMap>,
     /// Whether the server supports Tcompound (reduces round-trips).
     use_compound: bool,
+    /// Authoritative gid sourced from the importer's own `p9nPosixIdentity`,
+    /// when present. Used to populate the wire `gid` field in
+    /// Tlcreate/Tmkdir/Tmknod/Tsymlink so the strict server-side check in
+    /// docs/POSIX_IDENTITY.md §5.4 passes regardless of the FUSE caller's
+    /// local process gid.
+    posix_gid: Option<u32>,
     /// Handle for the background push receiver task.
     _push_handle: tokio::task::JoinHandle<()>,
 }
@@ -42,7 +48,11 @@ impl P9Filesystem {
     ///
     /// The `ShutdownHandle` captures `Arc` clones of shared state so that
     /// `main()` can drive ordered shutdown after fuse3 consumes `Self`.
-    pub fn new(rpc: Arc<RpcClient>, importer: Importer) -> (Self, ShutdownHandle) {
+    pub fn new(
+        rpc: Arc<RpcClient>,
+        importer: Importer,
+        posix_gid: Option<u32>,
+    ) -> (Self, ShutdownHandle) {
         let use_compound = importer.caps.has(CAP_COMPOUND);
         if use_compound {
             tracing::info!("compound optimization enabled");
@@ -75,6 +85,7 @@ impl P9Filesystem {
             dirs,
             leases,
             use_compound,
+            posix_gid,
             _push_handle: push_handle,
         };
 
@@ -423,7 +434,7 @@ impl Filesystem for P9Filesystem {
                 mode,
                 major: (rdev >> 8) & 0xFFF,
                 minor: rdev & 0xFF,
-                gid: req.gid,
+                gid: self.posix_gid.unwrap_or(req.gid),
             })
             .await
             .map_err(rpc_err)?;
@@ -463,7 +474,7 @@ impl Filesystem for P9Filesystem {
                 dfid: parent_fid,
                 name: name_str.clone(),
                 mode,
-                gid: req.gid,
+                gid: self.posix_gid.unwrap_or(req.gid),
             })
             .await
             .map_err(rpc_err)?;
@@ -532,7 +543,7 @@ impl Filesystem for P9Filesystem {
                 fid: parent_fid,
                 name: name_str.clone(),
                 symtgt: link_str,
-                gid: req.gid,
+                gid: self.posix_gid.unwrap_or(req.gid),
             })
             .await
             .map_err(rpc_err)?;
@@ -786,7 +797,7 @@ impl Filesystem for P9Filesystem {
                 name: name_str.clone(),
                 flags,
                 mode,
-                gid: req.gid,
+                gid: self.posix_gid.unwrap_or(req.gid),
             })
             .await
             .map_err(rpc_err)?;

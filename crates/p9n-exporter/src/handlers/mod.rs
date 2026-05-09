@@ -15,7 +15,6 @@ pub type PushTx = mpsc::Sender<Fcall>;
 pub mod acl;
 pub mod allocate;
 pub mod attach;
-pub mod auth;
 pub mod capgrant;
 pub mod clunk;
 pub mod compress;
@@ -188,7 +187,7 @@ pub async fn dispatch<B: Backend>(
     if let Some(fid) = msg_fid {
         match fc.msg_type {
             // Skip messages where fid might not exist yet (attach creates fid 0)
-            MsgType::Tversion | MsgType::Tcaps | MsgType::Tauthneg | MsgType::Tauth
+            MsgType::Tversion | MsgType::Tcaps
             | MsgType::Tattach | MsgType::Tsession | MsgType::Tflush | MsgType::Thealth
             | MsgType::TstartlsSpiffe | MsgType::Tfetchbundle | MsgType::Tspiffeverify
             | MsgType::Tcapgrant | MsgType::Tcompress | MsgType::Tconsistency
@@ -208,8 +207,6 @@ pub async fn dispatch<B: Backend>(
         // ── Negotiation (no access check) ──
         MsgType::Tversion => version::handle(session, &ctx.watch_mgr, watch_tx, fc),
         MsgType::Tcaps => negotiate::handle_caps(session, fc),
-        MsgType::Tauthneg => negotiate::handle_authneg(session, fc),
-        MsgType::Tauth => auth::handle(session, fc),
         MsgType::Tattach => attach::handle(session, ctx, fc),
         MsgType::Tsession => session::handle(session, &ctx.session_store, fc),
         MsgType::Tflush => flush::handle(session, fc),

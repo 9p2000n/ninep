@@ -44,6 +44,7 @@ impl<B: Backend> RdmaConnectionHandler<B> {
         conn: RdmaConnection,
         ctx: Arc<SharedCtx<B>>,
         spiffe_id: Option<String>,
+        peer_posix: Option<p9n_auth::PosixIdentity>,
         remote: Option<SocketAddr>,
     ) -> Self {
         let (watch_tx, watch_rx) = mpsc::channel(256);
@@ -70,6 +71,7 @@ impl<B: Backend> RdmaConnectionHandler<B> {
 
         let mut session = Session::new(conn_id, crate::session::TransportKind::Rdma);
         session.spiffe_id = spiffe_id;
+        session.peer_posix = peer_posix;
 
         Self {
             transport,

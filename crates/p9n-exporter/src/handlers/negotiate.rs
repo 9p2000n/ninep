@@ -2,7 +2,10 @@ use crate::handlers::HandlerResult;
 use crate::session::{Session, TransportKind};
 use p9n_proto::caps;
 use p9n_proto::fcall::{Fcall, Msg};
-use p9n_proto::types::*;
+use p9n_proto::types::{
+    MsgType, CAP_ALLOC, CAP_COMPOUND, CAP_COPY, CAP_HEALTH, CAP_LEASE, CAP_QUIC, CAP_QUIC_MULTI,
+    CAP_SESSION, CAP_SPIFFE, CAP_WATCH, CAP_XATTR2,
+};
 
 /// Handle Tcaps: intersect client capabilities with server capabilities.
 pub fn handle_caps<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) -> HandlerResult {
@@ -69,36 +72,3 @@ pub fn handle_caps<H: Send + Sync + 'static>(session: &Session<H>, fc: Fcall) ->
     })
 }
 
-/// Handle Tauthneg: select authentication mechanism.
-pub fn handle_authneg<H: Send + Sync + 'static>(_session: &Session<H>, fc: Fcall) -> HandlerResult {
-    let Msg::Authneg { mechs } = fc.msg else {
-        return Err("expected Authneg message".into());
-    };
-
-    // Server supports mTLS and SPIFFE-X.509 (both provided by the QUIC TLS handshake)
-    let supported = [AUTH_MTLS, AUTH_SPIFFE_X509];
-    let matched = mechs.iter().any(|m| supported.contains(&m.as_str()));
-    let selected = mechs
-        .iter()
-        .find(|m| supported.contains(&m.as_str()))
-        .cloned()
-        .unwrap_or_else(|| AUTH_MTLS.to_string());
-
-    tracing::info!(
-        offered = ?mechs,
-        supported = ?supported,
-        selected = %selected,
-        fallback = !matched,
-        "Tauthneg negotiated",
-    );
-
-    Ok(Fcall {
-        size: 0,
-        msg_type: MsgType::Rauthneg,
-        tag: fc.tag,
-        msg: Msg::Rauthneg {
-            mech: selected,
-            challenge: Vec::new(), // mTLS: no additional challenge needed
-        },
-    })
-}

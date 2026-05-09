@@ -9,6 +9,42 @@ use p9n_proto::fcall::{Fcall, Msg};
 use p9n_proto::types::*;
 use std::sync::Arc;
 
+/// The wire `gid` field in create messages must equal the authoritative
+/// gid for the peer (docs/POSIX_IDENTITY.md §5.4). Tests use the current
+/// process gid as the static-policy gid so the chown-on-create path
+/// becomes a no-op for any user running the suite.
+fn test_gid() -> u32 {
+    unsafe { libc::getegid() }
+}
+
+fn test_uid() -> u32 {
+    unsafe { libc::geteuid() }
+}
+
+/// Build the explicit Policy used by the test SharedCtx. Mapping the
+/// peer to the current (uid, gid) keeps `backend.chown()` a no-op when
+/// the test runs as a non-root user.
+fn test_policy() -> p9n_exporter::access::Policy {
+    p9n_exporter::access::Policy {
+        uid: test_uid(),
+        gid: test_gid(),
+        ..p9n_exporter::access::Policy::default()
+    }
+}
+
+/// Test ExporterConfig: defaults, plus `allow_anonymous_attach = true`
+/// because the test fixtures use server-only TLS (no client auth) so
+/// the connecting peer has no SPIFFE identity. Production deployments
+/// MUST keep `allow_anonymous_attach: false`; tests opt in here to
+/// exercise the create / read / write / lease / lock paths without
+/// also having to set up mTLS with client SVIDs.
+fn test_config() -> p9n_exporter::config::ExporterConfig {
+    p9n_exporter::config::ExporterConfig {
+        allow_anonymous_attach: true,
+        ..Default::default()
+    }
+}
+
 // ── Test Helpers ──
 
 fn ensure_crypto_provider() {
@@ -41,7 +77,7 @@ async fn start_exporter(
     std::net::SocketAddr,
     Vec<rustls::pki_types::CertificateDer<'static>>,
 ) {
-    start_exporter_with_config(export_path, p9n_exporter::config::ExporterConfig::default()).await
+    start_exporter_with_config(export_path, test_config()).await
 }
 
 async fn start_exporter_with_config(
@@ -76,10 +112,12 @@ async fn start_exporter_with_config(
                     Ok(c) => c,
                     Err(_) => return,
                 };
+                let mut access = p9n_exporter::access::AccessControl::new(export.clone().into());
+                access.set_default(test_policy());
                 let ctx = Arc::new(p9n_exporter::shared::SharedCtx {
                     backend: p9n_exporter::backend::local::LocalBackend::new(export.clone())
                         .unwrap(),
-                    access: p9n_exporter::access::AccessControl::new(export.into()),
+                    access,
                     session_store: p9n_exporter::session_store::SessionStore::new(
                         std::time::Duration::from_secs(60),
                     ),
@@ -209,9 +247,11 @@ async fn start_exporter_shared(
     let export = export_path.to_string();
 
     // Create SharedCtx ONCE — all connections share the same LeaseManager.
+    let mut access = p9n_exporter::access::AccessControl::new(export.clone().into());
+    access.set_default(test_policy());
     let ctx = Arc::new(p9n_exporter::shared::SharedCtx {
         backend: p9n_exporter::backend::local::LocalBackend::new(export.clone()).unwrap(),
-        access: p9n_exporter::access::AccessControl::new(export.into()),
+        access,
         session_store: p9n_exporter::session_store::SessionStore::new(
             std::time::Duration::from_secs(60),
         ),
@@ -351,7 +391,7 @@ async fn test_write_file() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     rpc(&conn, MsgType::Tlcreate, 2, Msg::Lcreate {
-        fid: 0, name: "new.txt".into(), flags: L_O_RDWR | L_O_CREAT, mode: 0o644, gid: 0,
+        fid: 0, name: "new.txt".into(), flags: L_O_RDWR | L_O_CREAT, mode: 0o644, gid: test_gid(),
     }).await.unwrap();
 
     let data = b"written by test".to_vec();
@@ -375,7 +415,7 @@ async fn test_mkdir_and_readdir() {
     let (conn, _) = setup(dir.path().to_str().unwrap()).await;
 
     rpc(&conn, MsgType::Tmkdir, 2, Msg::Mkdir {
-        dfid: 0, name: "sub".into(), mode: 0o755, gid: 0,
+        dfid: 0, name: "sub".into(), mode: 0o755, gid: test_gid(),
     }).await.unwrap();
     assert!(dir.path().join("sub").is_dir());
 
@@ -485,7 +525,7 @@ async fn test_symlink_and_readlink() {
     // Create symlink with relative target path
     let r = rpc(&conn, MsgType::Tsymlink, 2, Msg::Symlink {
         fid: 0, name: "link.txt".into(),
-        symtgt: "target.txt".to_string(), gid: 0,
+        symtgt: "target.txt".to_string(), gid: test_gid(),
     }).await.unwrap();
     assert!(matches!(r.msg, Msg::Rsymlink { .. }));
     assert!(dir.path().join("link.txt").is_symlink());
@@ -816,7 +856,7 @@ async fn test_stream_write() {
 
     // Create and open a file for writing
     rpc(&conn, MsgType::Tlcreate, 2, Msg::Lcreate {
-        fid: 0, name: "streamed.txt".into(), flags: L_O_RDWR | L_O_CREAT, mode: 0o644, gid: 0,
+        fid: 0, name: "streamed.txt".into(), flags: L_O_RDWR | L_O_CREAT, mode: 0o644, gid: test_gid(),
     }).await.unwrap();
 
     // Open a write stream on the file (direction=1 is write, offset=0)
@@ -907,7 +947,7 @@ async fn test_rate_limit_throttles_reads() {
     std::fs::write(dir.path().join("data.bin"), &content).unwrap();
 
     // Start exporter with rate limiting enabled: 10 IOPS, unlimited BPS.
-    let mut config = p9n_exporter::config::ExporterConfig::default();
+    let mut config = test_config();
     config.enable_rate_limit = true;
     let (addr, certs) = start_exporter_with_config(
         dir.path().to_str().unwrap(), config,
@@ -1073,7 +1113,7 @@ async fn test_read_lease_coexist() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "data").unwrap();
     let (addr, certs) =
-        start_exporter_shared(dir.path().to_str().unwrap(), Default::default()).await;
+        start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
     let conn1 = setup_conn(addr, &certs).await;
     let conn2 = setup_conn(addr, &certs).await;
 
@@ -1101,7 +1141,7 @@ async fn test_write_lease_conflict() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "data").unwrap();
     let (addr, certs) =
-        start_exporter_shared(dir.path().to_str().unwrap(), Default::default()).await;
+        start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
     let conn1 = setup_conn(addr, &certs).await;
     let conn2 = setup_conn(addr, &certs).await;
 
@@ -1129,7 +1169,7 @@ async fn test_write_lease_breaks_read() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "data").unwrap();
     let (addr, certs) =
-        start_exporter_shared(dir.path().to_str().unwrap(), Default::default()).await;
+        start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
     let conn1 = setup_conn(addr, &certs).await;
     let conn2 = setup_conn(addr, &certs).await;
 
@@ -1157,7 +1197,7 @@ async fn test_read_vs_write_conflict() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "data").unwrap();
     let (addr, certs) =
-        start_exporter_shared(dir.path().to_str().unwrap(), Default::default()).await;
+        start_exporter_shared(dir.path().to_str().unwrap(), test_config()).await;
     let conn1 = setup_conn(addr, &certs).await;
     let conn2 = setup_conn(addr, &certs).await;
 
@@ -1473,5 +1513,40 @@ async fn test_quicstream_eopnotsupp_without_cap() {
             assert_eq!(ecode, libc::EOPNOTSUPP as u32);
         }
         other => panic!("expected Rlerror(EOPNOTSUPP), got {other:?}"),
+    }
+}
+
+/// A peer with no SPIFFE identity (the server-only-TLS test fixture)
+/// must be rejected at Tattach when allow_anonymous_attach is false —
+/// the production default. Per docs/POSIX_IDENTITY.md §5.6,
+/// per-workload root isolation requires a SPIFFE identity to derive
+/// the correct subtree; an anonymous peer would otherwise resolve to
+/// the export root and see the union of all workloads' trees.
+#[tokio::test]
+async fn test_attach_rejects_anonymous_when_strict() {
+    let dir = tempfile::tempdir().unwrap();
+    let strict_config = p9n_exporter::config::ExporterConfig {
+        allow_anonymous_attach: false,
+        ..test_config()
+    };
+    let (addr, certs) = start_exporter_with_config(
+        dir.path().to_str().unwrap(),
+        strict_config,
+    ).await;
+    let conn = connect(addr, &certs).await;
+
+    rpc(&conn, MsgType::Tversion, 0, Msg::Version {
+        msize: 65536,
+        version: VERSION_9P2000_N.into(),
+    }).await.unwrap();
+
+    let r = rpc_raw(&conn, MsgType::Tattach, 1, Msg::Attach {
+        fid: 0, afid: NO_FID, uname: "anon".into(), aname: "".into(),
+    }).await;
+    match r.msg {
+        Msg::Lerror { ecode } => {
+            assert_eq!(ecode, libc::EACCES as u32, "expected EACCES, got errno={ecode}");
+        }
+        other => panic!("expected Rlerror(EACCES), got {other:?}"),
     }
 }

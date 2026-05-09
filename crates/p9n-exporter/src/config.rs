@@ -42,6 +42,18 @@ pub struct ExporterConfig {
     /// Tune up for high-concurrency NFS exports, down for memory-
     /// constrained environments.
     pub max_blocking_threads: usize,
+    /// Allow `Tattach` from peers without a SPIFFE identity (default: false).
+    ///
+    /// When false, anonymous peers are rejected with EACCES at attach time.
+    /// This is the secure default: per-workload root isolation
+    /// (docs/POSIX_IDENTITY.md §5.6) requires the server to know which
+    /// workload a peer represents in order to derive the appropriate
+    /// subtree; an anonymous peer would resolve to the export root
+    /// itself, exposing the union of all workloads' trees.
+    ///
+    /// Set to `true` only for legacy single-tenant deployments where
+    /// SPIFFE auth is intentionally not used. CLI: `--allow-anonymous`.
+    pub allow_anonymous_attach: bool,
 }
 
 impl Default for ExporterConfig {
@@ -58,6 +70,7 @@ impl Default for ExporterConfig {
             max_iops: 100_000,
             max_bps: 1024 * 1024 * 1024, // 1 GiB/s
             max_blocking_threads: 256,
+            allow_anonymous_attach: false,
         }
     }
 }

@@ -128,11 +128,11 @@ p9n-transport/
   │   ├─ datagram.rs       Send with retry, recv with tag dispatch
   │   ├─ streams.rs        Bidirectional stream RPC
   │   ├─ framing.rs        Delegates to generic framing
-  │   └─ zero_rtt.rs       0-RTT session detection
+  │   └─ connect.rs        Client 1-RTT connect helper
   ├─ tcp/
   │   ├─ config.rs         tokio-rustls server/client setup
   │   └─ connection.rs     TcpTransport (single stream, Mutex<Writer>)
-  └─ rdma/                 [feature: rdma]
+  └─ rdma/                [feature: rdma]
       ├─ ffi.rs            Minimal libibverbs FFI bindings (no rdma-sys)
       ├─ verbs.rs          RAII wrappers: Context, PD, CQ, QP, AsyncCQ
       ├─ mr_pool.rs        Pre-registered MR pool (lock-free ArrayQueue)
@@ -351,15 +351,16 @@ Handler modules grouped by function:
 
 ```
 handlers/
-  Negotiation:  version, negotiate, auth, attach, session
-  Filesystem:   walk, create, dir, io, stat, remove, rename, clunk
-  Extended I/O: allocate, copy_range, hash, lock, xattr, xattrwalk, acl, mknod
-  Watch:        watch (Twatch/Tunwatch via WatchManager)
-  Security:     spiffe (TstartlsSpiffe/Tfetchbundle/Tspiffeverify), capgrant
-  Distributed:  lease, consistency, compound
+  Negotiation:   version, negotiate, auth, attach, session
+  Filesystem:    walk, create, dir, io, stat, remove, rename, clunk
+  Extended I/O:  allocate, copy_range, hash, lock, xattr, xattrwalk, acl, mknod
+  Watch:         watch (Twatch/Tunwatch via WatchManager)
+  Security:      spiffe (TstartlsSpiffe/Tfetchbundle/Tspiffeverify), capgrant
+  Distributed:   lease, consistency, compound
   Observability: trace, health, serverstats
-  Transport:    quicstream, rdma (Trdmatoken), stream_io, compress, ratelimit
-  Catch-all:    stubs (returns ENOSYS for unimplemented messages)
+  Transport:     quicstream (persistent push binding; see docs/QUICSTREAM.md),
+                 rdma (Trdmatoken), stream_io, compress, ratelimit
+  Catch-all:     stubs (returns ENOSYS for unimplemented messages)
 ```
 
 ### 5.6 File I/O Pattern

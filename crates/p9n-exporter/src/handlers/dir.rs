@@ -61,7 +61,7 @@ pub async fn handle_mkdir<B: Backend>(
         dfid,
         name,
         mode,
-        gid: _,
+        gid: wire_gid,
     } = fc.msg
     else {
         return Err("expected Mkdir message".into());
@@ -71,6 +71,7 @@ pub async fn handle_mkdir<B: Backend>(
         tag, dfid,
         name = %name,
         mode = format_args!("{:#o}", mode),
+        wire_gid,
         "Tmkdir received",
     );
 
@@ -79,11 +80,16 @@ pub async fn handle_mkdir<B: Backend>(
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
 
+    let spiffe_id = session.spiffe_id.clone();
+    ctx.access
+        .validate_wire_gid(spiffe_id.as_deref(), session.peer_posix.as_ref(), wire_gid)?;
+
     // Break leases on the parent directory (its contents are changing).
     ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
-    let spiffe_id = session.spiffe_id.clone();
-    let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
+    let (uid, gid) = ctx
+        .access
+        .ownership_for_session(spiffe_id.as_deref(), session.peer_posix.as_ref());
 
     let ctx_clone = ctx.clone();
     let name_for_log = name.clone();

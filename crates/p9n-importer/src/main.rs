@@ -61,6 +61,18 @@ struct Args {
     #[cfg(feature = "workload-api")]
     #[arg(long, value_name = "PATH")]
     spiffe_agent_socket: Option<String>,
+
+    /// Fail at startup if the SVID does not carry the `p9nPosixIdentity`
+    /// X.509 extension. See docs/POSIX_IDENTITY.md.
+    #[arg(long)]
+    require_posix_identity: bool,
+
+    /// Drop privileges to the SVID-derived `(uid, gid, groups)` before
+    /// mounting FUSE. Requires the importer to start as root or with
+    /// `CAP_SETUID`/`CAP_SETGID` and an SVID that carries the
+    /// `p9nPosixIdentity` extension. Irreversible.
+    #[arg(long)]
+    setuid_from_svid: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -79,6 +91,26 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     let auth = load_auth(&args).await?;
     let identity = auth.identity.clone();
     let trust_store = auth.trust_store.clone();
+
+    // Resolve the SVID-derived POSIX identity once, before connect/mount,
+    // so a missing-or-malformed extension fails fast instead of mid-flight.
+    let posix = match p9n_importer::posix_bootstrap::extract(&identity) {
+        Ok(Some(p)) => {
+            tracing::info!(uid = p.uid, gid = p.gid, "SVID carries p9nPosixIdentity");
+            Some(p)
+        }
+        Ok(None) => {
+            if args.require_posix_identity || args.setuid_from_svid {
+                return Err(format!(
+                    "--{} requires the SVID to carry the p9nPosixIdentity extension",
+                    if args.setuid_from_svid { "setuid-from-svid" } else { "require-posix-identity" },
+                )
+                .into());
+            }
+            None
+        }
+        Err(e) => return Err(format!("p9nPosixIdentity parse: {e}").into()),
+    };
 
     let mut importer = connect(&args, auth).await?;
 
@@ -106,7 +138,18 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
         initial_conn_id,
     ));
 
-    let (fs, shutdown_handle) = P9Filesystem::new(rpc, importer);
+    let posix_gid = posix.as_ref().map(|p| p.gid);
+    let (fs, shutdown_handle) = P9Filesystem::new(rpc, importer, posix_gid);
+
+    // Drop privileges *before* the FUSE mount. After the transition, the
+    // mount() path falls through to the unprivileged `fusermount3` helper
+    // because euid is no longer 0. See docs/POSIX_IDENTITY.md §5.1.
+    if args.setuid_from_svid {
+        let p = posix.as_ref().expect("checked above when --setuid-from-svid is set");
+        p9n_importer::posix_bootstrap::apply_setuid(p)
+            .map_err(|e| format!("setuid bootstrap failed: {e}"))?;
+    }
+
     let mut mount_handle = mount(fs, &args.mount).await?;
 
     let fuse_exited = serve(&mut mount_handle).await;

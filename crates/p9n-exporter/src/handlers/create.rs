@@ -19,7 +19,7 @@ pub async fn handle_lcreate<B: Backend>(
         name,
         flags,
         mode,
-        gid: _,
+        gid: wire_gid,
     } = fc.msg
     else {
         return Err("expected Lcreate message".into());
@@ -30,6 +30,7 @@ pub async fn handle_lcreate<B: Backend>(
         name = %name,
         flags = format_args!("{:#x}", flags),
         mode = format_args!("{:#o}", mode),
+        wire_gid,
         "Tlcreate received",
     );
 
@@ -38,13 +39,18 @@ pub async fn handle_lcreate<B: Backend>(
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
 
+    let spiffe_id = session.spiffe_id.clone();
+    ctx.access
+        .validate_wire_gid(spiffe_id.as_deref(), session.peer_posix.as_ref(), wire_gid)?;
+
     // Break leases on the parent directory (its contents are changing).
     ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
     let msize = session.get_msize();
-    let spiffe_id = session.spiffe_id.clone();
 
-    let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
+    let (uid, gid) = ctx
+        .access
+        .ownership_for_session(spiffe_id.as_deref(), session.peer_posix.as_ref());
 
     let ctx_clone = ctx.clone();
     let name_for_log = name.clone();
@@ -98,7 +104,7 @@ pub async fn handle_symlink<B: Backend>(
         fid,
         name,
         symtgt,
-        gid: _,
+        gid: wire_gid,
     } = fc.msg
     else {
         return Err("expected Symlink message".into());
@@ -108,6 +114,7 @@ pub async fn handle_symlink<B: Backend>(
         tag, fid,
         name = %name,
         target = %symtgt,
+        wire_gid,
         "Tsymlink received",
     );
 
@@ -116,11 +123,16 @@ pub async fn handle_symlink<B: Backend>(
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
 
+    let spiffe_id = session.spiffe_id.clone();
+    ctx.access
+        .validate_wire_gid(spiffe_id.as_deref(), session.peer_posix.as_ref(), wire_gid)?;
+
     // Break leases on the parent directory (its contents are changing).
     ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
-    let spiffe_id = session.spiffe_id.clone();
-    let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
+    let (uid, gid) = ctx
+        .access
+        .ownership_for_session(spiffe_id.as_deref(), session.peer_posix.as_ref());
 
     let ctx_clone = ctx.clone();
     let name_for_log = name.clone();

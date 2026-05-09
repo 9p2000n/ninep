@@ -79,9 +79,16 @@ pub async fn handle_setattr<B: Backend>(
     // Break read leases held by other connections on this file.
     ctx.lease_mgr.break_for_write(qid_path, session.conn_id);
 
-    // chown/chgrp require admin permission
+    // Owner-change validation: combines the PERM_ADMIN gate and the
+    // SPIFFE-range / set-membership check (docs/POSIX_IDENTITY.md §5.4).
     if touches_owner {
-        ctx.access.check_admin(session.spiffe_id.as_deref())?;
+        ctx.access.validate_setattr_owner(
+            session.spiffe_id.as_deref(),
+            session.peer_posix.as_ref(),
+            attr.valid,
+            attr.uid,
+            attr.gid,
+        )?;
     }
 
     let ctx = ctx.clone();

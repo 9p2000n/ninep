@@ -10,4 +10,5 @@ pub mod rpc_client;
 pub mod push_receiver;
 pub mod shutdown;
 pub mod logging;
+pub mod posix_bootstrap;
 pub mod fuse;

@@ -34,18 +34,22 @@ impl<B: Backend> QuicConnectionHandler<B> {
         // expect one successful bind per connection; the extra slack covers
         // any transient duplicates.
         let (bind_tx, bind_rx) = mpsc::channel(4);
-        let spiffe_id = extract_spiffe_id_from_conn(&conn);
+        let (spiffe_id, peer_posix) = extract_peer_attrs_from_conn(&conn);
         let conn_id = lease_manager::next_conn_id();
         let remote = conn.remote_address();
 
-        if let Some(ref id) = spiffe_id {
-            tracing::info!(conn_id, peer = %id, %remote, "peer authenticated");
-        } else {
-            tracing::info!(conn_id, %remote, "peer connected (anonymous)");
+        match (&spiffe_id, &peer_posix) {
+            (Some(id), Some(p)) => tracing::info!(
+                conn_id, peer = %id, %remote, peer_uid = p.uid, peer_gid = p.gid,
+                "peer authenticated with posix identity"
+            ),
+            (Some(id), None) => tracing::info!(conn_id, peer = %id, %remote, "peer authenticated"),
+            (None, _) => tracing::info!(conn_id, %remote, "peer connected (anonymous)"),
         }
 
         let mut session = Session::new(conn_id, crate::session::TransportKind::Quic);
         session.spiffe_id = spiffe_id;
+        session.peer_posix = peer_posix;
         let pusher = QuicPushSender::new(conn.clone());
 
         Self {
@@ -401,8 +405,14 @@ fn send_datagram(
     Ok(())
 }
 
-fn extract_spiffe_id_from_conn(conn: &quinn::Connection) -> Option<String> {
-    let identity = conn.peer_identity()?;
-    let certs = identity.downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>().ok()?;
-    crate::util::spiffe_id_from_certs(&certs)
+fn extract_peer_attrs_from_conn(
+    conn: &quinn::Connection,
+) -> (Option<String>, Option<p9n_auth::PosixIdentity>) {
+    let Some(identity) = conn.peer_identity() else {
+        return (None, None);
+    };
+    let Ok(certs) = identity.downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>() else {
+        return (None, None);
+    };
+    crate::util::peer_attrs_from_certs(&certs)
 }

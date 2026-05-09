@@ -38,6 +38,28 @@ pub fn handle<B: Backend>(
         "Tattach received",
     );
 
+    // Per-workload root isolation requires a SPIFFE identity (see
+    // docs/POSIX_IDENTITY.md §5.6). Anonymous peers would otherwise
+    // resolve to the export root itself rather than a workload-specific
+    // subtree, exposing the union of all workloads' trees. Refuse the
+    // attach unless the operator has explicitly opted into anonymous
+    // mode for legacy single-tenant deployments.
+    if session.spiffe_id.is_none() && !ctx.config.allow_anonymous_attach {
+        tracing::warn!(
+            fid,
+            uname = %uname,
+            aname = %aname,
+            conn_id = session.conn_id,
+            "Tattach rejected: anonymous peer (no SPIFFE identity); \
+             enable --allow-anonymous for single-tenant deployments"
+        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Tattach requires an authenticated SPIFFE peer",
+        )
+        .into());
+    }
+
     // Resolve the root directory based on SPIFFE identity
     let user_root = ctx.access.resolve_root(session.spiffe_id.as_deref());
 

@@ -14,7 +14,7 @@ pub async fn handle<B: Backend>(
     ctx: &Arc<SharedCtx<B>>,
     fc: Fcall,
 ) -> HandlerResult {
-    let Msg::Mknod { dfid, name, mode, major, minor, gid: _ } = fc.msg else {
+    let Msg::Mknod { dfid, name, mode, major, minor, gid: wire_gid } = fc.msg else {
         return Err("expected Mknod message".into());
     };
     let tag = fc.tag;
@@ -23,6 +23,7 @@ pub async fn handle<B: Backend>(
         name = %name,
         mode = format_args!("{:#o}", mode),
         major, minor,
+        wire_gid,
         "Tmknod received",
     );
 
@@ -31,11 +32,16 @@ pub async fn handle<B: Backend>(
     let dir_qid_path = fid_state.qid.path;
     drop(fid_state);
 
+    let spiffe_id = session.spiffe_id.clone();
+    ctx.access
+        .validate_wire_gid(spiffe_id.as_deref(), session.peer_posix.as_ref(), wire_gid)?;
+
     // Break leases on the parent directory (its contents are changing).
     ctx.lease_mgr.break_for_write(dir_qid_path, session.conn_id);
 
-    let spiffe_id = session.spiffe_id.clone();
-    let (uid, gid) = ctx.access.ownership_for(spiffe_id.as_deref());
+    let (uid, gid) = ctx
+        .access
+        .ownership_for_session(spiffe_id.as_deref(), session.peer_posix.as_ref());
 
     let ctx_clone = ctx.clone();
     let name_for_log = name.clone();

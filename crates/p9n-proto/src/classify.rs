@@ -31,7 +31,6 @@ pub fn classify(t: MsgType) -> MessageClass {
         Tversion | Rversion |
         Tcaps | Rcaps |
         Tstartls | Rstartls |
-        Tauthneg | Rauthneg |
         Tcapgrant | Rcapgrant |
         Tcapuse | Rcapuse |
         Tauditctl | Rauditctl |
