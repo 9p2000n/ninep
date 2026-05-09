@@ -5,9 +5,11 @@ use crate::backend::local::LocalBackend;
 use crate::backend::Backend;
 use crate::config::ExporterConfig;
 use crate::lease_manager::LeaseManager;
+use crate::posix_mapping_state::PosixMappingState;
 use crate::session_store::SessionStore;
 use crate::watch_manager::WatchManager;
 use p9n_auth::spiffe::trust_bundle::TrustBundleStore;
+use std::sync::Arc;
 
 /// Server-wide state shared across all connections and streams.
 ///
@@ -25,4 +27,10 @@ pub struct SharedCtx<B: Backend = LocalBackend> {
     pub cap_signing_key: [u8; 32],
     /// Runtime configuration.
     pub config: ExporterConfig,
+    /// Signed POSIX mapping bundle (`docs/POSIX_IDENTITY.md`). When
+    /// present, peer SPIFFE IDs resolve through `posix_mapping.lookup`
+    /// in preference to the v1 X.509-extension path; absent peers fall
+    /// through to static `AccessControl::Policy`. `None` when the
+    /// exporter was started without `--posix-mapping-bundle`.
+    pub posix_mapping: Option<Arc<PosixMappingState>>,
 }

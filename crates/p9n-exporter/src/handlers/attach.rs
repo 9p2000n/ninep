@@ -39,7 +39,7 @@ pub fn handle<B: Backend>(
     );
 
     // Per-workload root isolation requires a SPIFFE identity (see
-    // docs/POSIX_IDENTITY.md §5.6). Anonymous peers would otherwise
+    // docs/POSIX_IDENTITY.md §8). Anonymous peers would otherwise
     // resolve to the export root itself rather than a workload-specific
     // subtree, exposing the union of all workloads' trees. Refuse the
     // attach unless the operator has explicitly opted into anonymous

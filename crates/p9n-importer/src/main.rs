@@ -62,17 +62,28 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     spiffe_agent_socket: Option<String>,
 
-    /// Fail at startup if the SVID does not carry the `p9nPosixIdentity`
-    /// X.509 extension. See docs/POSIX_IDENTITY.md.
-    #[arg(long)]
-    require_posix_identity: bool,
+    /// Path to the JWK Set containing the mapping-authority public
+    /// key(s) used to verify the signed POSIX mapping bundle (see
+    /// docs/POSIX_IDENTITY.md §6.2). When set, the importer fetches
+    /// the bundle from the exporter via Tfetchbundle after mTLS and
+    /// uses its own SPIFFE ID's entry to derive (uid, gid, groups).
+    /// When unset, the importer runs without a resolved POSIX
+    /// identity (`stat` returns whatever uid/gid the exporter wrote).
+    #[arg(long, value_name = "PATH")]
+    posix_mapping_jwks: Option<String>,
 
-    /// Drop privileges to the SVID-derived `(uid, gid, groups)` before
-    /// mounting FUSE. Requires the importer to start as root or with
-    /// `CAP_SETUID`/`CAP_SETGID` and an SVID that carries the
-    /// `p9nPosixIdentity` extension. Irreversible.
+    /// Fail at startup if the mapping bundle does not produce a POSIX
+    /// identity for the importer's own SPIFFE ID. Implies
+    /// `--posix-mapping-jwks` must be set.
     #[arg(long)]
-    setuid_from_svid: bool,
+    require_posix_mapping: bool,
+
+    /// Drop privileges to the bundle-derived `(uid, gid, groups)`
+    /// before mounting FUSE. Requires the importer to start as root
+    /// or with `CAP_SETUID`/`CAP_SETGID` and `--posix-mapping-jwks`
+    /// to be set. Irreversible.
+    #[arg(long)]
+    setuid_from_mapping: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -92,27 +103,27 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
     let identity = auth.identity.clone();
     let trust_store = auth.trust_store.clone();
 
-    // Resolve the SVID-derived POSIX identity once, before connect/mount,
-    // so a missing-or-malformed extension fails fast instead of mid-flight.
-    let posix = match p9n_importer::posix_bootstrap::extract(&identity) {
-        Ok(Some(p)) => {
-            tracing::info!(uid = p.uid, gid = p.gid, "SVID carries p9nPosixIdentity");
-            Some(p)
-        }
-        Ok(None) => {
-            if args.require_posix_identity || args.setuid_from_svid {
-                return Err(format!(
-                    "--{} requires the SVID to carry the p9nPosixIdentity extension",
-                    if args.setuid_from_svid { "setuid-from-svid" } else { "require-posix-identity" },
-                )
-                .into());
-            }
-            None
-        }
-        Err(e) => return Err(format!("p9nPosixIdentity parse: {e}").into()),
-    };
+    // Optional: load the JWK Set used to verify a signed mapping bundle
+    // fetched from the exporter post-mTLS. Loading at startup means a
+    // missing or malformed JWK file fails fast, before any network I/O.
+    let mapping_jwks = load_mapping_jwks(args.posix_mapping_jwks.as_deref())?;
 
     let mut importer = connect(&args, auth).await?;
+
+    // Resolve the importer's POSIX identity from the signed mapping
+    // bundle (fetched via Tfetchbundle after mTLS). The doc (§7.1)
+    // places Tfetchbundle before Tattach; in this implementation
+    // Tattach is already inside connect(). The deviation is safe
+    // because Tattach is SVID-authenticated, not uid-authenticated:
+    // the importer's pre-setuid uid does not affect server-side
+    // identity resolution.
+    let posix = resolve_posix_identity(
+        &args,
+        &identity,
+        mapping_jwks.as_ref(),
+        &importer,
+    )
+    .await?;
 
     let endpoint = importer.endpoint.take();
     let transport = match args.transport.as_str() {
@@ -143,9 +154,11 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error + Send +
 
     // Drop privileges *before* the FUSE mount. After the transition, the
     // mount() path falls through to the unprivileged `fusermount3` helper
-    // because euid is no longer 0. See docs/POSIX_IDENTITY.md §5.1.
-    if args.setuid_from_svid {
-        let p = posix.as_ref().expect("checked above when --setuid-from-svid is set");
+    // because euid is no longer 0. See docs/POSIX_IDENTITY.md §7.1.
+    if args.setuid_from_mapping {
+        let p = posix.as_ref().expect(
+            "resolve_posix_identity guarantees Some when --setuid-from-mapping is set",
+        );
         p9n_importer::posix_bootstrap::apply_setuid(p)
             .map_err(|e| format!("setuid bootstrap failed: {e}"))?;
     }
@@ -165,6 +178,107 @@ fn init() {
         .install_default()
         .expect("Failed to install rustls CryptoProvider");
     p9n_importer::logging::init();
+}
+
+// ── POSIX identity resolution ──
+
+fn load_mapping_jwks(
+    path: Option<&str>,
+) -> Result<Option<p9n_auth::spiffe::jwt_svid::JwkSet>, Box<dyn std::error::Error + Send + Sync>> {
+    let Some(path) = path else { return Ok(None) };
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("read --posix-mapping-jwks {path}: {e}"))?;
+    let jwks = p9n_auth::spiffe::jwt_svid::JwkSet::from_json(&bytes)
+        .map_err(|e| format!("parse --posix-mapping-jwks {path}: {e}"))?;
+    tracing::info!(path, keys = jwks.keys.len(), "loaded mapping-bundle JWK Set");
+    Ok(Some(jwks))
+}
+
+/// Resolve `(uid, gid, groups)` for the importer's own SPIFFE ID by
+/// fetching the signed mapping bundle from the exporter.
+///
+/// - With no JWK Set configured (`--posix-mapping-jwks` unset),
+///   returns `Ok(None)`. `--require-posix-mapping` or
+///   `--setuid-from-mapping` then surface this as a startup error.
+/// - With a JWK Set: a Tfetchbundle failure (e.g. exporter has no
+///   bundle loaded for our trust domain) is treated as `None`.
+/// - A bundle that fetches but fails verification is fatal — never
+///   silently downgraded to "fall through", since a signed-but-
+///   invalid bundle is a security event.
+async fn resolve_posix_identity(
+    args: &Args,
+    identity: &p9n_auth::spiffe::SpiffeIdentity,
+    jwks: Option<&p9n_auth::spiffe::jwt_svid::JwkSet>,
+    importer: &p9n_importer::importer::Importer,
+) -> Result<Option<p9n_auth::PosixIdentity>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut posix: Option<p9n_auth::PosixIdentity> = None;
+
+    if let Some(jwks) = jwks {
+        match importer
+            .fetch_posix_mapping_bundle(&identity.trust_domain)
+            .await
+        {
+            Ok(jws_bytes) => {
+                let now = unix_now();
+                match p9n_importer::posix_bootstrap::extract_from_bundle(
+                    &identity.spiffe_id,
+                    &jws_bytes,
+                    jwks,
+                    &identity.trust_domain,
+                    now,
+                ) {
+                    Ok(Some(p)) => {
+                        tracing::info!(
+                            uid = p.uid,
+                            gid = p.gid,
+                            spiffe_id = %identity.spiffe_id,
+                            "POSIX identity resolved from mapping bundle",
+                        );
+                        posix = Some(p);
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            spiffe_id = %identity.spiffe_id,
+                            trust_domain = %identity.trust_domain,
+                            "mapping bundle has no entry for this SPIFFE ID",
+                        );
+                    }
+                    Err(e) => {
+                        // Verified-but-invalid is a security event —
+                        // never silently downgrade. Caller exits.
+                        return Err(format!("mapping bundle verification: {e}").into());
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "exporter has no POSIX mapping bundle for our trust domain",
+                );
+            }
+        }
+    }
+
+    if posix.is_none() && (args.require_posix_mapping || args.setuid_from_mapping) {
+        return Err(format!(
+            "--{} requires a bundle-resolved POSIX identity",
+            if args.setuid_from_mapping {
+                "setuid-from-mapping"
+            } else {
+                "require-posix-mapping"
+            },
+        )
+        .into());
+    }
+
+    Ok(posix)
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ── Authentication ──

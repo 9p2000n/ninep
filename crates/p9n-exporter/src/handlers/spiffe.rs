@@ -105,6 +105,59 @@ pub fn handle_fetchbundle<B: Backend>(
                 }
             }
         }
+        BUNDLE_POSIX_MAPPING => {
+            // Return the verbatim signed JWS bytes of the loaded
+            // mapping bundle, but only when the trust_domain matches
+            // the bundle's. Cross-domain requests are refused; the
+            // mapping authority of one trust domain has no claim over
+            // another's namespace.
+            let Some(state) = ctx.posix_mapping.as_ref() else {
+                tracing::warn!(
+                    tag,
+                    trust_domain = %trust_domain,
+                    "Tfetchbundle: no POSIX mapping bundle loaded",
+                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no POSIX mapping bundle loaded",
+                )
+                .into());
+            };
+            if state.trust_domain != trust_domain {
+                tracing::warn!(
+                    tag,
+                    requested = %trust_domain,
+                    loaded = %state.trust_domain,
+                    "Tfetchbundle: POSIX mapping trust_domain mismatch",
+                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "no POSIX mapping bundle for domain: {trust_domain}"
+                    ),
+                )
+                .into());
+            }
+            let bytes = state.raw_jws();
+            tracing::debug!(
+                tag,
+                trust_domain = %trust_domain,
+                format,
+                bundle_len = bytes.len(),
+                serial = state.serial(),
+                "Tfetchbundle result (POSIX mapping)",
+            );
+            Ok(Fcall {
+                size: 0,
+                msg_type: MsgType::Rfetchbundle,
+                tag,
+                msg: Msg::Rfetchbundle {
+                    trust_domain,
+                    format,
+                    bundle: bytes,
+                },
+            })
+        }
         _ => {
             tracing::warn!(tag, format, "Tfetchbundle rejected: unknown bundle format");
             Err(std::io::Error::new(

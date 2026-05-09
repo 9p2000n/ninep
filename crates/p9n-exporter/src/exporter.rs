@@ -90,6 +90,7 @@ impl<B: Backend> Exporter<B> {
             server_trust_domain,
             cap_signing_key,
             config: cfg,
+            posix_mapping: None,
         });
 
         tracing::info!("9P2000.N exporter listening on {}", endpoint.local_addr()?);
@@ -157,6 +158,24 @@ impl<B: Backend> Exporter<B> {
             .access
     }
 
+    /// Install a loaded mapping bundle. MUST be called before `run`,
+    /// while the `Arc<SharedCtx>` is still uniquely owned (no clones
+    /// have been handed to connection handlers yet).
+    pub fn set_posix_mapping(
+        &mut self,
+        state: std::sync::Arc<crate::posix_mapping_state::PosixMappingState>,
+    ) {
+        let ctx = Arc::get_mut(&mut self.ctx)
+            .expect("set_posix_mapping called after ctx was shared");
+        tracing::info!(
+            trust_domain = %state.trust_domain,
+            entries = state.entry_count(),
+            serial = state.serial(),
+            "POSIX mapping bundle installed",
+        );
+        ctx.posix_mapping = Some(state);
+    }
+
     /// Accept an RDMA connection (or pend forever if RDMA is not enabled).
     #[cfg(feature = "rdma")]
     async fn accept_rdma(
@@ -174,6 +193,7 @@ impl<B: Backend> Exporter<B> {
             &self.rdma_listener,
             &self.rdma_acceptor,
             self.rdma_device.as_deref(),
+            self.ctx.posix_mapping.as_deref(),
         )
         .await
     }
@@ -187,6 +207,7 @@ impl<B: Backend> Exporter<B> {
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.spawn_gc_task();
         self.spawn_heartbeat_task();
+        self.spawn_mapping_reload_task();
 
         let mut handlers = JoinSet::new();
         let mut sigterm = signal(SignalKind::terminate())
@@ -323,6 +344,60 @@ impl<B: Backend> Exporter<B> {
         });
     }
 
+    /// Spawn a background task that polls the POSIX mapping bundle file
+    /// and reloads it on mtime change. No-op when no bundle is loaded
+    /// (no `--posix-mapping-bundle` flag) or when the bundle was
+    /// installed via an in-memory path (no `source_path`).
+    ///
+    /// The 30 s cadence is hardcoded because it's a tiny syscall (one
+    /// `stat`) when the file is unchanged and a verification round-trip
+    /// when it isn't — neither warrants operator tuning. Operators who
+    /// need synchronous propagation can SIGHUP-style restart the
+    /// exporter; that's also fine because §9 makes mid-session re-uid
+    /// impossible anyway.
+    fn spawn_mapping_reload_task(&self) {
+        let Some(state) = self.ctx.posix_mapping.clone() else { return };
+        if state.source_path.is_none() {
+            return;
+        }
+        let token = self.shutdown_token.clone();
+        let interval = Duration::from_secs(30);
+        tokio::spawn(async move {
+            tracing::info!(
+                interval_secs = interval.as_secs(),
+                "POSIX mapping reload task started",
+            );
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(interval) => {
+                        let s = state.clone();
+                        let outcome = tokio::task::spawn_blocking(move || s.maybe_reload()).await;
+                        match outcome {
+                            Ok(Ok(true)) => {} // logged inside maybe_reload
+                            Ok(Ok(false)) => {} // unchanged
+                            Ok(Err(e)) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "POSIX mapping reload failed; previous bundle retained",
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "POSIX mapping reload task panicked",
+                                );
+                            }
+                        }
+                    }
+                    _ = token.cancelled() => {
+                        tracing::debug!("POSIX mapping reload task exiting (shutdown)");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     /// Spawn a background task that periodically logs subsystem stats — even
     /// when idle — so operators can see "alive but no work" vs. a stuck server.
     ///
@@ -405,6 +480,7 @@ async fn rdma_accept(
     listener: &Option<tokio::net::TcpListener>,
     acceptor: &Option<TlsAcceptor>,
     device_name: Option<&str>,
+    posix_mapping: Option<&crate::posix_mapping_state::PosixMappingState>,
 ) -> Result<
     (
         p9n_transport::rdma::config::RdmaConnection,
@@ -423,11 +499,13 @@ async fn rdma_accept(
     };
     let (tcp_stream, addr) = listener.accept().await?;
 
-    // Extract SPIFFE ID + p9nPosixIdentity from the TLS peer certificate during bootstrap.
+    // Extract SPIFFE ID and resolve POSIX identity from the loaded
+    // mapping bundle (if any) using the TLS peer certificate.
     let (rdma_conn, _session_key, peer_certs) =
         p9n_transport::rdma::config::accept(tcp_stream, acceptor, device_name).await?;
 
-    let (spiffe_id, peer_posix) = crate::util::peer_attrs_from_certs(&peer_certs);
+    let (spiffe_id, peer_posix) =
+        crate::util::peer_attrs_from_certs(&peer_certs, posix_mapping);
 
     Ok((rdma_conn, spiffe_id, peer_posix, addr))
 }

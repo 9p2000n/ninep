@@ -46,7 +46,7 @@ pub struct ExporterConfig {
     ///
     /// When false, anonymous peers are rejected with EACCES at attach time.
     /// This is the secure default: per-workload root isolation
-    /// (docs/POSIX_IDENTITY.md §5.6) requires the server to know which
+    /// (docs/POSIX_IDENTITY.md §8) requires the server to know which
     /// workload a peer represents in order to derive the appropriate
     /// subtree; an anonymous peer would resolve to the export root
     /// itself, exposing the union of all workloads' trees.

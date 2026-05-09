@@ -151,9 +151,12 @@ pub struct Session<H: Send + Sync + 'static = OwnedFd> {
     pub msize: AtomicU32,
     pub caps: Mutex<CapSet>,
     pub spiffe_id: Option<String>,
-    /// POSIX identity from the peer's `p9nPosixIdentity` X.509 extension,
-    /// when present. Drives ownership_for() in `AccessControl`. Absent
-    /// for peers running pre-extension SVIDs (fallback path).
+    /// POSIX identity for the peer, resolved from the loaded mapping
+    /// bundle at connection-accept time. Drives ownership_for() in
+    /// `AccessControl`. Absent when no bundle is loaded or when the
+    /// bundle has no entry for this SPIFFE ID; static
+    /// `Policy.uid/gid` then supplies the fallback (see
+    /// `docs/POSIX_IDENTITY.md` §10).
     pub peer_posix: Option<PosixIdentity>,
     pub session_key: Mutex<Option<[u8; 16]>>,
     pub conn_id: u64,

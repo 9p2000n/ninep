@@ -43,6 +43,23 @@ struct Args {
     #[arg(long, value_name = "DOMAIN=PATH")]
     jwt_keys: Vec<String>,
 
+    /// Path to the signed POSIX mapping bundle (JWS Compact, see
+    /// docs/POSIX_IDENTITY.md §3). When set together with
+    /// --posix-mapping-jwks, peer SPIFFE IDs resolve to (uid, gid,
+    /// groups) through the bundle in preference to the v1 X.509
+    /// extension path. Bundle load failure is fail-closed: the
+    /// exporter exits with an error.
+    #[arg(long, value_name = "PATH")]
+    posix_mapping_bundle: Option<String>,
+
+    /// Path to the JWK Set file containing the mapping-authority
+    /// public key(s) used to verify --posix-mapping-bundle. Typically
+    /// a slice of the SPIFFE trust bundle filtered to JWKs whose
+    /// `use` field equals "p9n-mapping". MUST be set when
+    /// --posix-mapping-bundle is set.
+    #[arg(long, value_name = "PATH")]
+    posix_mapping_jwks: Option<String>,
+
     /// Enable per-fid rate limiting via Tratelimit
     #[arg(long)]
     enable_rate_limit: bool,
@@ -94,9 +111,18 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     config.max_blocking_threads = args.blocking_threads;
     config.allow_anonymous_attach = args.allow_anonymous;
 
+    // Load (and verify) the POSIX mapping bundle before constructing the
+    // exporter so any failure is fail-closed and surfaces before we bind
+    // the listening sockets.
+    let mapping_state = load_posix_mapping(&args, &identity)?;
+
     let mut exporter = p9n_exporter::exporter::Exporter::with_config(
         args.listen, args.export, auth, config,
     )?;
+
+    if let Some(state) = mapping_state {
+        exporter.set_posix_mapping(std::sync::Arc::new(state));
+    }
 
     if let Some(tcp_addr) = args.tcp_listen {
         exporter.enable_tcp(tcp_addr, &identity, &trust_store).await?;
@@ -139,6 +165,30 @@ async fn load_auth(
 }
 
 // ── JWT trust bundles ──
+
+// ── POSIX mapping bundle ──
+
+fn load_posix_mapping(
+    args: &Args,
+    identity: &p9n_auth::spiffe::SpiffeIdentity,
+) -> Result<Option<p9n_exporter::posix_mapping_state::PosixMappingState>, Box<dyn std::error::Error>>
+{
+    match (&args.posix_mapping_bundle, &args.posix_mapping_jwks) {
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(
+            "--posix-mapping-bundle and --posix-mapping-jwks must be set together".into(),
+        ),
+        (Some(bundle), Some(jwks)) => {
+            let state = p9n_exporter::posix_mapping_state::PosixMappingState::load_from_files(
+                std::path::Path::new(bundle),
+                std::path::Path::new(jwks),
+                &identity.trust_domain,
+            )
+            .map_err(|e| format!("posix-mapping bundle: {e}"))?;
+            Ok(Some(state))
+        }
+    }
+}
 
 fn load_jwt_keys(
     auth: &p9n_auth::SpiffeAuth,

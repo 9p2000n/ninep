@@ -9,7 +9,7 @@ pub mod workload_api;
 pub mod cert_resolver;
 pub mod chain_verifier;
 pub mod server_verifier;
-pub mod posix_identity;
+pub mod posix_mapping;
 
 #[cfg(feature = "workload-api")]
 pub mod grpc;

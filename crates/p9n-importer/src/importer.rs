@@ -116,6 +116,38 @@ pub struct Importer {
     pub endpoint: Option<quinn::Endpoint>,
 }
 
+impl Importer {
+    /// Request the signed POSIX mapping bundle for `trust_domain` from
+    /// the connected exporter via Tfetchbundle. Returns the verbatim
+    /// JWS Compact-form bytes; the caller verifies against a local JWK
+    /// Set before trusting any contents.
+    ///
+    /// Errors:
+    /// - `RpcError::NineP { ecode: ENOENT }` if the exporter has no
+    ///   bundle loaded for that trust domain.
+    /// - `RpcError::Transport` for protocol-level failures or an
+    ///   unexpected response shape.
+    pub async fn fetch_posix_mapping_bundle(
+        &self,
+        trust_domain: &str,
+    ) -> Result<Vec<u8>, crate::error::RpcError> {
+        let resp = self
+            .rpc
+            .call(
+                MsgType::Tfetchbundle,
+                Msg::Fetchbundle {
+                    trust_domain: trust_domain.to_string(),
+                    format: BUNDLE_POSIX_MAPPING,
+                },
+            )
+            .await?;
+        match resp.msg {
+            Msg::Rfetchbundle { bundle, .. } => Ok(bundle),
+            _ => Err("unexpected response to Tfetchbundle".into()),
+        }
+    }
+}
+
 /// Options for connecting to a 9P server.
 pub struct ConnectOpts {
     pub addr: String,

@@ -18,18 +18,19 @@
 //! workloads attaching to the same export simply do not see each
 //! other's files at the protocol layer.
 //!
-//! [`p9n_auth::PosixIdentity`] (the `p9nPosixIdentity` X.509 extension)
-//! is layered on top as an **identity label**, not an access mechanism.
-//! It drives `chown`-on-create, validates wire `gid` in create messages
-//! ([`Self::validate_wire_gid`], `docs/POSIX_IDENTITY.md` §5.4), and
-//! constrains `Tsetattr.uid/gid` ([`Self::validate_setattr_owner`],
-//! §5.5). It does *not* gate read/write/open syscalls against the
-//! peer's uid — the exporter process opens files with its own
-//! credentials. This is intentional: the path-level boundary already
-//! prevents cross-tenant fid acquisition, so per-syscall fsuid
-//! switching would be defense-in-depth rather than a primary control.
+//! [`p9n_auth::PosixIdentity`] (resolved from the loaded mapping
+//! bundle, `docs/POSIX_IDENTITY.md` §3) is layered on top as an
+//! **identity label**, not an access mechanism. It drives
+//! `chown`-on-create, validates wire `gid` in create messages
+//! ([`Self::validate_wire_gid`], §7.6), and constrains
+//! `Tsetattr.uid/gid` ([`Self::validate_setattr_owner`], §7.7). It
+//! does *not* gate read/write/open syscalls against the peer's uid —
+//! the exporter process opens files with its own credentials. This
+//! is intentional: the path-level boundary already prevents
+//! cross-tenant fid acquisition, so per-syscall fsuid switching
+//! would be defense-in-depth rather than a primary control.
 //!
-//! See `docs/POSIX_IDENTITY.md` §5.6 for the full architectural model
+//! See `docs/POSIX_IDENTITY.md` §8 for the full architectural model
 //! and the operator responsibilities it implies.
 
 use p9n_auth::{PosixIdentity, SPIFFE_UID_MAX, SPIFFE_UID_MIN};
@@ -223,14 +224,14 @@ impl AccessControl {
         self.ownership_for_session(spiffe_id, None)
     }
 
-    /// Return the (uid, gid) ownership mapping for a peer, preferring the
-    /// `p9nPosixIdentity` X.509 extension when present and falling back to
-    /// the static `Policy.uid/gid` otherwise.
+    /// Return the (uid, gid) ownership mapping for a peer, preferring
+    /// the bundle-resolved `peer_posix` when present and falling back
+    /// to the static `Policy.uid/gid` otherwise.
     ///
-    /// See `docs/POSIX_IDENTITY.md` §5.2 / §6 for the design rationale —
-    /// when both ends derive their POSIX identity from the same SVID, the
-    /// client's `getuid()` matches the server's chown target by construction
-    /// and `stat` readback no longer mismatches.
+    /// See `docs/POSIX_IDENTITY.md` §1.3 / §10 for the design rationale —
+    /// when both ends derive their POSIX identity from the same signed
+    /// bundle, the client's `getuid()` matches the server's chown target
+    /// by construction and `stat` readback no longer mismatches.
     pub fn ownership_for_session(
         &self,
         spiffe_id: Option<&str>,
@@ -377,13 +378,7 @@ mod tests {
     use super::*;
 
     fn posix(uid: u32, gid: u32) -> PosixIdentity {
-        PosixIdentity {
-            version: 1,
-            uid,
-            gid,
-            groups: Vec::new(),
-            trust_domain: None,
-        }
+        PosixIdentity { uid, gid, groups: Vec::new() }
     }
 
     #[test]
@@ -438,7 +433,7 @@ mod tests {
     }
 
     fn posix_with_groups(uid: u32, gid: u32, groups: Vec<u32>) -> PosixIdentity {
-        PosixIdentity { version: 1, uid, gid, groups, trust_domain: None }
+        PosixIdentity { uid, gid, groups }
     }
 
     fn ac_no_admin() -> AccessControl {

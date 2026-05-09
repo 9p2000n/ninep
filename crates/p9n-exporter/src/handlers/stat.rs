@@ -80,7 +80,7 @@ pub async fn handle_setattr<B: Backend>(
     ctx.lease_mgr.break_for_write(qid_path, session.conn_id);
 
     // Owner-change validation: combines the PERM_ADMIN gate and the
-    // SPIFFE-range / set-membership check (docs/POSIX_IDENTITY.md §5.4).
+    // SPIFFE-range / set-membership check (docs/POSIX_IDENTITY.md §7.7).
     if touches_owner {
         ctx.access.validate_setattr_owner(
             session.spiffe_id.as_deref(),

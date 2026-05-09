@@ -7,6 +7,7 @@ pub mod config;
 // Internals (pub for integration tests, ideally pub(crate) in future)
 pub mod access;
 pub mod util;
+pub mod posix_mapping_state;
 pub mod shared;
 pub mod quic_connection;
 pub mod tcp_connection;

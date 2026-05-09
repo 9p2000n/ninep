@@ -141,6 +141,8 @@ pub const SVID_X509: u8 = 0;
 pub const SVID_JWT: u8 = 1;
 pub const BUNDLE_X509_CAS: u8 = 0;
 pub const BUNDLE_JWT_KEYS: u8 = 1;
+/// Signed POSIX-mapping bundle (`docs/POSIX_IDENTITY.md` §6.3).
+pub const BUNDLE_POSIX_MAPPING: u8 = 2;
 pub const SPIFFE_OK: u8 = 0;
 pub const SPIFFE_UNTRUSTED: u8 = 1;
 pub const SPIFFE_EXPIRED: u8 = 2;

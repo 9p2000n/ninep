@@ -34,7 +34,7 @@ impl<B: Backend> QuicConnectionHandler<B> {
         // expect one successful bind per connection; the extra slack covers
         // any transient duplicates.
         let (bind_tx, bind_rx) = mpsc::channel(4);
-        let (spiffe_id, peer_posix) = extract_peer_attrs_from_conn(&conn);
+        let (spiffe_id, peer_posix) = extract_peer_attrs_from_conn(&conn, &ctx);
         let conn_id = lease_manager::next_conn_id();
         let remote = conn.remote_address();
 
@@ -405,8 +405,9 @@ fn send_datagram(
     Ok(())
 }
 
-fn extract_peer_attrs_from_conn(
+fn extract_peer_attrs_from_conn<B: Backend>(
     conn: &quinn::Connection,
+    ctx: &SharedCtx<B>,
 ) -> (Option<String>, Option<p9n_auth::PosixIdentity>) {
     let Some(identity) = conn.peer_identity() else {
         return (None, None);
@@ -414,5 +415,5 @@ fn extract_peer_attrs_from_conn(
     let Ok(certs) = identity.downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>() else {
         return (None, None);
     };
-    crate::util::peer_attrs_from_certs(&certs)
+    crate::util::peer_attrs_from_certs(&certs, ctx.posix_mapping.as_deref())
 }

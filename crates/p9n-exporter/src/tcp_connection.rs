@@ -43,7 +43,7 @@ impl<B: Backend> TcpConnectionHandler<B> {
         let (push_tx, push_rx) = mpsc::channel(64);
 
         // Extract SPIFFE ID + posix identity and remote address before splitting the stream.
-        let (spiffe_id, peer_posix) = extract_peer_attrs_from_tls(&stream);
+        let (spiffe_id, peer_posix) = extract_peer_attrs_from_tls(&stream, &ctx);
         let remote = stream.get_ref().0.peer_addr().ok();
         let conn_id = lease_manager::next_conn_id();
 
@@ -212,13 +212,18 @@ impl<B: Backend> TcpConnectionHandler<B> {
     }
 }
 
-/// Extract SPIFFE ID + p9nPosixIdentity from a tokio-rustls TLS server stream's peer certificate.
-fn extract_peer_attrs_from_tls(
+/// Extract SPIFFE ID + posix identity from a tokio-rustls TLS server stream's peer certificate.
+///
+/// Posix identity resolves through the mapping bundle (when loaded) in
+/// preference to the legacy X.509 extension path; see
+/// `crate::util::peer_attrs_from_certs`.
+fn extract_peer_attrs_from_tls<B: Backend>(
     stream: &TlsStream<TcpStream>,
+    ctx: &SharedCtx<B>,
 ) -> (Option<String>, Option<p9n_auth::PosixIdentity>) {
     let (_, server_conn) = stream.get_ref();
     let Some(certs) = server_conn.peer_certificates() else {
         return (None, None);
     };
-    crate::util::peer_attrs_from_certs(certs)
+    crate::util::peer_attrs_from_certs(certs, ctx.posix_mapping.as_deref())
 }

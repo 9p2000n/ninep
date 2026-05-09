@@ -81,6 +81,9 @@ pub struct Jwk {
     pub kid: String,
     #[serde(default)]
     pub alg: Option<String>,
+    /// `use` claim. Reserved keyword in Rust, so renamed at the serde layer.
+    #[serde(default, rename = "use", skip_serializing_if = "Option::is_none")]
+    pub use_: Option<String>,
     // RSA
     #[serde(default)]
     pub n: Option<String>,
@@ -111,7 +114,7 @@ impl JwkSet {
     }
 }
 
-fn decoding_key_from_jwk(jwk: &Jwk) -> Result<jsonwebtoken::DecodingKey, AuthError> {
+pub(super) fn decoding_key_from_jwk(jwk: &Jwk) -> Result<jsonwebtoken::DecodingKey, AuthError> {
     match jwk.kty.as_str() {
         "RSA" => {
             let n = jwk
@@ -141,7 +144,7 @@ fn decoding_key_from_jwk(jwk: &Jwk) -> Result<jsonwebtoken::DecodingKey, AuthErr
     }
 }
 
-fn algorithm_from_jwk(jwk: &Jwk) -> Result<jsonwebtoken::Algorithm, AuthError> {
+pub(super) fn algorithm_from_jwk(jwk: &Jwk) -> Result<jsonwebtoken::Algorithm, AuthError> {
     if let Some(alg) = &jwk.alg {
         match alg.as_str() {
             "RS256" => Ok(jsonwebtoken::Algorithm::RS256),

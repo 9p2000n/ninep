@@ -1,8 +1,9 @@
-//! Privilege-drop bootstrap driven by the importer's own SVID.
+//! Privilege-drop bootstrap driven by the importer's POSIX identity.
 //!
-//! Implements the importer half of `docs/POSIX_IDENTITY.md` §5.1: parse
-//! the `p9nPosixIdentity` extension from the local SVID, then
-//! (optionally) perform the full transition:
+//! Implements the importer half of `docs/POSIX_IDENTITY.md` §7.1.
+//! After resolving `(uid, gid, groups)` for the importer's own SPIFFE
+//! ID from the signed mapping bundle, the bootstrap performs the
+//! full transition:
 //!
 //! ```text
 //!   setgroups → setresgid → setresuid →
@@ -12,24 +13,40 @@
 //!
 //! before FUSE mounts. After the transition the process holds no
 //! capabilities, has no path to regain them (no_new_privs is set), and
-//! runs as the SVID-derived `(uid, gid, groups)`. The bootstrap is
-//! invoked exactly once at startup and gated behind an opt-in flag
-//! (`--setuid-from-svid`).
+//! runs as the bundle-derived `(uid, gid, groups)`. The bootstrap is
+//! invoked exactly once at startup, gated behind `--setuid-from-mapping`.
 
-use p9n_auth::{PosixIdentity, SpiffeIdentity};
+use p9n_auth::spiffe::jwt_svid::JwkSet;
+use p9n_auth::{MappingBundle, PosixIdentity};
 use std::io;
 
-/// Parse the `p9nPosixIdentity` extension from the importer's own SVID.
+/// Resolve the importer's POSIX identity from a signed mapping bundle.
 ///
-/// Returns `Ok(None)` if the cert has no such extension. Errors propagate
-/// up unchanged so the caller can decide whether to fail (when
-/// `--require-posix-identity` is set) or fall back.
-pub fn extract(identity: &SpiffeIdentity) -> Result<Option<PosixIdentity>, p9n_auth::AuthError> {
-    let leaf = identity
-        .cert_chain
-        .first()
-        .ok_or_else(|| p9n_auth::AuthError::CertificateLoad("empty cert chain".into()))?;
-    p9n_auth::extract_posix_identity(leaf)
+/// `jws_bytes` is the verbatim JWS-compact bundle as received over
+/// `Tfetchbundle(BUNDLE_POSIX_MAPPING)`. `jwk_set` is the local set of
+/// candidate verification keys (only those with `use="p9n-mapping"`
+/// qualify, enforced inside `MappingBundle::load_and_verify`).
+/// `expected_trust_domain` MUST be the importer's own trust domain;
+/// a bundle for a different domain is rejected.
+///
+/// Returns:
+/// - `Ok(Some(identity))` on bundle hit.
+/// - `Ok(None)` when the bundle is well-formed but lacks an entry for
+///   `spiffe_id`. The caller may then fall through to [`extract`] (v1
+///   X.509 path) or fail closed depending on policy flags.
+/// - `Err(...)` for any signature, structural, or staleness failure;
+///   these are fatal and MUST NOT be silently downgraded to "fall
+///   through" — a signed-but-invalid bundle is a security event.
+pub fn extract_from_bundle(
+    spiffe_id: &str,
+    jws_bytes: &[u8],
+    jwk_set: &JwkSet,
+    expected_trust_domain: &str,
+    now: u64,
+) -> Result<Option<PosixIdentity>, p9n_auth::AuthError> {
+    let bundle =
+        MappingBundle::load_and_verify(jws_bytes, jwk_set, expected_trust_domain, now)?;
+    Ok(bundle.lookup_posix(spiffe_id))
 }
 
 /// Drop privileges to the SVID-derived `(uid, gid, groups)` and lock down
@@ -176,4 +193,151 @@ pub fn apply_setuid(p: &PosixIdentity) -> io::Result<()> {
         "dropped privileges to SVID-derived POSIX identity"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use p9n_auth::{BundleEntry, BundlePayload};
+
+    // ── Same fixed test keypair as p9n_auth::spiffe::posix_mapping tests.
+    const TEST_PRIVATE_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiVYWvBoz0W8XhaHR\n\
+        tkm7T7YeQlWKukKY4jc4OP4q5lehRANCAAS45NzWr0n5A2m2cv202gana0Eicbva\n\
+        XxX60iO/d4jQGZ87lXaHPBch/n8BRR4eAmMDb0HoBdJEI3OZdinuLaYW\n\
+        -----END PRIVATE KEY-----\n";
+    const TEST_PUB_X: &str = "uOTc1q9J-QNptnL9tNoGp2tBInG72l8V-tIjv3eI0Bk";
+    const TEST_PUB_Y: &str = "nzuVdoc8FyH-fwFFHh4CYwNvQegF0kQjc5l2Ke4tphY";
+    const TEST_KID: &str = "test-key";
+
+    fn jwk_set() -> JwkSet {
+        let json = serde_json::json!({
+            "keys": [{
+                "kty": "EC",
+                "crv": "P-256",
+                "kid": TEST_KID,
+                "alg": "ES256",
+                "use": "p9n-mapping",
+                "x": TEST_PUB_X,
+                "y": TEST_PUB_Y,
+            }]
+        });
+        JwkSet::from_json(&serde_json::to_vec(&json).unwrap()).unwrap()
+    }
+
+    fn sign(payload: &BundlePayload) -> Vec<u8> {
+        let key = jsonwebtoken::EncodingKey::from_ec_pem(TEST_PRIVATE_PEM.as_bytes()).unwrap();
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        header.kid = Some(TEST_KID.into());
+        header.typ = Some("p9n-posix-mapping-bundle".into());
+        jsonwebtoken::encode(&header, payload, &key).unwrap().into_bytes()
+    }
+
+    fn payload_with(entries: Vec<BundleEntry>) -> BundlePayload {
+        BundlePayload {
+            version: 1,
+            trust_domain: "example.com".into(),
+            serial: 1,
+            issued_at: 1_000,
+            not_after: 1_000_000,
+            entries,
+        }
+    }
+
+    fn alice() -> BundleEntry {
+        BundleEntry {
+            spiffe_id: "spiffe://example.com/workloads/alice".into(),
+            uid: 1_048_577,
+            gid: 1_048_577,
+            groups: vec![],
+            deprecated: false,
+            deprecated_since: None,
+        }
+    }
+
+    #[test]
+    fn extract_from_bundle_hit() {
+        let payload = payload_with(vec![alice()]);
+        let jws = sign(&payload);
+        let id = extract_from_bundle(
+            "spiffe://example.com/workloads/alice",
+            &jws,
+            &jwk_set(),
+            "example.com",
+            500,
+        )
+        .unwrap()
+        .expect("bundle entry exists");
+        assert_eq!(id.uid, 1_048_577);
+        assert_eq!(id.gid, 1_048_577);
+    }
+
+    #[test]
+    fn extract_from_bundle_miss_returns_none() {
+        let payload = payload_with(vec![alice()]);
+        let jws = sign(&payload);
+        let result = extract_from_bundle(
+            "spiffe://example.com/workloads/bob",
+            &jws,
+            &jwk_set(),
+            "example.com",
+            500,
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn extract_from_bundle_expired_errors() {
+        let mut payload = payload_with(vec![alice()]);
+        payload.not_after = 100;
+        let jws = sign(&payload);
+        let err = extract_from_bundle(
+            "spiffe://example.com/workloads/alice",
+            &jws,
+            &jwk_set(),
+            "example.com",
+            500,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("expired"), "{err}");
+    }
+
+    #[test]
+    fn extract_from_bundle_trust_domain_mismatch_errors() {
+        let payload = payload_with(vec![alice()]);
+        let jws = sign(&payload);
+        let err = extract_from_bundle(
+            "spiffe://other.com/workloads/alice",
+            &jws,
+            &jwk_set(),
+            "other.com",
+            500,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("trust_domain mismatch"), "{err}");
+    }
+
+    #[test]
+    fn extract_from_bundle_corrupted_signature_errors() {
+        let payload = payload_with(vec![alice()]);
+        let mut jws = sign(&payload);
+        // Flip a byte deep inside the signature segment.
+        let last = jws.len() - 5;
+        jws[last] ^= 0x01;
+        let err = extract_from_bundle(
+            "spiffe://example.com/workloads/alice",
+            &jws,
+            &jwk_set(),
+            "example.com",
+            500,
+        )
+        .unwrap_err();
+        // jsonwebtoken surfaces this as a verification failure.
+        assert!(
+            err.to_string().contains("signature/payload decode")
+                || err.to_string().contains("InvalidSignature"),
+            "{err}"
+        );
+    }
 }

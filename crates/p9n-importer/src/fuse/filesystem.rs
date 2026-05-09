@@ -33,11 +33,11 @@ pub struct P9Filesystem {
     leases: Arc<LeaseMap>,
     /// Whether the server supports Tcompound (reduces round-trips).
     use_compound: bool,
-    /// Authoritative gid sourced from the importer's own `p9nPosixIdentity`,
-    /// when present. Used to populate the wire `gid` field in
-    /// Tlcreate/Tmkdir/Tmknod/Tsymlink so the strict server-side check in
-    /// docs/POSIX_IDENTITY.md §5.4 passes regardless of the FUSE caller's
-    /// local process gid.
+    /// Authoritative gid sourced from the importer's bundle-resolved
+    /// POSIX identity, when present. Used to populate the wire `gid`
+    /// field in Tlcreate/Tmkdir/Tmknod/Tsymlink so the strict
+    /// server-side check in docs/POSIX_IDENTITY.md §7.6 passes
+    /// regardless of the FUSE caller's local process gid.
     posix_gid: Option<u32>,
     /// Handle for the background push receiver task.
     _push_handle: tokio::task::JoinHandle<()>,

@@ -10,7 +10,7 @@ use p9n_proto::types::*;
 use std::sync::Arc;
 
 /// The wire `gid` field in create messages must equal the authoritative
-/// gid for the peer (docs/POSIX_IDENTITY.md §5.4). Tests use the current
+/// gid for the peer (docs/POSIX_IDENTITY.md §7.6). Tests use the current
 /// process gid as the static-policy gid so the chown-on-create path
 /// becomes a no-op for any user running the suite.
 fn test_gid() -> u32 {
@@ -128,6 +128,7 @@ async fn start_exporter_with_config(
                     server_trust_domain: "test.local".into(),
                     cap_signing_key: [0x42; 32],
                     config,
+                    posix_mapping: None,
                 });
                 let mut handler = p9n_exporter::quic_connection::QuicConnectionHandler::new(conn, ctx);
                 let _ = handler.run().await;
@@ -262,6 +263,7 @@ async fn start_exporter_shared(
         server_trust_domain: "test.local".into(),
         cap_signing_key: [0x42; 32],
         config,
+        posix_mapping: None,
     });
 
     tokio::spawn(async move {
@@ -1518,7 +1520,7 @@ async fn test_quicstream_eopnotsupp_without_cap() {
 
 /// A peer with no SPIFFE identity (the server-only-TLS test fixture)
 /// must be rejected at Tattach when allow_anonymous_attach is false —
-/// the production default. Per docs/POSIX_IDENTITY.md §5.6,
+/// the production default. Per docs/POSIX_IDENTITY.md §8,
 /// per-workload root isolation requires a SPIFFE identity to derive
 /// the correct subtree; an anonymous peer would otherwise resolve to
 /// the export root and see the union of all workloads' trees.
