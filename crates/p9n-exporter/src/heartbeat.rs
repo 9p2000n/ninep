@@ -48,6 +48,10 @@ impl Heartbeat {
     /// tick number. The closure is expected to emit its own structured
     /// `tracing` event (so the source, not the runner, controls the log
     /// format).
+    //
+    // Builder-style consuming method, not arithmetic — the name is
+    // intentional and used as `.add(|tick| ...).add(|tick| ...)`.
+    #[allow(clippy::should_implement_trait)]
     pub fn add<F>(mut self, source: F) -> Self
     where
         F: Fn(u64) + Send + Sync + 'static,

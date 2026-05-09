@@ -15,6 +15,12 @@ pub struct FidTable<H: Send + Sync + 'static = OwnedFd> {
     fids: DashMap<u32, FidState<H>>,
 }
 
+impl<H: Send + Sync + 'static> Default for FidTable<H> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<H: Send + Sync + 'static> FidTable<H> {
     pub fn new() -> Self {
         Self {

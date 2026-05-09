@@ -23,7 +23,7 @@ fn make_stat(qid: Qid, size: u64) -> Stat {
         rdev: 0,
         size,
         blksize: 4096,
-        blocks: (size + 511) / 512,
+        blocks: size.div_ceil(512),
         atime_sec: 0,
         atime_nsec: 0,
         mtime_sec: 0,

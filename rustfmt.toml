@@ -1,0 +1,4 @@
+# Stable rustfmt options only — anything beyond this would require nightly.
+edition = "2021"
+max_width = 100
+newline_style = "Unix"

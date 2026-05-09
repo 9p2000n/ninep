@@ -16,6 +16,12 @@ pub struct LeaseMap {
     ino_lease_count: DashMap<u64, u32>,
 }
 
+impl Default for LeaseMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LeaseMap {
     pub fn new() -> Self {
         Self {

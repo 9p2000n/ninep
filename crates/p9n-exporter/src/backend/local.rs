@@ -168,7 +168,10 @@ impl LocalBackend {
         let raw = fd.as_raw_fd();
         let mut file = unsafe { std::fs::File::from_raw_fd(raw) };
         let result = f(&mut file);
-        std::mem::forget(file); // don't close the borrowed fd
+        // mem::forget is the whole point: File's Drop would close the
+        // fd, but we are borrowing from the caller's OwnedFd.
+        #[allow(clippy::mem_forget)]
+        std::mem::forget(file);
         result
     }
 }
@@ -207,10 +210,10 @@ impl LocalBackend {
     /// by the openat2-based resolution path that doesn't go through
     /// std::fs::Metadata.
     pub fn make_qid_from_libc(stat: &libc::stat) -> Qid {
-        let mode = stat.st_mode as u32;
-        let qtype = match mode & libc::S_IFMT as u32 {
-            x if x == libc::S_IFDIR as u32 => QT_DIR,
-            x if x == libc::S_IFLNK as u32 => QT_SYMLINK,
+        let mode = stat.st_mode;
+        let qtype = match mode & libc::S_IFMT {
+            x if x == libc::S_IFDIR => QT_DIR,
+            x if x == libc::S_IFLNK => QT_SYMLINK,
             _ => QT_FILE,
         };
         Qid {
@@ -226,10 +229,10 @@ impl LocalBackend {
         Stat {
             valid: P9_GETATTR_BASIC,
             qid: Self::make_qid_from_libc(stat),
-            mode: stat.st_mode as u32,
+            mode: stat.st_mode,
             uid: stat.st_uid,
             gid: stat.st_gid,
-            nlink: stat.st_nlink as u64,
+            nlink: stat.st_nlink,
             rdev: stat.st_rdev,
             size: stat.st_size as u64,
             blksize: stat.st_blksize as u64,
@@ -379,7 +382,7 @@ impl Backend for LocalBackend {
         )
         .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         let qid = Self::make_qid_from_libc(&stat);
-        let is_dir = (stat.st_mode as u32 & libc::S_IFMT as u32) == libc::S_IFDIR as u32;
+        let is_dir = (stat.st_mode as u32 & libc::S_IFMT) == libc::S_IFDIR;
         Ok((parent.join(name), qid, is_dir))
     }
 
@@ -614,11 +617,11 @@ impl Backend for LocalBackend {
         let parent_fd = self.resolve_dir(parent)?;
         let dev = nix::sys::stat::makedev(major as u64, minor as u64);
         let nix_mode = Mode::from_bits_truncate(mode as nix::sys::stat::mode_t);
-        let sflag = match mode & libc::S_IFMT as u32 {
-            x if x == libc::S_IFCHR as u32 => nix::sys::stat::SFlag::S_IFCHR,
-            x if x == libc::S_IFBLK as u32 => nix::sys::stat::SFlag::S_IFBLK,
-            x if x == libc::S_IFIFO as u32 => nix::sys::stat::SFlag::S_IFIFO,
-            x if x == libc::S_IFSOCK as u32 => nix::sys::stat::SFlag::S_IFSOCK,
+        let sflag = match mode & libc::S_IFMT {
+            x if x == libc::S_IFCHR => nix::sys::stat::SFlag::S_IFCHR,
+            x if x == libc::S_IFBLK => nix::sys::stat::SFlag::S_IFBLK,
+            x if x == libc::S_IFIFO => nix::sys::stat::SFlag::S_IFIFO,
+            x if x == libc::S_IFSOCK => nix::sys::stat::SFlag::S_IFSOCK,
             _ => nix::sys::stat::SFlag::S_IFREG,
         };
         // mknodat — nix doesn't expose it, fall through to libc.

@@ -22,8 +22,9 @@
 //! bundle, `docs/POSIX_IDENTITY.md` §3) is layered on top as an
 //! **identity label**, not an access mechanism. It drives
 //! `chown`-on-create, validates wire `gid` in create messages
-//! ([`Self::validate_wire_gid`], §7.6), and constrains
-//! `Tsetattr.uid/gid` ([`Self::validate_setattr_owner`], §7.7). It
+//! (`AccessControl::validate_wire_gid`, §7.6), and constrains
+//! `Tsetattr.uid/gid` (`AccessControl::validate_setattr_owner`,
+//! §7.7). It
 //! does *not* gate read/write/open syscalls against the peer's uid —
 //! the exporter process opens files with its own credentials. This
 //! is intentional: the path-level boundary already prevents

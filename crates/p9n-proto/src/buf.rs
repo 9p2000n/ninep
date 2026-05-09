@@ -87,13 +87,13 @@ impl Buf {
         self.data.extend_from_slice(&v.to_le_bytes());
     }
 
-    /// Write a length-prefixed string: len[2] + UTF-8 bytes.
+    /// Write a length-prefixed string: `len[2]` + UTF-8 bytes.
     pub fn put_str(&mut self, s: &str) {
         self.put_u16(s.len() as u16);
         self.data.extend_from_slice(s.as_bytes());
     }
 
-    /// Write a length-prefixed data blob: len[4] + bytes.
+    /// Write a length-prefixed data blob: `len[4]` + bytes.
     pub fn put_data(&mut self, d: &[u8]) {
         self.put_u32(d.len() as u32);
         self.data.extend_from_slice(d);

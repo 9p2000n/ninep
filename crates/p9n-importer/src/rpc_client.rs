@@ -83,6 +83,10 @@ pub struct RpcClient {
 }
 
 impl RpcClient {
+    // 9 fields, all required for the auto-reconnect machinery; grouping them
+    // into a sub-struct would not improve clarity (every callsite has the
+    // same shape and they all flow into the same `Inner` below).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         rpc: Arc<RpcHandle>,
         transport: Transport,

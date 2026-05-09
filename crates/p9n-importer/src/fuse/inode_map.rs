@@ -17,6 +17,12 @@ pub struct InodeMap {
     next_ino: AtomicU64,
 }
 
+impl Default for InodeMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InodeMap {
     pub fn new() -> Self {
         Self {

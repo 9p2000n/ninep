@@ -24,7 +24,7 @@ pub fn unknown_fid(fid: u32, op: &'static str) -> io::Error {
 #[inline]
 pub fn fid_not_open(fid: u32, op: &'static str) -> io::Error {
     tracing::debug!(fid, op, "handler rejected: fid not open");
-    io::Error::new(io::ErrorKind::Other, "fid not open")
+    io::Error::other("fid not open")
 }
 
 /// Convert a tokio JoinError to a boxed error for handler results.
@@ -36,10 +36,7 @@ pub fn join_err(e: tokio::task::JoinError) -> Box<dyn std::error::Error + Send +
     if e.is_panic() {
         tracing::warn!("spawn_blocking task panicked: {e}");
     }
-    Box::new(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        e.to_string(),
-    ))
+    Box::new(std::io::Error::other(e.to_string()))
 }
 
 /// Map a dynamic error to a Linux errno code for Rlerror responses.
@@ -90,7 +87,10 @@ pub fn with_borrowed_file<T>(
 ) -> std::io::Result<T> {
     let mut file = unsafe { std::os::unix::io::FromRawFd::from_raw_fd(raw_fd) };
     let result = f(&mut file);
-    std::mem::forget(file); // don't close the fd
+    // mem::forget is the whole point: File's Drop would close the fd,
+    // but the fd is owned by the caller's OwnedFd, not us.
+    #[allow(clippy::mem_forget)]
+    std::mem::forget(file);
     result
 }
 

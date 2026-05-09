@@ -82,6 +82,12 @@ pub struct LeaseManager {
     counters: LeaseCounters,
 }
 
+impl Default for LeaseManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LeaseManager {
     pub fn new() -> Self {
         Self {

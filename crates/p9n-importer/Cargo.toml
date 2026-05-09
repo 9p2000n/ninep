@@ -34,3 +34,6 @@ futures-util = "0.3"
 [dev-dependencies]
 jsonwebtoken = "9"
 serde_json = "1"
+
+[lints]
+workspace = true

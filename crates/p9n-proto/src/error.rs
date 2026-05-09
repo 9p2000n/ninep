@@ -40,6 +40,6 @@ impl From<WireError> for std::io::Error {
 
 impl From<ProtoError> for std::io::Error {
     fn from(e: ProtoError) -> Self {
-        std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+        std::io::Error::other(e.to_string())
     }
 }

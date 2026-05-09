@@ -214,7 +214,7 @@ pub enum Msg {
         count: u32,
     },
 
-    /// Rreaddir (raw readdir data: count[4] + entries)
+    /// Rreaddir (raw readdir data: `count[4]` + entries)
     Rreaddir {
         data: Vec<u8>,
     },

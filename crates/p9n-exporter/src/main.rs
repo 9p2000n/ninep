@@ -106,10 +106,12 @@ async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let identity = auth.identity.clone();
     let trust_store = auth.trust_store.clone();
 
-    let mut config = p9n_exporter::config::ExporterConfig::default();
-    config.enable_rate_limit = args.enable_rate_limit;
-    config.max_blocking_threads = args.blocking_threads;
-    config.allow_anonymous_attach = args.allow_anonymous;
+    let config = p9n_exporter::config::ExporterConfig {
+        enable_rate_limit: args.enable_rate_limit,
+        max_blocking_threads: args.blocking_threads,
+        allow_anonymous_attach: args.allow_anonymous,
+        ..Default::default()
+    };
 
     // Load (and verify) the POSIX mapping bundle before constructing the
     // exporter so any failure is fail-closed and surfaces before we bind

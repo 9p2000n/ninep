@@ -31,18 +31,13 @@ impl QuicTransport {
         let inflight = dgram_inflight.clone();
         let push_tx2 = push_tx.clone();
         tokio::spawn(async move {
-            loop {
-                match datagram::recv_datagram(&conn2).await {
-                    Ok(fc) => {
-                        if fc.tag == NO_TAG {
-                            let _ = push_tx2.send(fc).await;
-                        } else if let Some((_, tx)) = inflight.remove(&fc.tag) {
-                            let _ = tx.send(fc);
-                        } else {
-                            tracing::debug!("datagram for unknown tag {}", fc.tag);
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(fc) = datagram::recv_datagram(&conn2).await {
+                if fc.tag == NO_TAG {
+                    let _ = push_tx2.send(fc).await;
+                } else if let Some((_, tx)) = inflight.remove(&fc.tag) {
+                    let _ = tx.send(fc);
+                } else {
+                    tracing::debug!("datagram for unknown tag {}", fc.tag);
                 }
             }
         });
@@ -50,25 +45,15 @@ impl QuicTransport {
         // Background task: accept and read push streams
         let conn3 = conn.clone();
         tokio::spawn(async move {
-            loop {
-                match streams::accept_push_stream(&conn3).await {
-                    Ok(mut recv) => {
-                        let tx = push_tx.clone();
-                        tokio::spawn(async move {
-                            loop {
-                                match framing::read_message(&mut recv).await {
-                                    Ok(fc) => {
-                                        if tx.send(fc).await.is_err() {
-                                            break;
-                                        }
-                                    }
-                                    Err(_) => break,
-                                }
-                            }
-                        });
+            while let Ok(mut recv) = streams::accept_push_stream(&conn3).await {
+                let tx = push_tx.clone();
+                tokio::spawn(async move {
+                    while let Ok(fc) = framing::read_message(&mut recv).await {
+                        if tx.send(fc).await.is_err() {
+                            break;
+                        }
                     }
-                    Err(_) => break,
-                }
+                });
             }
         });
 

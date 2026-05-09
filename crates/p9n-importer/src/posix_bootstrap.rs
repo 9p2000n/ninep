@@ -32,8 +32,9 @@ use std::io;
 /// Returns:
 /// - `Ok(Some(identity))` on bundle hit.
 /// - `Ok(None)` when the bundle is well-formed but lacks an entry for
-///   `spiffe_id`. The caller may then fall through to [`extract`] (v1
-///   X.509 path) or fail closed depending on policy flags.
+///   `spiffe_id`. The caller decides whether to fail closed (when
+///   `--require-posix-mapping` or `--setuid-from-mapping` is set) or
+///   proceed without a derived POSIX identity.
 /// - `Err(...)` for any signature, structural, or staleness failure;
 ///   these are fatal and MUST NOT be silently downgraded to "fall
 ///   through" — a signed-but-invalid bundle is a security event.
@@ -201,14 +202,11 @@ pub fn apply_setuid(p: &PosixIdentity) -> io::Result<()> {
     let post_uid = unsafe { libc::geteuid() };
     let post_gid = unsafe { libc::getegid() };
     if post_uid != p.uid || post_gid != p.gid {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "post-setuid identity verification failed: euid={post_uid} egid={post_gid}, \
+        return Err(io::Error::other(format!(
+            "post-setuid identity verification failed: euid={post_uid} egid={post_gid}, \
                  expected uid={} gid={}",
-                p.uid, p.gid
-            ),
-        ));
+            p.uid, p.gid
+        )));
     }
 
     tracing::info!(

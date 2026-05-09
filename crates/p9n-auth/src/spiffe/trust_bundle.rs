@@ -107,12 +107,12 @@ impl TrustBundleStore {
         for cert_der in &bundle.x509_cas {
             use std::io::Write;
             let b64 = base64_encode(cert_der);
-            write!(pem, "-----BEGIN CERTIFICATE-----\n").ok();
+            writeln!(pem, "-----BEGIN CERTIFICATE-----").ok();
             for chunk in b64.as_bytes().chunks(76) {
                 pem.extend_from_slice(chunk);
                 pem.push(b'\n');
             }
-            write!(pem, "-----END CERTIFICATE-----\n").ok();
+            writeln!(pem, "-----END CERTIFICATE-----").ok();
         }
         Some(pem)
     }
@@ -120,7 +120,7 @@ impl TrustBundleStore {
 
 fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };

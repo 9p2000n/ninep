@@ -145,7 +145,7 @@ impl QuicRpcClient {
         if let Err(e) = self.send_request(&fc).await {
             self.inflight.remove(&tag);
             tracing::debug!(conn_id, tag, msg_type = mt_name, error = %e, "rpc send failed");
-            return Err(RpcError::Transport(e.into()));
+            return Err(RpcError::Transport(e));
         }
 
         // Await response (tag guard keeps tag allocated until we're done)

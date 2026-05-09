@@ -325,7 +325,7 @@ mod reload_tests {
         let jwks = JwkSet::from_json(&serde_json::to_vec(&jwk_json).unwrap()).unwrap();
         let bundle = MappingBundle::load_and_verify(&jws, &jwks, "example.com", 1_500).unwrap();
         let state = PosixMappingState::from_parts(bundle, jws, jwks);
-        assert_eq!(state.maybe_reload().unwrap(), false);
+        assert!(!state.maybe_reload().unwrap());
     }
 
     #[test]
@@ -348,12 +348,12 @@ mod reload_tests {
         );
 
         // No change → no reload.
-        assert_eq!(state.maybe_reload().unwrap(), false);
+        assert!(!state.maybe_reload().unwrap());
         assert_eq!(state.serial(), 1);
 
         // v2 on disk (bump serial AND alice's uid)
         write_with_distinct_mtime(&bundle_path, &sign_bundle(&payload(2, 1_048_999)));
-        assert_eq!(state.maybe_reload().unwrap(), true);
+        assert!(state.maybe_reload().unwrap());
         assert_eq!(state.serial(), 2);
         assert_eq!(
             state
@@ -426,7 +426,7 @@ mod reload_tests {
             PosixMappingState::load_from_files(&bundle_path, &jwks_path, "example.com").unwrap();
 
         write_with_distinct_mtime(&bundle_path, &sign_bundle(&payload(7, 1_048_999)));
-        assert_eq!(state.maybe_reload().unwrap(), true);
+        assert!(state.maybe_reload().unwrap());
         assert_eq!(state.serial(), 7);
         assert_eq!(
             state

@@ -199,7 +199,7 @@ async fn compound_setattr_getattr(
     // First result: Rsetattr (empty on success, or Rlerror)
     decode_subop(
         results
-            .get(0)
+            .first()
             .ok_or(RpcError::from("compound: empty results"))?,
     )?;
 
@@ -245,7 +245,7 @@ async fn compound_walk_getattr(
     // First result: Rwalk (or Rlerror which decode_subop converts to Err)
     let walk_fc = decode_subop(
         results
-            .get(0)
+            .first()
             .ok_or(RpcError::from("compound: empty results"))?,
     )?;
     let qids = match walk_fc.msg {

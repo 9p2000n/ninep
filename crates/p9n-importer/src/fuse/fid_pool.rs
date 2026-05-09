@@ -14,6 +14,12 @@ pub struct FidPool {
     next: AtomicU32,
 }
 
+impl Default for FidPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FidPool {
     pub fn new() -> Self {
         Self {

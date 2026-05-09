@@ -43,7 +43,7 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(recv: &mut R) -> Result<Fcall
     let mut size_buf = [0u8; 4];
     recv.read_exact(&mut size_buf)
         .await
-        .map_err(|e| TransportError::Io(e))?;
+        .map_err(TransportError::Io)?;
     let size = u32::from_le_bytes(size_buf) as usize;
 
     if size < HEADER_SIZE {
@@ -59,7 +59,7 @@ pub async fn read_message<R: AsyncReadExt + Unpin>(recv: &mut R) -> Result<Fcall
     msg_buf[..4].copy_from_slice(&size_buf);
     recv.read_exact(&mut msg_buf[4..])
         .await
-        .map_err(|e| TransportError::Io(e))?;
+        .map_err(TransportError::Io)?;
 
     decode_owned(msg_buf)
 }
@@ -70,9 +70,7 @@ pub async fn write_message<W: AsyncWriteExt + Unpin>(
     fc: &Fcall,
 ) -> Result<(), TransportError> {
     let data = encode(fc)?;
-    send.write_all(&data)
-        .await
-        .map_err(|e| TransportError::Io(e))?;
+    send.write_all(&data).await.map_err(TransportError::Io)?;
     Ok(())
 }
 
@@ -81,8 +79,6 @@ pub async fn write_raw<W: AsyncWriteExt + Unpin>(
     send: &mut W,
     data: &[u8],
 ) -> Result<(), TransportError> {
-    send.write_all(data)
-        .await
-        .map_err(|e| TransportError::Io(e))?;
+    send.write_all(data).await.map_err(TransportError::Io)?;
     Ok(())
 }

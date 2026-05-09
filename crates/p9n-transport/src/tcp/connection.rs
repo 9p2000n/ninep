@@ -10,6 +10,11 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_rustls::client::TlsStream as ClientTlsStream;
 use tokio_rustls::server::TlsStream as ServerTlsStream;
 
+/// Reader half of a split client TLS stream.
+pub type ClientStreamReader = ReadHalf<ClientTlsStream<TcpStream>>;
+/// Writer half of a split client TLS stream, wrapped for shared async use.
+pub type ClientStreamWriter = Arc<Mutex<WriteHalf<ClientTlsStream<TcpStream>>>>;
+
 /// TCP transport wrapping a TLS stream.
 ///
 /// All messages (requests, responses, pushes) travel on the same bidirectional
@@ -54,10 +59,7 @@ impl TcpTransport {
     /// Split a client TLS stream into reader + writer for the RPC client.
     pub fn split_client_stream(
         stream: ClientTlsStream<TcpStream>,
-    ) -> (
-        ReadHalf<ClientTlsStream<TcpStream>>,
-        Arc<Mutex<WriteHalf<ClientTlsStream<TcpStream>>>>,
-    ) {
+    ) -> (ClientStreamReader, ClientStreamWriter) {
         let (reader, writer) = tokio::io::split(stream);
         (reader, Arc::new(Mutex::new(writer)))
     }

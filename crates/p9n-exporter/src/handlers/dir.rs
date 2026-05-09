@@ -10,7 +10,7 @@ use std::sync::Arc;
 /// Handle Treaddir: list directory entries.
 ///
 /// Returns raw directory entry data in the 9P readdir format:
-/// qid[13] offset[8] type[1] name_len[2] name[name_len]
+/// `qid[13] offset[8] type[1] name_len[2] name[name_len]`
 pub async fn handle_readdir<B: Backend>(
     session: &Session<B::Handle>,
     ctx: &Arc<SharedCtx<B>>,

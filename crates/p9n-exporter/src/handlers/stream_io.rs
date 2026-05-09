@@ -130,7 +130,7 @@ pub async fn handle<B: Backend>(
                 })
             } else {
                 // Read direction: respond with file data.
-                let chunk = (session.get_msize() - 24) as u32;
+                let chunk = session.get_msize() - 24;
                 let ctx = ctx.clone();
                 let read_data =
                     tokio::task::spawn_blocking(move || ctx.backend.read(&handle, offset, chunk))

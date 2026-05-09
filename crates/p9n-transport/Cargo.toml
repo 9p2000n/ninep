@@ -22,3 +22,6 @@ tracing = { workspace = true }
 dashmap = { workspace = true }
 libc = "0.2"
 crossbeam-queue = "0.3"
+
+[lints]
+workspace = true

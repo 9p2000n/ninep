@@ -338,7 +338,7 @@ impl MsgType {
             | 220..=235
             | 240..=253 => {
                 // SAFETY: repr(u8) and we've verified all valid discriminants
-                Some(unsafe { std::mem::transmute(v) })
+                Some(unsafe { std::mem::transmute::<u8, Self>(v) })
             }
             _ => None,
         }
@@ -509,7 +509,7 @@ impl MsgType {
 
     /// Returns true if this is a T-message (client request).
     pub fn is_t_message(self) -> bool {
-        (self as u8) % 2 == 0
+        (self as u8).is_multiple_of(2)
     }
 
     /// Returns true if this is an R-message (server response).

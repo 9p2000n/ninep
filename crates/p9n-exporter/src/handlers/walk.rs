@@ -145,7 +145,7 @@ pub async fn handle<B: Backend>(
         }
     };
 
-    let last_qid = qids.last().cloned().unwrap_or_else(|| Qid {
+    let last_qid = qids.last().cloned().unwrap_or(Qid {
         qtype: 0,
         version: 0,
         path: 0,
